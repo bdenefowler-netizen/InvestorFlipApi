@@ -1,0 +1,143 @@
+{
+  "app_name": "TarrantREI",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A highly trustworthy, data-dense, and professional command center for real estate investors, relying on clean structure, tabular typography, and a grounded earth-toned palette rather than flashy AI tropes.",
+  "color": {
+    "surface": "#F7F7F6",
+    "onSurface": "#121211",
+    "surfaceSecondary": "#FFFFFF",
+    "onSurfaceSecondary": "#121211",
+    "surfaceTertiary": "#EBEBE9",
+    "onSurfaceTertiary": "#3E3E3C",
+    "surfaceInverse": "#1A1C1A",
+    "onSurfaceInverse": "#F7F7F6",
+    "brand": "#2B3831",
+    "brandPrimary": "#2B3831",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#A3523B",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#DCE1DE",
+    "onBrandTertiary": "#1F2924",
+    "success": "#355C44",
+    "onSuccess": "#FFFFFF",
+    "warning": "#B87B2E",
+    "onWarning": "#FFFFFF",
+    "error": "#A3413B",
+    "onError": "#FFFFFF",
+    "info": "#4A4A4A",
+    "onInfo": "#FFFFFF",
+    "border": "#E1E1DE",
+    "borderStrong": "#B5B5B2",
+    "divider": "#EAEAE7"
+  },
+  "typography": {
+    "displayFontFamily": "Geist",
+    "textFontFamily": "Geist",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous vertical breathing room for standard UI, but tighter density for financial/scoring data blocks to ensure scanability.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Sticky headers over scrolling lists",
+      "Bottom tab bar",
+      "Floating action buttons"
+    ],
+    "dont's": [
+      "Overusing on standard cards",
+      "Applying to data-dense sections where clarity is paramount"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Listings Feed (Home)",
+      "purpose": "High-density feed of investment properties with robust filtering.",
+      "states": {
+        "loading": "Skeleton cards mimicking the layout of property images and data rows.",
+        "empty": "Illustration of a house with a magnifying glass + 'No properties match your exact filters. Try broadening your criteria.'",
+        "error": "'Unable to load Tarrant County listings' + Retry Button."
+      },
+      "layout": "Sticky top header containing a search bar focused on Tarrant County. Immediately below the header, a sticky horizontal ScrollView (shows scroll indicator false) acting as a chip row for the 12+ investor filters (REO, Cash Buyer, High Equity, etc.). The main content is a FlatList of property cards. Each card has a 140pt tall top image with an expo-linear-gradient scrim at the bottom containing the Price and Est. ROI. Below the image, the card body displays the Address, an Owner Intelligence badge (brandTertiary background), and a compact 3-column footer for Investment Score, Equity, and Risk."
+    },
+    {
+      "name": "Property Profile",
+      "purpose": "Deep dive into financial viability, ownership intelligence, and AI deal scoring.",
+      "states": {
+        "loading": "Centered spinner.",
+        "empty": "N/A - Data should be present if navigated here.",
+        "error": "Error loading property details + Retry Button."
+      },
+      "layout": "Full-bleed scrolling screen. Hero is a large property photo (height 280pt) with a top gradient scrim for a glass back button. A sticky primary CTA ('Save Deal' / 'Contact Owner') lives at the bottom of the screen. Section 1 (Owner Intelligence): Clean card showing Owner Name, Type (Badge), Mailing vs Situs Address. Section 2 (AI Deal Scoring): A 2-column grid displaying the 5 scoring metrics (Investment, Wholesale, Flip, Rental, Risk) using clear progress bars or circular rings with tabular numbers. Section 3 (Financials): Key-value rows with hairline dividers for Values, Taxes, Equity Est, Est ROI. Section 4: A small map snippet showing nearby foreclosures/investor purchases."
+    }
+  ],
+  "images": {
+    "property_suburb": {
+      "url": "https://images.pexels.com/photos/18280830/pexels-photo-18280830.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Suburban house in Texas with well-maintained lawn at dusk"
+    },
+    "property_modest": {
+      "url": "https://images.unsplash.com/photo-1649692560786-27c52dd9ac1d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHwyfHxtb2Rlc3QlMjBzaW5nbGUlMjBmYW1pbHklMjBob21lJTIwbmVpZ2hib3Job29kJTIwdGV4YXN8ZW58MHx8fHwxNzgyMzY4OTI0fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Modest single family home with a car parked in front"
+    },
+    "property_fix_flip": {
+      "url": "https://images.pexels.com/photos/33404981/pexels-photo-33404981.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Workers replacing the roof on a brick house, fix and flip style"
+    },
+    "map_aerial": {
+      "url": "https://images.unsplash.com/photo-1618880542228-d188d60a1c0b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHwxfHxtb2Rlc3QlMjBzaW5nbGUlMjBob21lJTIwbmVpZ2hib3Job29kJTIwdGV4YXN8ZW58MHx8fHwxNzgyMzY4OTI0fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Aerial view of residential neighborhood"
+    }
+  },
+  "instructions_to_main_agent": [
+    "ZERO TOLERANCE: No blue, purple, or indigo colors anywhere. Use the specified dark moss and terracotta earth-toned palette.",
+    "Implement a sticky horizontal ScrollView for the 12+ investor filters (High Equity, Cash Buyer, etc.) directly below the search bar on the Home screen.",
+    "Use 'fontVariant: [\"tabular-nums\"]' for all pricing, scores, equity estimates, and ROI values to ensure digits align perfectly and convey a professional financial aesthetic.",
+    "Owner classification (LLC, Trust, Bank-Owned, Individual) MUST always be displayed as a distinct badge using the 'brandTertiary' background color, enabling quick scanning for investors.",
+    "In the Property Detail Profile, the 'AI Deal Scoring' section must feel like a data-rich command center. Use structured grids with progress bars or circular rings for the 5 metrics (Investment, Wholesale, Flip, Rental, Risk), avoiding unstructured text blobs.",
+    "Any time text overlays a property image (like Price or ROI on home cards), a vertical expo-linear-gradient scrim MUST be applied behind the text (transparent to >=70% surfaceInverse) to ensure WCAG AAA readability.",
+    "Include subtle haptic feedback (impactLight) when toggling any of the investor filter chips."
+  ],
+  "haptics": {
+    "events": {
+      "filter_chip_toggle": "impactLight",
+      "save_property": "notificationSuccess",
+      "tab_change": "selection"
+    }
+  }
+}
