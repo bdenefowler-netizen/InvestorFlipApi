@@ -25,8 +25,9 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
         <View style={styles.card}>
           <Text style={styles.section}>Data Sources</Text>
-          <Row icon="document-text" label="Tarrant County Tax Roll" value="Master.dat + Rec.DAT · seeded sample" />
-          <Row icon="globe-outline" label="RealtyInUS API" value="Configured (offline preview)" />
+          <Row icon="document-text" label="Tarrant County Tax Roll" value="Master.dat + Rec.DAT · 4,222 real properties · 2,242 tax-delinquent flagged" />
+          <Row icon="globe-outline" label="Real-Time Real Estate Data API" value="RapidAPI · beds/baths/sqft/year/photos enrichment" />
+          <Row icon="receipt-outline" label="US Real Estate Listings API" value="RapidAPI · multi-year tax history" />
           <Row icon="business-outline" label="Texas Foreclosure Feeds" value="Connected" />
           <Row icon="stats-chart-outline" label="USAspending API" value="Connected" />
         </View>

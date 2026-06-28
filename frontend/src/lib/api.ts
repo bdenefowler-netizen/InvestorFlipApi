@@ -78,6 +78,51 @@ export async function getAIAnalysis(id: string): Promise<{ property_id: string; 
   return res.json();
 }
 
+export type Enrichment = {
+  property_id: string;
+  address_queried: string;
+  found: boolean;
+  zpid?: number | string;
+  beds?: number;
+  baths?: number;
+  sqft?: number;
+  year_built?: number;
+  lot_size?: string;
+  home_type?: string;
+  home_status?: string;
+  list_price?: number;
+  rapidapi_address?: string;
+  rapidapi_city?: string;
+  rapidapi_state?: string;
+  rapidapi_zip?: string;
+  appliances?: string[];
+  cooling?: string[];
+  heating?: string[];
+  parcel_id?: string;
+  photos?: string[];
+  hi_res_image?: string;
+  error?: string;
+};
+
+export async function enrichProperty(id: string): Promise<Enrichment> {
+  const res = await fetch(`${API}/properties/${id}/enrich`, { method: "POST" });
+  if (!res.ok) throw new Error(`enrich failed (${res.status})`);
+  return res.json();
+}
+
+export type TaxHistoryEntry = {
+  year: number;
+  tax: number;
+  assessment?: { building?: number; land?: number; total?: number };
+  market?: { building?: number; land?: number; total?: number };
+};
+
+export async function getTaxHistory(id: string): Promise<{ tax_history: TaxHistoryEntry[]; available: boolean }> {
+  const res = await fetch(`${API}/properties/${id}/tax-history`);
+  if (!res.ok) throw new Error(`tax history failed (${res.status})`);
+  return res.json();
+}
+
 export async function getSavedIds(): Promise<{ ids: string[] }> {
   return jsonGet(`${API}/saved/ids`);
 }

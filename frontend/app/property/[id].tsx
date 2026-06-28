@@ -13,7 +13,11 @@ import {
   getSavedIds,
   saveProperty,
   unsaveProperty,
+  enrichProperty,
+  getTaxHistory,
   type Property,
+  type Enrichment,
+  type TaxHistoryEntry,
 } from "@/src/lib/api";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 import { OwnerBadge } from "@/src/components/OwnerBadge";
@@ -51,6 +55,9 @@ export default function PropertyDetail() {
   const [nearby, setNearby] = useState<{ nearby_foreclosures: any[]; nearby_investor_purchases: any[] } | null>(null);
   const [ai, setAi] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [enrich, setEnrich] = useState<Enrichment | null>(null);
+  const [enrichLoading, setEnrichLoading] = useState(false);
+  const [taxHistory, setTaxHistory] = useState<TaxHistoryEntry[]>([]);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,6 +74,21 @@ export default function PropertyDetail() {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Auto-enrich on mount (best-effort, non-blocking)
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    setEnrichLoading(true);
+    enrichProperty(id)
+      .then((e) => { if (!cancelled) setEnrich(e); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setEnrichLoading(false); });
+    getTaxHistory(id)
+      .then((t) => { if (!cancelled) setTaxHistory(t.tax_history || []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [id]);
 
   const runAI = async () => {
     if (!id) return;
@@ -106,12 +128,21 @@ export default function PropertyDetail() {
   const taxRate = ((prop.annual_taxes / Math.max(prop.assessed_value, 1)) * 100).toFixed(2);
   const equityPct = ((prop.equity_estimate / Math.max(prop.market_value, 1)) * 100).toFixed(1);
 
+  const beds = enrich?.beds ?? prop.beds;
+  const baths = enrich?.baths ?? prop.baths;
+  const sqft = enrich?.sqft ?? prop.sqft;
+  const yearBuilt = enrich?.year_built ?? prop.year_built;
+  const heroPhoto = enrich?.hi_res_image || (enrich?.photos && enrich.photos[0]) || prop.image_url;
+  const enrichedAddress = enrich?.found && enrich.rapidapi_address
+    ? `${enrich.rapidapi_address}, ${enrich.rapidapi_city}, ${enrich.rapidapi_state} ${enrich.rapidapi_zip}`
+    : null;
+
   return (
     <View style={styles.safe}>
       <ScrollView contentContainerStyle={{ paddingBottom: 120 }} testID="property-detail-scroll">
         {/* Hero */}
         <View style={styles.hero}>
-          <Image source={{ uri: prop.image_url }} style={styles.heroImg} contentFit="cover" />
+          <Image source={{ uri: heroPhoto }} style={styles.heroImg} contentFit="cover" />
           <LinearGradient colors={["rgba(0,0,0,0.55)", "transparent"]} style={styles.heroTopScrim} pointerEvents="none" />
           <LinearGradient colors={["transparent", "rgba(26,28,26,0.85)"]} style={styles.heroBottomScrim} pointerEvents="none" />
           <SafeAreaView edges={["top"]} style={styles.heroNav}>
@@ -132,11 +163,22 @@ export default function PropertyDetail() {
         {/* Quick stats */}
         <View style={styles.section}>
           <View style={styles.quickRow}>
-            <View style={styles.quick}><Text style={styles.quickLabel}>Beds</Text><Text style={[styles.quickValue, tabularNums]}>{prop.beds}</Text></View>
-            <View style={styles.quick}><Text style={styles.quickLabel}>Baths</Text><Text style={[styles.quickValue, tabularNums]}>{prop.baths}</Text></View>
-            <View style={styles.quick}><Text style={styles.quickLabel}>SqFt</Text><Text style={[styles.quickValue, tabularNums]}>{prop.sqft.toLocaleString()}</Text></View>
-            <View style={styles.quick}><Text style={styles.quickLabel}>Built</Text><Text style={[styles.quickValue, tabularNums]}>{prop.year_built}</Text></View>
+            <View style={styles.quick}><Text style={styles.quickLabel}>Beds</Text><Text style={[styles.quickValue, tabularNums]}>{beds || "—"}</Text></View>
+            <View style={styles.quick}><Text style={styles.quickLabel}>Baths</Text><Text style={[styles.quickValue, tabularNums]}>{baths || "—"}</Text></View>
+            <View style={styles.quick}><Text style={styles.quickLabel}>SqFt</Text><Text style={[styles.quickValue, tabularNums]}>{sqft ? sqft.toLocaleString() : "—"}</Text></View>
+            <View style={styles.quick}><Text style={styles.quickLabel}>Built</Text><Text style={[styles.quickValue, tabularNums]}>{yearBuilt || "—"}</Text></View>
           </View>
+          {enrichLoading && !enrich ? (
+            <Text style={styles.enrichNote} testID="enrich-loading">Pulling live listing data…</Text>
+          ) : enrich?.found ? (
+            <View style={styles.enrichTag} testID="enrich-tag">
+              <Ionicons name="checkmark-circle" size={12} color={colors.success} />
+              <Text style={styles.enrichTagText}>
+                Enriched · {enrich.home_type?.replace(/_/g, " ") || "Listing"}
+                {enrich.list_price ? ` · List $${enrich.list_price.toLocaleString()}` : ""}
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         {/* Owner Intelligence */}
@@ -214,9 +256,35 @@ export default function PropertyDetail() {
             <KeyValue k="ZIP / County" v={`${prop.zip} · ${prop.county}`} />
             <KeyValue k="Tax Delinquent" v={prop.tax_delinquent ? "YES" : "NO"} />
             <KeyValue k="Vacant" v={prop.vacant ? "YES" : "NO"} />
+            {enrich?.parcel_id ? <KeyValue k="Parcel ID (Realtor)" v={enrich.parcel_id} /> : null}
+            {enrichedAddress ? <KeyValue k="Matched Listing" v={enrichedAddress} mono={false} /> : null}
           </View>
           <Text style={styles.sourceNote}>Source: {prop.data_source}</Text>
         </View>
+
+        {/* Tax History (RapidAPI) */}
+        {taxHistory.length > 0 ? (
+          <View style={styles.section} testID="section-tax-history">
+            <Text style={styles.sectionTitle}>TAX HISTORY · LAST {Math.min(taxHistory.length, 6)} YEARS</Text>
+            <View style={styles.card}>
+              <View style={styles.thHeader}>
+                <Text style={[styles.thCell, { flex: 0.6 }]}>YEAR</Text>
+                <Text style={[styles.thCell, { flex: 1, textAlign: "right" }]}>TAX</Text>
+                <Text style={[styles.thCell, { flex: 1.2, textAlign: "right" }]}>ASSESSED</Text>
+                <Text style={[styles.thCell, { flex: 1.2, textAlign: "right" }]}>MARKET</Text>
+              </View>
+              {taxHistory.slice(0, 6).map((t) => (
+                <View key={t.year} style={styles.thRow}>
+                  <Text style={[styles.thRowText, { flex: 0.6 }, tabularNums]}>{t.year}</Text>
+                  <Text style={[styles.thRowText, { flex: 1, textAlign: "right" }, tabularNums]}>${(t.tax || 0).toLocaleString()}</Text>
+                  <Text style={[styles.thRowText, { flex: 1.2, textAlign: "right" }, tabularNums]}>${((t.assessment?.total) || 0).toLocaleString()}</Text>
+                  <Text style={[styles.thRowText, { flex: 1.2, textAlign: "right" }, tabularNums]}>${((t.market?.total) || 0).toLocaleString()}</Text>
+                </View>
+              ))}
+            </View>
+            <Text style={styles.sourceNote}>Source: Realtor.com via US Real Estate Listings API</Text>
+          </View>
+        ) : null}
 
         {/* Nearby */}
         {nearby ? (
@@ -338,6 +406,28 @@ const styles = StyleSheet.create({
   aiBtnText: { color: colors.onBrandPrimary, fontSize: 14, fontWeight: "800", letterSpacing: 0.3 },
 
   sourceNote: { fontSize: 10, color: colors.muted, marginTop: 6, fontStyle: "italic" },
+
+  enrichNote: { fontSize: 11, color: colors.muted, marginTop: 6, textAlign: "center" },
+  enrichTag: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    marginTop: 8, alignSelf: "center",
+    backgroundColor: "#E3EBE5",
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
+  },
+  enrichTagText: { fontSize: 11, color: colors.success, fontWeight: "700" },
+
+  thHeader: {
+    flexDirection: "row",
+    paddingBottom: 8,
+    borderBottomWidth: 1, borderBottomColor: colors.divider,
+  },
+  thCell: { fontSize: 10, fontWeight: "800", color: colors.muted, letterSpacing: 0.4 },
+  thRow: {
+    flexDirection: "row",
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.divider,
+  },
+  thRowText: { fontSize: 12, color: colors.onSurface, fontWeight: "700" },
 
   nearbyRow: {
     flexDirection: "row", alignItems: "center",

@@ -44,8 +44,8 @@ BANK_KEYWORDS = [
     "deutsche bank", "nationstar", "mr. cooper", "carrington",
 ]
 TRUST_KEYWORDS = ["trust", "trustee", "family trust", "living trust", "revocable"]
-LLC_KEYWORDS = [" llc", "l.l.c.", "limited liability"]
-CORP_KEYWORDS = ["inc.", " inc", "incorporated", "corporation", "corp.", "company", " co."]
+LLC_KEYWORDS = [" llc", "l.l.c.", "limited liability", " ll", " investments"]
+CORP_KEYWORDS = ["inc.", " inc", "incorporated", "corporation", "corp.", "company", " co.", "brothers", "holdings", "partners", "properties", "realty", "group"]
 GOV_KEYWORDS = [
     "city of", "county of", "state of texas", "tarrant county", "federal",
     "department of", "housing authority", "isd",
@@ -529,6 +529,182 @@ async def classify(name: str):
     return {"name": name, "type": classify_owner(name)}
 
 
+# ---------- RapidAPI Enrichment ----------
+import httpx
+
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
+HOST_DETAILS = "real-time-real-estate-data.p.rapidapi.com"
+HOST_LISTINGS = "us-real-estate-listings.p.rapidapi.com"
+
+
+async def _rapid_get(host: str, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if not RAPIDAPI_KEY:
+        raise HTTPException(503, "RAPIDAPI_KEY not configured")
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": host,
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        r = await client.get(f"https://{host}{path}", headers=headers, params=params)
+        if r.status_code >= 400:
+            raise HTTPException(r.status_code, f"RapidAPI error: {r.text[:200]}")
+        return r.json()
+
+
+def _build_address_query(prop: Dict[str, Any]) -> str:
+    """Build a normalized address string for the RapidAPI lookup.
+
+    Master.dat carries the owner's *mailing* city/zip, not the *situs* city/zip.
+    The situs is almost always inside Tarrant County, so we try Fort Worth first;
+    if the owner mailing state is TX and the city is a known Tarrant suburb, we
+    use that. RapidAPI's matcher handles the zip fuzzily.
+    """
+    situs = (prop.get("situs_address") or "").strip()
+    # Strip our ", Tarrant County, TX" suffix
+    base = re.sub(r",?\s*Tarrant County,\s*TX.*$", "", situs, flags=re.I).strip()
+    mailing_city = (prop.get("city") or "").title().strip()
+    mailing_state = (prop.get("state") or "TX").upper()
+    # If mailing is in TX and a Tarrant city, use it as situs city; otherwise default to Fort Worth.
+    TARRANT_CITIES = {
+        "Fort Worth", "Arlington", "Mansfield", "Bedford", "Euless", "Hurst",
+        "North Richland Hills", "Grapevine", "Keller", "Southlake", "Colleyville",
+        "Watauga", "Haltom City", "White Settlement", "Saginaw", "Forest Hill",
+        "Crowley", "Burleson", "Kennedale", "Benbrook", "Richland Hills",
+    }
+    if mailing_state == "TX" and mailing_city in TARRANT_CITIES:
+        city = mailing_city
+    else:
+        city = "Fort Worth"
+    return f"{base}, {city}, TX"
+
+
+@api_router.post("/properties/{property_id}/enrich")
+async def enrich_property(property_id: str):
+    """Pull beds/baths/sqft/year_built/photos from Real-Time Real Estate Data API."""
+    prop = await db.properties.find_one({"id": property_id}, {"_id": 0})
+    if not prop:
+        raise HTTPException(404, "Property not found")
+
+    cached = await db.enrichment.find_one({"property_id": property_id}, {"_id": 0})
+    if cached and cached.get("zpid"):
+        return cached
+
+    address = _build_address_query(prop)
+    try:
+        raw = await _rapid_get(HOST_DETAILS, "/property-details-address", {"address": address})
+    except HTTPException as e:
+        return {"property_id": property_id, "address_queried": address, "error": str(e.detail), "found": False}
+
+    data = raw.get("data") or {}
+    if not data:
+        return {"property_id": property_id, "address_queried": address, "found": False}
+
+    reso = data.get("resoFacts") or {}
+    photos = data.get("originalPhotos") or data.get("responsivePhotos") or []
+    photo_urls: List[str] = []
+    for p in photos[:6]:
+        if isinstance(p, dict):
+            mixed = p.get("mixedSources") or {}
+            jpg = mixed.get("jpeg") or []
+            if jpg:
+                photo_urls.append(jpg[-1].get("url") if isinstance(jpg[-1], dict) else None)
+            elif p.get("url"):
+                photo_urls.append(p["url"])
+    photo_urls = [u for u in photo_urls if u]
+
+    enriched = {
+        "property_id": property_id,
+        "address_queried": address,
+        "found": True,
+        "zpid": data.get("zpid"),
+        "beds": reso.get("bedrooms") or data.get("bedrooms"),
+        "baths": reso.get("bathroomsFloat") or reso.get("bathrooms") or data.get("bathrooms"),
+        "sqft": data.get("livingAreaValue") or data.get("livingArea"),
+        "year_built": reso.get("yearBuilt") or _safe_int(_get_at_a_glance(reso, "Year Built")),
+        "lot_size": _get_at_a_glance(reso, "Lot"),
+        "home_type": data.get("homeType") or _get_at_a_glance(reso, "Type"),
+        "home_status": data.get("homeStatus"),
+        "list_price": data.get("price"),
+        "rapidapi_address": data.get("streetAddress"),
+        "rapidapi_city": data.get("city"),
+        "rapidapi_state": data.get("state"),
+        "rapidapi_zip": data.get("zipcode"),
+        "appliances": reso.get("appliances") or [],
+        "cooling": reso.get("cooling") or [],
+        "heating": reso.get("heating") or [],
+        "parcel_id": data.get("parcelId"),
+        "photos": photo_urls,
+        "hi_res_image": data.get("hiResImageLink"),
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Mirror enriched primary stats back onto the property doc
+    update: Dict[str, Any] = {}
+    if enriched["beds"]:
+        update["beds"] = int(enriched["beds"])
+    if enriched["baths"]:
+        update["baths"] = float(enriched["baths"])
+    if enriched["sqft"]:
+        update["sqft"] = int(enriched["sqft"])
+    if enriched["year_built"]:
+        update["year_built"] = int(enriched["year_built"])
+    if photo_urls:
+        update["image_url"] = photo_urls[0]
+    if update:
+        await db.properties.update_one({"id": property_id}, {"$set": update})
+
+    await db.enrichment.update_one(
+        {"property_id": property_id}, {"$set": enriched}, upsert=True
+    )
+    return enriched
+
+
+def _safe_int(v: Any) -> Optional[int]:
+    try:
+        return int(re.sub(r"[^0-9]", "", str(v))) if v else None
+    except Exception:
+        return None
+
+
+def _get_at_a_glance(reso: Dict[str, Any], label: str) -> Optional[str]:
+    facts = reso.get("atAGlanceFacts") or []
+    for f in facts:
+        if isinstance(f, dict) and f.get("factLabel") == label:
+            return f.get("factValue")
+    return None
+
+
+@api_router.get("/properties/{property_id}/tax-history")
+async def tax_history(property_id: str):
+    """Return tax history via US Real Estate Listings API (needs zpid from enrichment)."""
+    enr = await db.enrichment.find_one({"property_id": property_id}, {"_id": 0})
+    if not enr or not enr.get("zpid"):
+        # Auto-enrich first
+        await enrich_property(property_id)
+        enr = await db.enrichment.find_one({"property_id": property_id}, {"_id": 0})
+    if not enr or not enr.get("zpid"):
+        return {"property_id": property_id, "tax_history": [], "available": False}
+
+    cached = await db.tax_history.find_one({"property_id": property_id}, {"_id": 0})
+    if cached and cached.get("tax_history"):
+        return {"property_id": property_id, "tax_history": cached["tax_history"], "available": True}
+
+    try:
+        raw = await _rapid_get(HOST_LISTINGS, "/taxHistory", {"id": str(enr["zpid"])})
+    except HTTPException as e:
+        return {"property_id": property_id, "tax_history": [], "available": False, "error": str(e.detail)}
+
+    history = raw.get("tax_history") or []
+    await db.tax_history.update_one(
+        {"property_id": property_id},
+        {"$set": {"property_id": property_id, "zpid": enr["zpid"], "tax_history": history,
+                  "fetched_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"property_id": property_id, "tax_history": history, "available": bool(history)}
+
+
 # Include router
 app.include_router(api_router)
 
@@ -543,15 +719,18 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
-    # Seed properties if collection empty
+    # Seed properties if collection empty (demo fallback only)
     count = await db.properties.count_documents({})
     if count == 0:
         seeds = generate_seed_properties(36)
         await db.properties.insert_many(seeds)
-        # Pop the _id mongo added
-        logger.info("Seeded %d Tarrant County properties", len(seeds))
+        logger.info("Seeded %d demo Tarrant County properties", len(seeds))
     else:
-        logger.info("Properties collection already has %d docs", count)
+        real_count = await db.properties.count_documents({"data_source": {"$regex": "Master.dat"}})
+        if real_count > 0:
+            logger.info("Real Tarrant County tax roll loaded: %d properties", real_count)
+        else:
+            logger.info("Properties collection already has %d docs", count)
 
 
 @app.on_event("shutdown")

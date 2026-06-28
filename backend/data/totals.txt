@@ -1,0 +1,5 @@
+Account Totals For        : TaxRoll
+Accounts Paid Through     : 06/18/2026
+Total Master Records      : 2,755,424
+Total Receivable Records  : 13,848,088
+Total Amount Due          : $271,876,047.88
