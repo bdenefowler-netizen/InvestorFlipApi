@@ -34,6 +34,73 @@ function KeyValue({ k, v, mono = true }: { k: string; v: string; mono?: boolean 
     </View>
   );
 }
+
+function ComparisonRow({
+  label,
+  tad,
+  api,
+  fmt,
+  isString = false,
+}: {
+  label: string;
+  tad: number | string;
+  api: number | string;
+  fmt: (v: number | string) => string;
+  isString?: boolean;
+}) {
+  // Variance detection
+  let variance = false;
+  if (isString) {
+    const a = String(tad).trim().toUpperCase();
+    const b = String(api).trim().toUpperCase();
+    variance = !!a && !!b && a !== b && !a.includes(b.split(",")[0]) && !b.includes(a.split(",")[0]);
+  } else {
+    const t = Number(tad) || 0;
+    const r = Number(api) || 0;
+    if (t > 0 && r > 0) {
+      const diff = Math.abs(t - r) / Math.max(t, r);
+      variance = diff > 0.1;
+    } else if (t === 0 && r > 0) {
+      variance = true; // TAD missing, API has data
+    }
+  }
+  return (
+    <View style={cmpStyles.row} testID={`cmp-${label.toLowerCase().replace(/\s/g, "-")}`}>
+      <Text style={[cmpStyles.label, { flex: 1 }]}>{label}</Text>
+      <Text style={[cmpStyles.value, { flex: 1.2, textAlign: "right" }, tabularNums]} numberOfLines={2}>
+        {fmt(tad)}
+      </Text>
+      <View style={[cmpStyles.apiCell, { flex: 1.2 }]}>
+        <Text
+          style={[
+            cmpStyles.value,
+            { textAlign: "right", color: variance ? colors.error : colors.success },
+            tabularNums,
+          ]}
+          numberOfLines={2}
+        >
+          {fmt(api)}
+        </Text>
+        {variance ? (
+          <Ionicons name="warning" size={11} color={colors.warning} style={{ marginLeft: 4 }} />
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+const cmpStyles = StyleSheet.create({
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.divider,
+  },
+  label: { fontSize: 12, fontWeight: "700", color: colors.onSurfaceTertiary },
+  value: { fontSize: 13, fontWeight: "700", color: colors.onSurface },
+  apiCell: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end" },
+});
 const kvStyles = StyleSheet.create({
   row: {
     flexDirection: "row",
@@ -81,7 +148,17 @@ export default function PropertyDetail() {
     let cancelled = false;
     setEnrichLoading(true);
     enrichProperty(id)
-      .then((e) => { if (!cancelled) setEnrich(e); })
+      .then(async (e) => {
+        if (cancelled) return;
+        setEnrich(e);
+        // After enrichment, refetch property to reflect beds/baths/sqft/year_built updates
+        if (e.found) {
+          try {
+            const fresh = await getProperty(id);
+            if (!cancelled) setProp(fresh);
+          } catch {}
+        }
+      })
       .catch(() => {})
       .finally(() => { if (!cancelled) setEnrichLoading(false); });
     getTaxHistory(id)
@@ -220,6 +297,66 @@ export default function PropertyDetail() {
             </View>
           </View>
         </View>
+
+        {/* Tax Roll vs API Comparison */}
+        {enrich?.found ? (
+          <View style={styles.section} testID="section-compare">
+            <Text style={styles.sectionTitle}>TAX ROLL vs LISTING API</Text>
+            <View style={styles.card}>
+              <View style={styles.cmpHeader}>
+                <Text style={[styles.cmpHeaderCell, { flex: 1 }]}>FIELD</Text>
+                <Text style={[styles.cmpHeaderCell, { flex: 1.2, textAlign: "right" }]}>TAX ROLL</Text>
+                <Text style={[styles.cmpHeaderCell, { flex: 1.2, textAlign: "right" }]}>API</Text>
+              </View>
+              <ComparisonRow
+                label="Beds"
+                tad={prop.beds || 0}
+                api={enrich.beds || 0}
+                fmt={(v) => (v ? String(v) : "—")}
+              />
+              <ComparisonRow
+                label="Baths"
+                tad={prop.baths || 0}
+                api={enrich.baths || 0}
+                fmt={(v) => (v ? String(v) : "—")}
+              />
+              <ComparisonRow
+                label="SqFt"
+                tad={prop.sqft || 0}
+                api={enrich.sqft || 0}
+                fmt={(v) => (v ? Number(v).toLocaleString() : "—")}
+              />
+              <ComparisonRow
+                label="Year Built"
+                tad={prop.year_built || 0}
+                api={enrich.year_built || 0}
+                fmt={(v) => (v ? String(v) : "—")}
+              />
+              <ComparisonRow
+                label="Assessed Value"
+                tad={prop.assessed_value || 0}
+                api={enrich.tax_assessed_value || 0}
+                fmt={(v) => (v ? `$${Number(v).toLocaleString()}` : "—")}
+              />
+              <ComparisonRow
+                label="Market Value"
+                tad={prop.market_value || 0}
+                api={enrich.zestimate || enrich.list_price || 0}
+                fmt={(v) => (v ? `$${Number(v).toLocaleString()}` : "—")}
+              />
+              <ComparisonRow
+                label="Address"
+                tad={(prop.situs_address || "").replace(/, Tarrant County.*$/i, "")}
+                api={enrichedAddress || enrich.rapidapi_address || ""}
+                fmt={(v) => (v ? String(v) : "—")}
+                isString
+              />
+            </View>
+            <Text style={styles.sourceNote}>
+              Variance flagged when tax roll &amp; API disagree by &gt;10% or address mismatch.
+            </Text>
+          </View>
+        ) : null}
 
         {/* AI Investment Analysis */}
         <View style={styles.section} testID="section-ai">
@@ -432,6 +569,15 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.divider,
   },
   thRowText: { fontSize: 12, color: colors.onSurface, fontWeight: "700" },
+
+  cmpHeader: {
+    flexDirection: "row",
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+    marginBottom: 4,
+  },
+  cmpHeaderCell: { fontSize: 10, fontWeight: "800", color: colors.muted, letterSpacing: 0.5 },
 
   nearbyRow: {
     flexDirection: "row", alignItems: "center",

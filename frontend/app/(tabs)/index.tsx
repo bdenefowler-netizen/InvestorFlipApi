@@ -11,7 +11,7 @@ import {
   Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
   getFilters,
@@ -76,6 +76,14 @@ export default function ListingsScreen() {
     const t = setTimeout(loadProperties, 200);
     return () => clearTimeout(t);
   }, [loadProperties]);
+
+  // Refetch when returning from detail page (enrichment may have updated beds/baths)
+  useFocusEffect(
+    useCallback(() => {
+      loadProperties();
+      loadSaved();
+    }, [loadProperties, loadSaved])
+  );
 
   const onRefresh = () => {
     setRefreshing(true);

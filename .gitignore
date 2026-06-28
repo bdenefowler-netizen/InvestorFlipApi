@@ -82,3 +82,9 @@ memory/test_credentials.md
 android-sdk/backend/data/big_b
 backend/data/big_a
 backend/data/big_b
+.env
+.env.*
+*.env
+credentials.json
+*.key
+.credentials

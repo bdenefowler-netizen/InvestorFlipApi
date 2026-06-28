@@ -69,7 +69,9 @@ export function PropertyCard({
       <View style={styles.body}>
         <Text style={styles.address} numberOfLines={1}>{p.situs_address}</Text>
         <View style={styles.metaRow}>
-          <Text style={styles.meta}>{p.beds} bd · {p.baths} ba · {p.sqft.toLocaleString()} sqft</Text>
+          <Text style={styles.meta}>
+            {p.beds ? `${p.beds} bd` : "— bd"} · {p.baths ? `${p.baths} ba` : "— ba"} · {p.sqft ? `${p.sqft.toLocaleString()} sqft` : "— sqft"}
+          </Text>
         </View>
         <View style={styles.badgeRow}>
           <OwnerBadge type={p.owner_type} compact />
