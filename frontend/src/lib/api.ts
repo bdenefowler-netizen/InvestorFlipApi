@@ -81,6 +81,7 @@ export async function getAIAnalysis(id: string): Promise<{ property_id: string; 
 export type Enrichment = {
   property_id: string;
   address_queried: string;
+  source_api?: string;
   found: boolean;
   zpid?: number | string;
   beds?: number;
@@ -91,10 +92,20 @@ export type Enrichment = {
   home_type?: string;
   home_status?: string;
   list_price?: number;
+  zestimate?: number;
+  rent_zestimate?: number;
+  tax_assessed_value?: number;
+  latitude?: number;
+  longitude?: number;
   rapidapi_address?: string;
   rapidapi_city?: string;
   rapidapi_state?: string;
   rapidapi_zip?: string;
+  is_foreclosure?: boolean;
+  mls_id?: string;
+  listing_agent_name?: string;
+  listing_agent_phone?: string;
+  broker_name?: string;
   appliances?: string[];
   cooling?: string[];
   heating?: string[];

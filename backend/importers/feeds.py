@@ -57,107 +57,87 @@ class FeedSource:
         raise NotImplementedError
 
 
-class XomeREOFeed(FeedSource):
-    """Best-effort scraper of Xome public REO listings.
+class ForeclosureFinderFeed(FeedSource):
+    """Bulk-pull real foreclosure auction listings via Foreclosure Finder
+    (RapidAPI) — covers auction.com, HUD, Fannie Mae, Freddie Mac, Redfin."""
+    name = "Foreclosure Finder"
 
-    Xome doesn't publish a public API, but lists REOs at xome.com/reo and exposes
-    a JSON API endpoint internally on those pages. We try it; on failure we return
-    an empty list (the caller is expected to handle that gracefully).
-    """
-    name = "Xome"
-
-    async def fetch(self, limit: int = 50, state: str = "TX", **params) -> List[FeedListing]:
-        url = "https://www.xome.com/api/v1/properties/search"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-        }
-        payload = {"propertyType": ["SFH"], "state": state, "limit": limit, "offset": 0}
-        try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
-                r = await c.post(url, headers=headers, json=payload)
-                if r.status_code >= 400:
-                    logger.warning("Xome %s → %s", url, r.status_code)
-                    return []
-                data = r.json()
-                items = data.get("properties") or data.get("results") or []
-        except Exception as e:
-            logger.warning("Xome fetch failed: %s", e)
-            return []
-
-        out: List[FeedListing] = []
-        for it in items[:limit]:
-            try:
-                out.append(FeedListing(
-                    feed_source="Xome",
-                    listing_type="REO",
-                    situs_address=it.get("address") or it.get("fullAddress") or "",
-                    city=it.get("city") or "",
-                    state=it.get("state") or state,
-                    zip=it.get("zip") or it.get("zipcode") or "",
-                    price=int(it.get("price") or it.get("listPrice") or 0),
-                    beds=int(it.get("beds") or 0),
-                    baths=float(it.get("baths") or 0),
-                    sqft=int(it.get("sqft") or it.get("livingArea") or 0),
-                    year_built=int(it.get("yearBuilt") or 0),
-                    owner_name=it.get("seller") or "Bank-Owned",
-                    image_url=it.get("imageUrl") or it.get("photo") or "",
-                    extra={"raw_id": it.get("id")},
-                ))
-            except Exception:
-                continue
-        return out
-
-
-class RealtyInUSFeed(FeedSource):
-    """Pulls residential SFH listings via the RapidAPI Real-Time Real Estate Data API
-    (the one we already pay for). Uses the propertyByZip endpoint when available.
-    """
-    name = "RealtyInUS"
-
-    async def fetch(self, limit: int = 25, zip_codes: Optional[List[str]] = None, **params) -> List[FeedListing]:
-        zips = zip_codes or ["76104", "76110", "76119"]
+    async def fetch(self, limit: int = 200, state: str = "TX", city: str = "fort-worth", **params) -> List[FeedListing]:
         key = os.environ.get("RAPIDAPI_KEY", "")
         if not key:
             return []
+        headers = {
+            "x-rapidapi-key": key,
+            "x-rapidapi-host": "foreclosure-finder1.p.rapidapi.com",
+        }
         out: List[FeedListing] = []
-        headers = {"x-rapidapi-key": key, "x-rapidapi-host": "real-time-real-estate-data.p.rapidapi.com"}
-        # The Real-Time Real Estate Data API exposes /search-property-by-zipcode
-        async with httpx.AsyncClient(timeout=20.0) as c:
-            for z in zips:
+        # Use source-specific endpoints (the /city/all endpoint is deprecated)
+        endpoints = ["auction", "fanniemae", "freddiemac", "hud", "redfin"]
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            for ep in endpoints:
                 if len(out) >= limit:
                     break
                 try:
                     r = await c.get(
-                        "https://real-time-real-estate-data.p.rapidapi.com/search-properties",
+                        f"https://foreclosure-finder1.p.rapidapi.com/city/{ep}",
                         headers=headers,
-                        params={"location": f"Fort Worth, TX {z}", "sort": "newest", "page": 1, "limit": 10},
+                        params={"state": state, "city": city},
                     )
                     if r.status_code >= 400:
-                        logger.info("RealtyInUS zip=%s → %s: %s", z, r.status_code, r.text[:150])
+                        logger.info("ForeclosureFinder %s → %s", ep, r.status_code)
                         continue
-                    data = r.json().get("data") or {}
-                    for it in (data.get("results") or [])[:10]:
+                    data = r.json()
+                    listings = data.get("listings") or []
+                    for it in listings:
                         if len(out) >= limit:
                             break
-                        addr = it.get("address") or {}
+                        full = it.get("address") or ""
+                        # "4876 Ambrosia Drive, Fort Worth, TX 76244, Tarrant County"
+                        parts = [p.strip() for p in full.split(",")]
+                        street = parts[0] if parts else ""
+                        c_city = parts[1] if len(parts) > 1 else "Fort Worth"
+                        zip_part = ""
+                        if len(parts) > 2:
+                            m = re.search(r"\b(\d{5})\b", parts[2])
+                            if m:
+                                zip_part = m.group(1)
+                        county = parts[3] if len(parts) > 3 else "Tarrant County"
+                        # Only ingest Tarrant County
+                        if "tarrant" not in county.lower():
+                            continue
+                        listing_type = "REO" if (it.get("assetType") == "BANK_OWNED" or ep != "auction") else "Foreclosure"
+                        owner_seller = it.get("seller") or {
+                            "fanniemae": "Fannie Mae",
+                            "freddiemac": "Freddie Mac",
+                            "hud": "HUD",
+                            "redfin": "REO Bank-Owned",
+                        }.get(ep, "Trustee / Auction")
                         out.append(FeedListing(
-                            feed_source="RealtyInUS",
-                            listing_type="Investor" if (it.get("price") or 0) < 200_000 else "As-Is",
-                            situs_address=addr.get("streetAddress") or "",
-                            city=addr.get("city") or "Fort Worth",
-                            state=addr.get("state") or "TX",
-                            zip=addr.get("zipcode") or z,
-                            price=int(it.get("price") or 0),
+                            feed_source="Foreclosure Finder",
+                            listing_type=listing_type,
+                            situs_address=full,
+                            city=c_city,
+                            state=state.upper(),
+                            zip=zip_part,
+                            price=int(it.get("openingBid") or it.get("price") or 0),
                             beds=int(it.get("bedrooms") or 0),
                             baths=float(it.get("bathrooms") or 0),
-                            sqft=int(it.get("livingArea") or 0),
+                            sqft=int(it.get("squareFootage") or 0),
                             year_built=int(it.get("yearBuilt") or 0),
-                            image_url=it.get("imgSrc") or "",
-                            extra={"zpid": it.get("zpid")},
+                            owner_name=owner_seller,
+                            parcel_id=str(it.get("listingId") or ""),
+                            image_url=it.get("photoUrl") or "",
+                            extra={
+                                "source": it.get("source"),
+                                "auction_date": it.get("auctionDate"),
+                                "status_label": it.get("statusLabel"),
+                                "property_link": it.get("propertyLink"),
+                                "asset_type": it.get("assetType"),
+                                "property_type": it.get("propertyType"),
+                            },
                         ))
                 except Exception as e:
-                    logger.warning("RealtyInUS fetch zip=%s error: %s", z, e)
+                    logger.warning("ForeclosureFinder %s error: %s", ep, e)
         return out
 
 
@@ -215,8 +195,7 @@ def _money(v: str) -> int:
 
 # Registry
 FEEDS: List[FeedSource] = [
-    RealtyInUSFeed(),
-    XomeREOFeed(),
+    ForeclosureFinderFeed(),
     TexasForeclosureFeed(),
 ]
 

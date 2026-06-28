@@ -256,6 +256,10 @@ export default function PropertyDetail() {
             <KeyValue k="ZIP / County" v={`${prop.zip} · ${prop.county}`} />
             <KeyValue k="Tax Delinquent" v={prop.tax_delinquent ? "YES" : "NO"} />
             <KeyValue k="Vacant" v={prop.vacant ? "YES" : "NO"} />
+            {enrich?.zestimate ? <KeyValue k="Zestimate" v={`$${enrich.zestimate.toLocaleString()}`} /> : null}
+            {enrich?.rent_zestimate ? <KeyValue k="Rent Zestimate (mo)" v={`$${enrich.rent_zestimate.toLocaleString()}`} /> : null}
+            {enrich?.tax_assessed_value ? <KeyValue k="Tax Assessed (Realtor)" v={`$${enrich.tax_assessed_value.toLocaleString()}`} /> : null}
+            {enrich?.mls_id ? <KeyValue k="MLS ID" v={enrich.mls_id} /> : null}
             {enrich?.parcel_id ? <KeyValue k="Parcel ID (Realtor)" v={enrich.parcel_id} /> : null}
             {enrichedAddress ? <KeyValue k="Matched Listing" v={enrichedAddress} mono={false} /> : null}
           </View>

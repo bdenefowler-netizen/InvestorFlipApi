@@ -131,7 +131,8 @@ export default function SettingsScreen() {
         <View style={styles.card}>
           <Text style={styles.section}>Data Sources</Text>
           <Row icon="document-text" label="Tarrant County Tax Roll" value="Master.dat + Rec.DAT · 4,222+ properties" />
-          <Row icon="globe-outline" label="Real-Time Real Estate Data API" value="Live · beds/baths/sqft/photos enrichment" />
+          <Row icon="hammer-outline" label="Foreclosure Finder API" value="Live · auction.com · Fannie Mae · Freddie Mac · HUD · Redfin" />
+          <Row icon="globe-outline" label="US Real Estate Data API" value="Live · property lookup · zestimate · lat/lng" />
           <Row icon="receipt-outline" label="US Real Estate Listings API" value="Live · multi-year tax history" />
         </View>
 
