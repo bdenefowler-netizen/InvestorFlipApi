@@ -529,6 +529,98 @@ async def classify(name: str):
     return {"name": name, "type": classify_owner(name)}
 
 
+# ---------- Feed Sync, Upload, Export ----------
+from fastapi import UploadFile, File, Form
+from fastapi.responses import StreamingResponse, Response
+from importers import feeds as feeds_mod
+
+
+@api_router.post("/feeds/sync")
+async def feeds_sync(only: Optional[str] = None, limit: int = 50):
+    """Pull from all registered feeds (RealtyInUS, Xome, TX Foreclosure)
+    and insert/update properties in the DB. Auto-classifies + scores."""
+    result = await feeds_mod.run_feed_sync(
+        db, classify_owner, compute_scores,
+        only_feed=only, limit_per_feed=limit,
+    )
+    return result
+
+
+@api_router.get("/feeds/status")
+async def feeds_status():
+    """List all registered feeds and last-sync counts."""
+    out = []
+    for f in feeds_mod.FEEDS:
+        cnt = await db.properties.count_documents({"data_source": {"$regex": f.name, "$options": "i"}})
+        out.append({"name": f.name, "properties_from_feed": cnt})
+    return {"feeds": out}
+
+
+@api_router.post("/feeds/upload-csv")
+async def feeds_upload_csv(
+    file: UploadFile = File(...),
+    feed_source: str = Form("CSV Upload"),
+    listing_type: str = Form("Foreclosure"),
+):
+    """Upload a CSV with columns: address, city, state, zip, price, owner, parcel_id,
+    beds, baths, sqft, year_built, market_value. Records are ingested via the
+    same pipeline (auto-classified + scored, cross-matched against Master.dat).
+    """
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("latin1")
+    counts = await feeds_mod.ingest_csv_text(
+        db, text, feed_source, listing_type, classify_owner, compute_scores,
+    )
+    return {"ok": True, "feed_source": feed_source, "listing_type": listing_type, **counts}
+
+
+@api_router.get("/export.csv")
+async def export_csv(
+    filter: str = Query("all"),
+    search: Optional[str] = Query(None),
+    limit: int = Query(10000, ge=1, le=50000),
+):
+    """Export filtered properties to CSV (Excel-compatible)."""
+    q: Dict[str, Any] = {}
+    q = apply_filter(filter, q)
+    if search:
+        rg = {"$regex": re.escape(search), "$options": "i"}
+        q["$or"] = [{"situs_address": rg}, {"city": rg}, {"zip": rg}, {"owner_name": rg}]
+    docs = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
+    csv_text = feeds_mod.docs_to_csv(docs)
+    fname = f"tarrant_rei_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api_router.get("/export.xlsx")
+async def export_xlsx(
+    filter: str = Query("all"),
+    search: Optional[str] = Query(None),
+    limit: int = Query(10000, ge=1, le=50000),
+):
+    """Export filtered properties to Excel (.xlsx)."""
+    q: Dict[str, Any] = {}
+    q = apply_filter(filter, q)
+    if search:
+        rg = {"$regex": re.escape(search), "$options": "i"}
+        q["$or"] = [{"situs_address": rg}, {"city": rg}, {"zip": rg}, {"owner_name": rg}]
+    docs = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
+    blob = feeds_mod.docs_to_xlsx_bytes(docs)
+    fname = f"tarrant_rei_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.xlsx"
+    return Response(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 # ---------- RapidAPI Enrichment ----------
 import httpx
 
