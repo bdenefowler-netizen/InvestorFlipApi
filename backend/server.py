@@ -919,7 +919,9 @@ async def tax_history(property_id: str):
     )
     return {"property_id": property_id, "tax_history": history, "available": bool(history)}
 
-/api/scout/analyze-deal
+@api_router.post("/scout/analyze-deal")
+async def analyze_deal():
+    return {"message": "Scout analyze deal endpoint is working"}
 
 # Include router
 app.include_router(api_router)
