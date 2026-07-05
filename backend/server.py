@@ -1,6 +1,6 @@
 """TarrantREI backend - real estate investor tool focused on Tarrant County, TX."""
 from fastapi import FastAPI, APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -10,6 +10,8 @@ import math
 import random
 import logging
 import asyncio
+import pandas as pd
+from io import BytesIO
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
