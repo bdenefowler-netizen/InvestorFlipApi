@@ -578,6 +578,77 @@ async def feeds_upload_csv(
     )
     return {"ok": True, "feed_source": feed_source, "listing_type": listing_type, **counts}
 
+@api_router.post("/propstream/merge")
+async def propstream_merge(
+    marketing_file: UploadFile = File(...),
+    contacts_file: UploadFile = File(...),
+):
+    """
+    Merge PropStream Marketing List XLSX with Skip Trace Contact CSV.
+    Returns a downloadable merged CSV.
+    """
+
+    marketing_bytes = await marketing_file.read()
+    contacts_bytes = await contacts_file.read()
+
+    marketing_df = pd.read_excel(BytesIO(marketing_bytes))
+    contacts_df = pd.read_csv(BytesIO(contacts_bytes))
+
+    match_columns = [
+        "Owner 1 First Name",
+        "Owner 1 Last Name",
+        "Mailing Address",
+        "Mailing City",
+        "Mailing State",
+        "Mailing Zip",
+    ]
+
+    contacts_df = contacts_df.drop(
+        columns=["Street Address", "City", "State", "Zip"],
+        errors="ignore"
+    )
+
+    contacts_df = contacts_df.rename(columns={
+        "First Name": "Owner 1 First Name",
+        "Last Name": "Owner 1 Last Name",
+        "Mail Street Address": "Mailing Address",
+        "Mail City": "Mailing City",
+        "Mail State": "Mailing State",
+        "Mail Zip": "Mailing Zip",
+    })
+
+    missing_marketing = [c for c in match_columns if c not in marketing_df.columns]
+    missing_contacts = [c for c in match_columns if c not in contacts_df.columns]
+
+    if missing_marketing or missing_contacts:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Missing required PropStream matching columns.",
+                "missing_marketing_columns": missing_marketing,
+                "missing_contacts_columns": missing_contacts,
+            }
+        )
+
+    merged_df = pd.merge(
+        marketing_df,
+        contacts_df,
+        on=match_columns,
+        how="left"
+    )
+
+    output = BytesIO()
+    merged_df.to_csv(output, index=False)
+    output.seek(0)
+
+    return StreamingResponse(
+        output,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=propstream_merged_leads.csv"
+        }
+    )
+
 
 @api_router.get("/export.csv")
 async def export_csv(
