@@ -923,6 +923,68 @@ async def tax_history(property_id: str):
 async def analyze_deal():
     return {"message": "Scout analyze deal endpoint is working"}
 
+
+@api_router.post("/scout/find-opportunities")
+async def find_opportunities(limit: int = 10):
+    docs = await db.properties.find({}, {"_id": 0}).to_list(length=500)
+
+    opportunities = []
+
+    for p in docs:
+        score = p.get("investment_score", 50)
+
+        if p.get("high_equity"):
+            score += 10
+        if p.get("tax_delinquent"):
+            score += 10
+        if p.get("vacant"):
+            score += 10
+        if p.get("out_of_state_owner"):
+            score += 8
+        if p.get("listing_type") in ["REO", "Foreclosure", "Cash House"]:
+            score += 12
+        if p.get("owner_type") in ["Bank", "Trust", "LLC"]:
+            score += 6
+
+        score = min(score, 100)
+
+        reason = []
+        if p.get("high_equity"):
+            reason.append("High equity")
+        if p.get("tax_delinquent"):
+            reason.append("Tax delinquent")
+        if p.get("vacant"):
+            reason.append("Vacant")
+        if p.get("out_of_state_owner"):
+            reason.append("Out-of-state owner")
+        if p.get("listing_type") in ["REO", "Foreclosure", "Cash House"]:
+            reason.append(f"{p.get('listing_type')} property")
+
+        opportunities.append({
+            "id": p.get("id"),
+            "address": p.get("situs_address"),
+            "city": p.get("city"),
+            "price": p.get("price"),
+            "market_value": p.get("market_value"),
+            "equity_estimate": p.get("equity_estimate"),
+            "listing_type": p.get("listing_type"),
+            "owner_type": p.get("owner_type"),
+            "opportunity_score": score,
+            "priority": "Call First" if score >= 85 else "Strong Lead" if score >= 70 else "Review",
+            "reason": reason or ["General investor opportunity"],
+        })
+
+    opportunities = sorted(
+        opportunities,
+        key=lambda x: x["opportunity_score"],
+        reverse=True
+    )[:limit]
+
+    return {
+        "count": len(opportunities),
+        "best_today": opportunities
+    }
+
 # Include router
 app.include_router(api_router)
 
