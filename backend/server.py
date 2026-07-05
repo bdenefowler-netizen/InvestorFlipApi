@@ -919,6 +919,7 @@ async def tax_history(property_id: str):
     )
     return {"property_id": property_id, "tax_history": history, "available": bool(history)}
 
+/api/scout/analyze-deal
 
 # Include router
 app.include_router(api_router)
