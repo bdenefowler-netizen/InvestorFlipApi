@@ -987,6 +987,17 @@ async def find_opportunities(limit: int = 10):
         "best_today": opportunities
     }
 
+@api_router.post("/scout/analyze-deal")
+...
+
+@api_router.post("/scout/find-opportunities")
+...
+
+# ---------- Scout + Quill ----------
+@api_router.post("/scout/quill-analysis", response_model=QuillAnalyzeResponse)
+async def scout_quill_analysis(body: QuillAnalyzeRequest):
+    return analyze_property_with_quill(body)
+
 # Include router
 app.include_router(api_router)
 
