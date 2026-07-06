@@ -4,6 +4,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from ai.models import QuillAnalyzeRequest, QuillAnalyzeResponse
+from ai.quill import analyze_property_with_quill
 import os
 import re
 import math
