@@ -1,6 +1,14 @@
-"""TarrantREI backend - real estate investor tool focused on Tarrant County, TX."""
-from fastapi import FastAPI, APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse
+"""TarrantREI backend - real estate investor tool focused on Tarrant County, TX.
+
+UPDATED InvestorFlip V1 rule:
+Only show/analyze house-flip targets:
+- Single-family houses
+- Residential multi-family houses
+
+Blocks commercial, land, apartments, condos, townhomes, duplex, triplex, fourplex, etc.
+"""
+from fastapi import FastAPI, APIRouter, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -9,17 +17,17 @@ from ai.quill import analyze_property_with_quill
 from ai.scout import scout_analyze_property
 import os
 import re
-import math
 import random
 import logging
-import asyncio
 import pandas as pd
 from io import BytesIO
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
+import httpx
+from importers import feeds as feeds_mod
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -68,7 +76,6 @@ def classify_owner(owner_name: str) -> str:
     upper = name.upper()
     lower = name.lower()
 
-    # Law firm detection
     for firm in KNOWN_LAW_FIRMS:
         if firm.lower() in lower:
             return "Law Firm"
@@ -94,7 +101,6 @@ def classify_owner(owner_name: str) -> str:
 
 
 # ---------- Scoring ----------
-
 def compute_scores(p: Dict[str, Any]) -> Dict[str, int]:
     mv = max(1, p.get("market_value", 0))
     asking = max(1, p.get("price", mv))
@@ -127,13 +133,72 @@ def compute_scores(p: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+# ---------- Flip House Validator ----------
+ALLOWED_FLIP_TYPES = [
+    "single family",
+    "single family residential",
+    "residential single family",
+    "single-family",
+    "single-family residential",
+    "multi family",
+    "multifamily",
+    "multi-family",
+    "residential multi family",
+    "residential multifamily",
+]
+
+BLOCKED_FLIP_TYPES = [
+    "commercial",
+    "retail",
+    "office",
+    "restaurant",
+    "warehouse",
+    "industrial",
+    "land",
+    "lot",
+    "mixed use",
+    "hotel",
+    "motel",
+    "medical",
+    "shopping center",
+    "condo",
+    "townhome",
+    "townhouse",
+    "duplex",
+    "triplex",
+    "fourplex",
+    "quadplex",
+    "apartment",
+]
+
+
+def get_property_type(p: Dict[str, Any]) -> str:
+    return str(
+        p.get("property_type")
+        or p.get("home_type")
+        or p.get("land_use")
+        or p.get("use_code")
+        or p.get("property_class")
+        or ""
+    ).lower().strip()
+
+
+def is_allowed_flip_house(p: Dict[str, Any]) -> bool:
+    t = get_property_type(p)
+    if not t:
+        return False
+    if any(blocked in t for blocked in BLOCKED_FLIP_TYPES):
+        return False
+    return any(allowed in t for allowed in ALLOWED_FLIP_TYPES)
+
+
 # ---------- Seed Data ----------
 FW_STREETS = [
-    "Oak Grove Ln", "Sycamore St", "Magnolia Ave", "Hemphill St", "Camp Bowie Blvd",
-    "Hulen St", "Bryant Irvin Rd", "McCart Ave", "Eastchase Pkwy", "Granbury Rd",
-    "Mansfield Hwy", "Trail Lake Dr", "Western Center Blvd", "White Settlement Rd",
-    "Berry St", "Vickery Blvd", "Lancaster Ave", "Riverside Dr", "Beach St",
-    "Meadowbrook Dr", "Forest Park Blvd", "8th Ave", "Park Hill Dr", "Stalcup Rd",
+    "Oak Grove Ln", "Sycamore St", "Magnolia Ave", "Hemphill St",
+    "Hulen St", "McCart Ave", "Granbury Rd", "Trail Lake Dr",
+    "White Settlement Rd", "Berry St", "Vickery Blvd", "Lancaster Ave",
+    "Riverside Dr", "Beach St", "Meadowbrook Dr", "Forest Park Blvd",
+    "8th Ave", "Park Hill Dr", "Stalcup Rd",
 ]
 CITIES = [
     ("Fort Worth", "76104"), ("Fort Worth", "76110"), ("Fort Worth", "76112"),
@@ -156,49 +221,31 @@ OWNER_POOL = [
     ("Bank of America N.A.", "Bank"),
     ("Fannie Mae", "Bank"),
     ("Nationstar Mortgage LLC", "Bank"),
-    ("HUD", "Government"),
-    ("City of Fort Worth", "Government"),
-    ("Tarrant County", "Government"),
     ("The Henderson Family Trust", "Trust"),
     ("Patterson Living Trust", "Trust"),
     ("McKinney Revocable Trust", "Trust"),
-    ("Habitat for Humanity of North Texas", "Nonprofit"),
-    ("Texas Christian Foundation", "Nonprofit"),
-    ("Jackson Walker LLP", "Law Firm"),
-    ("Thompson Knight Attorneys PLLC", "Law Firm"),
-    ("Kelly Hart Law Office", "Law Firm"),
-    ("Sanchez & Associates Attorneys", "Attorney"),
-    ("Republic Title of Texas Inc.", "Corporation"),
-    ("Texas Realty Corp.", "Corporation"),
 ]
 
 PROPERTY_IMAGES = [
-    "https://images.pexels.com/photos/18280830/pexels-photo-18280830.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-    "https://images.unsplash.com/photo-1649692560786-27c52dd9ac1d?crop=entropy&cs=srgb&fm=jpg&q=80&w=940",
-    "https://images.pexels.com/photos/33404981/pexels-photo-33404981.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-    "https://images.pexels.com/photos/2102587/pexels-photo-2102587.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
     "https://images.pexels.com/photos/1396122/pexels-photo-1396122.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-    "https://images.pexels.com/photos/2581922/pexels-photo-2581922.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
     "https://images.pexels.com/photos/106399/pexels-photo-106399.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
     "https://images.pexels.com/photos/1370704/pexels-photo-1370704.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
 ]
-
 OUT_OF_STATE_STATES = ["CA", "FL", "NY", "NV", "AZ", "CO"]
 
 
 def generate_seed_properties(n: int = 36) -> List[Dict[str, Any]]:
     rng = random.Random(7)
     props: List[Dict[str, Any]] = []
-    for i in range(n):
+    for _ in range(n):
         street_num = rng.randint(100, 9999)
         street = rng.choice(FW_STREETS)
         city, zipc = rng.choice(CITIES)
         situs = f"{street_num} {street}, {city}, TX {zipc}"
 
-        owner_name, owner_type_seed = rng.choice(OWNER_POOL)
-        owner_type = classify_owner(owner_name)  # use classifier for truth
+        owner_name, _owner_type_seed = rng.choice(OWNER_POOL)
+        owner_type = classify_owner(owner_name)
 
-        # Mailing address: out-of-state for some investors
         out_of_state = owner_type in ("LLC", "Corporation", "Bank") and rng.random() < 0.45
         if out_of_state:
             st = rng.choice(OUT_OF_STATE_STATES)
@@ -206,16 +253,16 @@ def generate_seed_properties(n: int = 36) -> List[Dict[str, Any]]:
         else:
             mailing = situs if owner_type == "Individual" else f"{rng.randint(100, 9999)} Commerce St, Dallas, TX {rng.choice(['75201', '75204', '75219'])}"
 
-        listing_type = rng.choices(
-            LISTING_TYPES,
-            weights=[2, 3, 3, 2, 2],
-        )[0]
-
-        # Force consistency for banks/gov
+        listing_type = rng.choices(LISTING_TYPES, weights=[2, 3, 3, 2, 2])[0]
         if owner_type == "Bank":
             listing_type = rng.choice(["REO", "Foreclosure"])
-        if owner_type == "Government":
-            listing_type = "As-Is"
+
+        property_type = rng.choice([
+            "Single Family Residential",
+            "Single Family Residential",
+            "Single Family Residential",
+            "Residential Multi Family",
+        ])
 
         beds = rng.choice([2, 3, 3, 3, 4, 4, 5])
         baths = rng.choice([1, 2, 2, 2.5, 3])
@@ -224,7 +271,6 @@ def generate_seed_properties(n: int = 36) -> List[Dict[str, Any]]:
         lot_size = rng.randint(4500, 12000)
 
         market_value = rng.randint(120_000, 480_000)
-        # Asking price below market for distressed
         discount = rng.uniform(0.05, 0.35) if listing_type in ("REO", "Foreclosure", "Cash House") else rng.uniform(-0.05, 0.15)
         price = int(market_value * (1 - discount))
         assessed_value = int(market_value * rng.uniform(0.78, 0.96))
@@ -245,6 +291,8 @@ def generate_seed_properties(n: int = 36) -> List[Dict[str, Any]]:
             "state": "TX",
             "zip": zipc,
             "county": "Tarrant",
+            "property_type": property_type,
+            "home_type": property_type,
             "beds": beds,
             "baths": baths,
             "sqft": sqft,
@@ -356,14 +404,25 @@ async def root():
 @api_router.get("/filters")
 async def get_filters():
     out = []
-    total = await db.properties.count_documents({})
+    raw_total = await db.properties.count_documents({})
+    all_docs = await db.properties.find({}, {"_id": 0}).to_list(length=5000)
+    flip_ids = [p.get("id") for p in all_docs if is_allowed_flip_house(p)]
+    total = len(flip_ids)
+
     for f in INVESTOR_FILTERS:
         q: Dict[str, Any] = {}
         if f["key"] != "all":
             q = apply_filter(f["key"], q)
+        if flip_ids:
+            q["id"] = {"$in": flip_ids}
         count = total if f["key"] == "all" else await db.properties.count_documents(q)
         out.append({**f, "count": count})
-    return {"filters": out}
+
+    return {
+        "filters": out,
+        "raw_total_before_flip_filter": raw_total,
+        "rule": "InvestorFlip V1 only shows single-family houses and residential multi-family houses.",
+    }
 
 
 @api_router.get("/properties")
@@ -374,6 +433,7 @@ async def list_properties(
 ):
     q: Dict[str, Any] = {}
     q = apply_filter(filter, q)
+
     if search:
         regex = {"$regex": re.escape(search), "$options": "i"}
         q["$or"] = [
@@ -382,9 +442,16 @@ async def list_properties(
             {"zip": regex},
             {"owner_name": regex},
         ]
-    cursor = db.properties.find(q, {"_id": 0}).limit(limit)
-    items = await cursor.to_list(length=limit)
-    return {"count": len(items), "items": items}
+
+    cursor = db.properties.find(q, {"_id": 0}).limit(limit * 5)
+    raw_items = await cursor.to_list(length=limit * 5)
+    items = [p for p in raw_items if is_allowed_flip_house(p)][:limit]
+
+    return {
+        "count": len(items),
+        "items": items,
+        "rule": "InvestorFlip V1 only shows single-family houses and residential multi-family houses.",
+    }
 
 
 @api_router.get("/properties/{property_id}")
@@ -392,20 +459,18 @@ async def get_property(property_id: str):
     doc = await db.properties.find_one({"id": property_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Property not found")
+    if not is_allowed_flip_house(doc):
+        raise HTTPException(400, "Property blocked: not a single-family or residential multi-family flip target")
     return doc
+
 
 @api_router.post("/properties/{property_id}/quill-analysis", response_model=QuillAnalyzeResponse)
 async def property_quill_analysis(property_id: str):
-    """
-    Scout loads the property from MongoDB,
-    builds a Quill request,
-    then Quill analyzes the investment.
-    """
     doc = await db.properties.find_one({"id": property_id}, {"_id": 0})
-
     if not doc:
         raise HTTPException(status_code=404, detail="Property not found")
-
+    if not is_allowed_flip_house(doc):
+        raise HTTPException(status_code=400, detail="Property blocked: not a single-family or residential multi-family flip target")
     return scout_analyze_property(doc)
 
 
@@ -414,15 +479,21 @@ async def get_nearby(property_id: str):
     base = await db.properties.find_one({"id": property_id}, {"_id": 0})
     if not base:
         raise HTTPException(404, "Property not found")
+    if not is_allowed_flip_house(base):
+        raise HTTPException(400, "Property blocked: not a single-family or residential multi-family flip target")
+
     zipc = base["zip"]
-    near_foreclosures = await db.properties.find(
+    near_foreclosures_raw = await db.properties.find(
         {"zip": zipc, "listing_type": {"$in": ["REO", "Foreclosure"]}, "id": {"$ne": property_id}},
-        {"_id": 0, "id": 1, "situs_address": 1, "price": 1, "listing_type": 1, "image_url": 1},
-    ).limit(4).to_list(length=4)
-    near_investor = await db.properties.find(
+        {"_id": 0, "id": 1, "situs_address": 1, "price": 1, "listing_type": 1, "image_url": 1, "property_type": 1, "home_type": 1},
+    ).limit(20).to_list(length=20)
+    near_investor_raw = await db.properties.find(
         {"zip": zipc, "investor_owned": True, "id": {"$ne": property_id}},
-        {"_id": 0, "id": 1, "situs_address": 1, "price": 1, "owner_type": 1, "image_url": 1},
-    ).limit(4).to_list(length=4)
+        {"_id": 0, "id": 1, "situs_address": 1, "price": 1, "owner_type": 1, "image_url": 1, "property_type": 1, "home_type": 1},
+    ).limit(20).to_list(length=20)
+
+    near_foreclosures = [p for p in near_foreclosures_raw if is_allowed_flip_house(p)][:4]
+    near_investor = [p for p in near_investor_raw if is_allowed_flip_house(p)][:4]
     return {"nearby_foreclosures": near_foreclosures, "nearby_investor_purchases": near_investor}
 
 
@@ -431,8 +502,9 @@ async def ai_analysis(property_id: str):
     doc = await db.properties.find_one({"id": property_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Property not found")
+    if not is_allowed_flip_house(doc):
+        raise HTTPException(400, "Property blocked: not a single-family or residential multi-family flip target")
 
-    # Cache
     cached = await db.ai_analysis.find_one({"property_id": property_id}, {"_id": 0})
     if cached and cached.get("narrative"):
         return AIAnalysisResponse(property_id=property_id, narrative=cached["narrative"])
@@ -444,8 +516,9 @@ async def ai_analysis(property_id: str):
             raise RuntimeError("EMERGENT_LLM_KEY missing")
 
         system = (
-            "You are a senior real estate investor analyst. Given a property record, "
-            "produce a concise investment analysis in 4 short bullet points. "
+            "You are a senior real estate investor analyst. InvestorFlip V1 only analyzes "
+            "single-family houses and residential multi-family houses for house flipping. "
+            "Given a valid property record, produce a concise investment analysis in 4 short bullet points. "
             "Be specific, reference numbers (equity, taxes, ROI). End with a one-line verdict: "
             "'STRONG BUY', 'BUY', 'WATCH', or 'PASS'. Plain text only, no markdown."
         )
@@ -457,6 +530,7 @@ async def ai_analysis(property_id: str):
 
         payload = (
             f"Address: {doc['situs_address']}\n"
+            f"Property Type: {get_property_type(doc)}\n"
             f"Listing Type: {doc['listing_type']}\n"
             f"Owner: {doc['owner_name']} ({doc['owner_type']})\n"
             f"Out-of-State Owner: {doc['out_of_state_owner']}\n"
@@ -487,14 +561,13 @@ async def ai_analysis(property_id: str):
         return AIAnalysisResponse(property_id=property_id, narrative=narrative)
     except Exception as e:
         logger.exception("AI analysis failed: %s", e)
-        # Fallback deterministic narrative
         verdict = "STRONG BUY" if doc["investment_score"] >= 75 else (
             "BUY" if doc["investment_score"] >= 60 else (
                 "WATCH" if doc["investment_score"] >= 45 else "PASS"
             )
         )
         narrative = (
-            f"• {doc['listing_type']} property in {doc['city']} with ${doc['equity_estimate']:,} "
+            f"• {doc['listing_type']} {doc.get('property_type', 'house')} in {doc['city']} with ${doc['equity_estimate']:,} "
             f"of estimated equity ({doc['est_roi_pct']}% ROI).\n"
             f"• Owned by {doc['owner_name']} ({doc['owner_type']})"
             f"{' — out-of-state, may motivate quick sale.' if doc['out_of_state_owner'] else '.'}\n"
@@ -513,15 +586,18 @@ async def list_saved():
     ids = [d["property_id"] for d in docs]
     if not ids:
         return {"count": 0, "items": []}
-    props = await db.properties.find({"id": {"$in": ids}}, {"_id": 0}).to_list(length=500)
+    props_raw = await db.properties.find({"id": {"$in": ids}}, {"_id": 0}).to_list(length=500)
+    props = [p for p in props_raw if is_allowed_flip_house(p)]
     return {"count": len(props), "items": props}
 
 
 @api_router.post("/saved")
 async def add_saved(body: SaveRequest):
-    exists = await db.properties.find_one({"id": body.property_id}, {"_id": 0, "id": 1})
+    exists = await db.properties.find_one({"id": body.property_id}, {"_id": 0})
     if not exists:
         raise HTTPException(404, "Property not found")
+    if not is_allowed_flip_house(exists):
+        raise HTTPException(400, "Property blocked: not a single-family or residential multi-family flip target")
     await db.saved.update_one(
         {"property_id": body.property_id},
         {"$set": {"property_id": body.property_id,
@@ -549,15 +625,8 @@ async def classify(name: str):
 
 
 # ---------- Feed Sync, Upload, Export ----------
-from fastapi import UploadFile, File, Form
-from fastapi.responses import Response
-from importers import feeds as feeds_mod
-
-
 @api_router.post("/feeds/sync")
 async def feeds_sync(only: Optional[str] = None, limit: int = 50):
-    """Pull from all registered feeds (RealtyInUS, Xome, TX Foreclosure)
-    and insert/update properties in the DB. Auto-classifies + scores."""
     result = await feeds_mod.run_feed_sync(
         db, classify_owner, compute_scores,
         only_feed=only, limit_per_feed=limit,
@@ -567,7 +636,6 @@ async def feeds_sync(only: Optional[str] = None, limit: int = 50):
 
 @api_router.get("/feeds/status")
 async def feeds_status():
-    """List all registered feeds and last-sync counts."""
     out = []
     for f in feeds_mod.FEEDS:
         cnt = await db.properties.count_documents({"data_source": {"$regex": f.name, "$options": "i"}})
@@ -581,10 +649,6 @@ async def feeds_upload_csv(
     feed_source: str = Form("CSV Upload"),
     listing_type: str = Form("Foreclosure"),
 ):
-    """Upload a CSV with columns: address, city, state, zip, price, owner, parcel_id,
-    beds, baths, sqft, year_built, market_value. Records are ingested via the
-    same pipeline (auto-classified + scored, cross-matched against Master.dat).
-    """
     raw = await file.read()
     try:
         text = raw.decode("utf-8-sig")
@@ -601,11 +665,6 @@ async def propstream_merge(
     marketing_file: UploadFile = File(...),
     contacts_file: UploadFile = File(...),
 ):
-    """
-    Merge PropStream Marketing List XLSX with Skip Trace Contact CSV.
-    Returns a downloadable merged CSV.
-    """
-
     marketing_bytes = await marketing_file.read()
     contacts_bytes = await contacts_file.read()
 
@@ -621,11 +680,7 @@ async def propstream_merge(
         "Mailing Zip",
     ]
 
-    contacts_df = contacts_df.drop(
-        columns=["Street Address", "City", "State", "Zip"],
-        errors="ignore"
-    )
-
+    contacts_df = contacts_df.drop(columns=["Street Address", "City", "State", "Zip"], errors="ignore")
     contacts_df = contacts_df.rename(columns={
         "First Name": "Owner 1 First Name",
         "Last Name": "Owner 1 Last Name",
@@ -648,13 +703,7 @@ async def propstream_merge(
             }
         )
 
-    merged_df = pd.merge(
-        marketing_df,
-        contacts_df,
-        on=match_columns,
-        how="left"
-    )
-
+    merged_df = pd.merge(marketing_df, contacts_df, on=match_columns, how="left")
     output = BytesIO()
     merged_df.to_csv(output, index=False)
     output.seek(0)
@@ -662,9 +711,7 @@ async def propstream_merge(
     return StreamingResponse(
         output,
         media_type="text/csv",
-        headers={
-            "Content-Disposition": "attachment; filename=propstream_merged_leads.csv"
-        }
+        headers={"Content-Disposition": "attachment; filename=propstream_merged_leads.csv"}
     )
 
 
@@ -674,13 +721,13 @@ async def export_csv(
     search: Optional[str] = Query(None),
     limit: int = Query(10000, ge=1, le=50000),
 ):
-    """Export filtered properties to CSV (Excel-compatible)."""
     q: Dict[str, Any] = {}
     q = apply_filter(filter, q)
     if search:
         rg = {"$regex": re.escape(search), "$options": "i"}
         q["$or"] = [{"situs_address": rg}, {"city": rg}, {"zip": rg}, {"owner_name": rg}]
-    docs = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
+    docs_raw = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
+    docs = [p for p in docs_raw if is_allowed_flip_house(p)]
     csv_text = feeds_mod.docs_to_csv(docs)
     fname = f"tarrant_rei_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
     return Response(
@@ -696,13 +743,13 @@ async def export_xlsx(
     search: Optional[str] = Query(None),
     limit: int = Query(10000, ge=1, le=50000),
 ):
-    """Export filtered properties to Excel (.xlsx)."""
     q: Dict[str, Any] = {}
     q = apply_filter(filter, q)
     if search:
         rg = {"$regex": re.escape(search), "$options": "i"}
         q["$or"] = [{"situs_address": rg}, {"city": rg}, {"zip": rg}, {"owner_name": rg}]
-    docs = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
+    docs_raw = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
+    docs = [p for p in docs_raw if is_allowed_flip_house(p)]
     blob = feeds_mod.docs_to_xlsx_bytes(docs)
     fname = f"tarrant_rei_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.xlsx"
     return Response(
@@ -713,8 +760,6 @@ async def export_xlsx(
 
 
 # ---------- RapidAPI Enrichment ----------
-import httpx
-
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
 HOST_LOOKUP = "us-real-estate-data1.p.rapidapi.com"
 HOST_LISTINGS = "us-real-estate-listings.p.rapidapi.com"
@@ -736,11 +781,8 @@ async def _rapid_get(host: str, path: str, params: Dict[str, Any]) -> Dict[str, 
 
 
 def _build_address_query(prop: Dict[str, Any]) -> str:
-    """Build a normalized address string for the lookup API."""
     situs = (prop.get("situs_address") or "").strip()
-    # Strip Tarrant County suffix
     base = re.sub(r",?\s*Tarrant County,?\s*(TX)?\.?\s*$", "", situs, flags=re.I).strip().rstrip(",")
-    # If the situs already contains a state code (TX) + zip, it's a complete address — return as-is.
     if re.search(r"\bTX\s*\d{5}\b", base, flags=re.I):
         return base
     mailing_city = (prop.get("city") or "").title().strip()
@@ -751,20 +793,12 @@ def _build_address_query(prop: Dict[str, Any]) -> str:
         "Watauga", "Haltom City", "White Settlement", "Saginaw", "Forest Hill",
         "Crowley", "Burleson", "Kennedale", "Benbrook", "Richland Hills",
     }
-    if mailing_state == "TX" and mailing_city in TARRANT_CITIES:
-        city = mailing_city
-    else:
-        city = "Fort Worth"
+    city = mailing_city if mailing_state == "TX" and mailing_city in TARRANT_CITIES else "Fort Worth"
     return f"{base}, {city}, TX"
 
 
 @api_router.post("/properties/{property_id}/enrich")
 async def enrich_property(property_id: str):
-    """Pull beds/baths/sqft/year_built/lat/lng/zestimate.
-
-    Primary: us-real-estate-data1 (richer data: lat/lng + zestimate + rent_zestimate).
-    Fallback: real-time-real-estate-data (broader Fort Worth coverage + photos).
-    """
     prop = await db.properties.find_one({"id": property_id}, {"_id": 0})
     if not prop:
         raise HTTPException(404, "Property not found")
@@ -775,7 +809,6 @@ async def enrich_property(property_id: str):
 
     address = _build_address_query(prop)
 
-    # ----- Try primary (us-real-estate-data1) -----
     try:
         raw = await _rapid_get(HOST_LOOKUP, "/properties/lookup", {"address": address})
         meta = raw.get("meta") or {}
@@ -818,7 +851,6 @@ async def enrich_property(property_id: str):
     except HTTPException as e:
         logger.info("Primary enrichment failed: %s", e.detail)
 
-    # ----- Fallback to real-time-real-estate-data -----
     try:
         raw = await _rapid_get(
             "real-time-real-estate-data.p.rapidapi.com",
@@ -899,18 +931,18 @@ async def _persist_enrichment(property_id: str, enriched: Dict[str, Any], photo_
     if enriched.get("latitude") and enriched.get("longitude"):
         update["latitude"] = enriched["latitude"]
         update["longitude"] = enriched["longitude"]
+    if enriched.get("home_type"):
+        update["home_type"] = enriched["home_type"]
+        update["property_type"] = enriched["home_type"]
     if photo_urls:
         update["image_url"] = photo_urls[0]
     if update:
         await db.properties.update_one({"id": property_id}, {"$set": update})
-    await db.enrichment.update_one(
-        {"property_id": property_id}, {"$set": enriched}, upsert=True
-    )
+    await db.enrichment.update_one({"property_id": property_id}, {"$set": enriched}, upsert=True)
 
 
 @api_router.get("/properties/{property_id}/tax-history")
 async def tax_history(property_id: str):
-    """Return tax history via US Real Estate Listings API (needs zpid from enrichment)."""
     enr = await db.enrichment.find_one({"property_id": property_id}, {"_id": 0})
     if not enr or not enr.get("zpid"):
         await enrich_property(property_id)
@@ -936,6 +968,7 @@ async def tax_history(property_id: str):
     )
     return {"property_id": property_id, "tax_history": history, "available": bool(history)}
 
+
 @api_router.post("/scout/analyze-deal")
 async def analyze_deal():
     return {"message": "Scout analyze deal endpoint is working"}
@@ -943,13 +976,12 @@ async def analyze_deal():
 
 @api_router.post("/scout/find-opportunities")
 async def find_opportunities(limit: int = 10):
-    docs = await db.properties.find({}, {"_id": 0}).to_list(length=500)
+    raw_docs = await db.properties.find({}, {"_id": 0}).to_list(length=500)
+    docs = [p for p in raw_docs if is_allowed_flip_house(p)]
 
     opportunities = []
-
     for p in docs:
         score = p.get("investment_score", 50)
-
         if p.get("high_equity"):
             score += 10
         if p.get("tax_delinquent"):
@@ -962,7 +994,6 @@ async def find_opportunities(limit: int = 10):
             score += 12
         if p.get("owner_type") in ["Bank", "Trust", "LLC"]:
             score += 6
-
         score = min(score, 100)
 
         reason = []
@@ -981,6 +1012,7 @@ async def find_opportunities(limit: int = 10):
             "id": p.get("id"),
             "address": p.get("situs_address"),
             "city": p.get("city"),
+            "property_type": p.get("property_type") or p.get("home_type"),
             "price": p.get("price"),
             "market_value": p.get("market_value"),
             "equity_estimate": p.get("equity_estimate"),
@@ -988,28 +1020,56 @@ async def find_opportunities(limit: int = 10):
             "owner_type": p.get("owner_type"),
             "opportunity_score": score,
             "priority": "Call First" if score >= 85 else "Strong Lead" if score >= 70 else "Review",
-            "reason": reason or ["General investor opportunity"],
+            "reason": reason or ["General house-flip opportunity"],
         })
 
-    opportunities = sorted(
-        opportunities,
-        key=lambda x: x["opportunity_score"],
-        reverse=True
-    )[:limit]
-
+    opportunities = sorted(opportunities, key=lambda x: x["opportunity_score"], reverse=True)[:limit]
     return {
         "count": len(opportunities),
-        "best_today": opportunities
+        "best_today": opportunities,
+        "rule": "InvestorFlip V1 only shows single-family houses and residential multi-family houses.",
     }
+
+
+@api_router.delete("/admin/cleanup-non-flip-properties")
+async def cleanup_non_flip_properties():
+    docs = await db.properties.find({}, {"_id": 0}).to_list(length=5000)
+    deleted = 0
+    kept = 0
+    blocked_examples = []
+
+    for p in docs:
+        if is_allowed_flip_house(p):
+            kept += 1
+            continue
+        if len(blocked_examples) < 10:
+            blocked_examples.append({
+                "id": p.get("id"),
+                "address": p.get("situs_address"),
+                "property_type": get_property_type(p),
+            })
+        await db.properties.delete_one({"id": p.get("id")})
+        deleted += 1
+
+    return {
+        "ok": True,
+        "kept": kept,
+        "deleted": deleted,
+        "blocked_examples": blocked_examples,
+        "rule": "Kept only single-family houses and residential multi-family houses.",
+    }
+
 
 # ---------- Scout + Quill ----------
 @api_router.post("/scout/quill-analysis", response_model=QuillAnalyzeResponse)
 async def scout_quill_analysis(body: QuillAnalyzeRequest):
     return analyze_property_with_quill(body)
 
+
 @api_router.post("/ai/analyze-property", response_model=QuillAnalyzeResponse)
 async def quill_analyze_property(body: QuillAnalyzeRequest):
     return analyze_property_with_quill(body)
+
 
 # Include router
 app.include_router(api_router)
@@ -1025,12 +1085,11 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
-    # Seed properties if collection empty (demo fallback only)
     count = await db.properties.count_documents({})
     if count == 0:
         seeds = generate_seed_properties(36)
         await db.properties.insert_many(seeds)
-        logger.info("Seeded %d demo Tarrant County properties", len(seeds))
+        logger.info("Seeded %d demo Tarrant County flip-house properties", len(seeds))
     else:
         real_count = await db.properties.count_documents({"data_source": {"$regex": "Master.dat"}})
         if real_count > 0:
