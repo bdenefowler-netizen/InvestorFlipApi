@@ -6,6 +6,7 @@ Only show/analyze house-flip targets:
 - Residential multi-family houses
 
 Blocks commercial, land, apartments, condos, townhomes, duplex, triplex, fourplex, etc.
+No Fort Worth streets/corridors are blocked. If it is a house, it can show.
 """
 from fastapi import FastAPI, APIRouter, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response
@@ -183,12 +184,50 @@ def get_property_type(p: Dict[str, Any]) -> str:
     ).lower().strip()
 
 
+def has_basic_house_facts(p: Dict[str, Any]) -> bool:
+    """Legacy safety net for older records created before property_type existed.
+
+    This prevents the frontend from returning zero items after the V1 validator was added.
+    It does not block any Fort Worth streets/corridors; it only checks house-like facts.
+    """
+    try:
+        beds = float(p.get("beds") or 0)
+        baths = float(p.get("baths") or 0)
+        sqft = float(p.get("sqft") or 0)
+        year_built = int(p.get("year_built") or 0)
+    except Exception:
+        return False
+
+    return beds >= 1 and baths >= 1 and 500 <= sqft <= 8000 and 1800 <= year_built <= 2035
+
+
+def infer_legacy_property_type(p: Dict[str, Any]) -> Optional[str]:
+    """Infer a safe residential type for old/demo records missing property_type.
+
+    Real imported records should eventually use county CAD fields like property_type,
+    land_use, use_code, or property_class. This only keeps old records from vanishing.
+    No Fort Worth streets or corridors are blocked here; the rule is property-type based.
+    """
+    if get_property_type(p):
+        return None
+
+    if has_basic_house_facts(p):
+        return "Single Family Residential"
+
+    return None
+
+
 def is_allowed_flip_house(p: Dict[str, Any]) -> bool:
     t = get_property_type(p)
+
+    # Legacy fallback: old database records may not have property_type/home_type yet.
+    # If they look like a house by beds/baths/sqft/year_built, allow them.
     if not t:
-        return False
+        return infer_legacy_property_type(p) is not None
+
     if any(blocked in t for blocked in BLOCKED_FLIP_TYPES):
         return False
+
     return any(allowed in t for allowed in ALLOWED_FLIP_TYPES)
 
 
@@ -1031,6 +1070,72 @@ async def find_opportunities(limit: int = 10):
     }
 
 
+@api_router.post("/admin/backfill-flip-property-types")
+async def backfill_flip_property_types():
+    """Add property_type to older records that look like houses.
+
+    Run this once after deploying if /api/properties returns 0 because old records
+    were created before property_type/home_type existed.
+    """
+    docs = await db.properties.find({}, {"_id": 0}).to_list(length=10000)
+    updated = 0
+    skipped = 0
+    examples = []
+
+    for p in docs:
+        if get_property_type(p):
+            skipped += 1
+            continue
+
+        inferred = infer_legacy_property_type(p)
+        if not inferred:
+            skipped += 1
+            continue
+
+        await db.properties.update_one(
+            {"id": p.get("id")},
+            {"$set": {
+                "property_type": inferred,
+                "home_type": inferred,
+                "property_type_source": "legacy backfill",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }}
+        )
+        updated += 1
+        if len(examples) < 10:
+            examples.append({
+                "id": p.get("id"),
+                "address": p.get("situs_address"),
+                "property_type": inferred,
+            })
+
+    return {
+        "ok": True,
+        "updated": updated,
+        "skipped": skipped,
+        "examples": examples,
+        "rule": "Backfilled only legacy records that look like single-family houses.",
+    }
+
+
+@api_router.get("/admin/data-quality")
+async def data_quality():
+    docs = await db.properties.find({}, {"_id": 0}).to_list(length=10000)
+    allowed = [p for p in docs if is_allowed_flip_house(p)]
+    missing_type = [p for p in docs if not get_property_type(p)]
+
+    return {
+        "raw_total": len(docs),
+        "allowed_flip_houses": len(allowed),
+        "missing_property_type": len(missing_type),
+        "sample_allowed": [
+            {"address": p.get("situs_address"), "property_type": get_property_type(p) or infer_legacy_property_type(p)}
+            for p in allowed[:10]
+        ],
+        "rule": "InvestorFlip V1 only shows single-family houses and residential multi-family houses.",
+    }
+
+
 @api_router.delete("/admin/cleanup-non-flip-properties")
 async def cleanup_non_flip_properties():
     docs = await db.properties.find({}, {"_id": 0}).to_list(length=5000)
@@ -1091,11 +1196,34 @@ async def on_startup():
         await db.properties.insert_many(seeds)
         logger.info("Seeded %d demo Tarrant County flip-house properties", len(seeds))
     else:
+        # Auto-backfill old records that existed before property_type/home_type was added.
+        # This prevents /api/properties from returning 0 immediately after deploying V1 validation.
+        docs = await db.properties.find({}, {"_id": 0}).to_list(length=10000)
+        backfilled = 0
+        for p in docs:
+            if get_property_type(p):
+                continue
+            inferred = infer_legacy_property_type(p)
+            if not inferred:
+                continue
+            await db.properties.update_one(
+                {"id": p.get("id")},
+                {"$set": {
+                    "property_type": inferred,
+                    "home_type": inferred,
+                    "property_type_source": "startup legacy backfill",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }}
+            )
+            backfilled += 1
+
         real_count = await db.properties.count_documents({"data_source": {"$regex": "Master.dat"}})
         if real_count > 0:
             logger.info("Real Tarrant County tax roll loaded: %d properties", real_count)
         else:
             logger.info("Properties collection already has %d docs", count)
+        if backfilled:
+            logger.info("Backfilled %d legacy records with Single Family Residential property_type", backfilled)
 
 
 @app.on_event("shutdown")
