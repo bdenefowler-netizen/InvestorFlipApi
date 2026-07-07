@@ -1,13 +1,21 @@
-"""TarrantREI backend - real estate investor tool focused on Tarrant County, TX.
+"""TarrantREI / InvestorFlip backend.
 
-UPDATED InvestorFlip V1 rule:
-Only show/analyze house-flip targets:
-- Single-family houses
-- Residential multi-family houses
+InvestorFlip V1 Live Residential Rule:
+- Pull live Fort Worth residential listings from RapidAPI when available.
+- Only show/analyze house-flip targets:
+  - Single-family houses
+  - Residential multi-family houses
+- Blocks commercial, land, apartments, condos, townhomes, duplex, triplex, fourplex, etc.
+- No Fort Worth streets/corridors are blocked. If it is a verified house, it can show.
 
-Blocks commercial, land, apartments, condos, townhomes, duplex, triplex, fourplex, etc.
-No Fort Worth streets/corridors are blocked. If it is a house, it can show.
+Important:
+- Set RAPIDAPI_KEY in Railway environment variables.
+- This version adds live listing endpoints:
+  POST /api/live/sync-fort-worth
+  GET  /api/live/fort-worth-listings
+  GET  /api/live/status
 """
+
 from fastapi import FastAPI, APIRouter, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response
 from dotenv import load_dotenv
@@ -38,11 +46,12 @@ mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
-app = FastAPI(title="TarrantREI API")
+app = FastAPI(title="TarrantREI / InvestorFlip API")
 api_router = APIRouter(prefix="/api")
 
 logger = logging.getLogger("tarrantrei")
 logging.basicConfig(level=logging.INFO)
+
 
 # ---------- Owner Classifier ----------
 LAW_FIRM_KEYWORDS = [
@@ -59,7 +68,10 @@ BANK_KEYWORDS = [
 ]
 TRUST_KEYWORDS = ["trust", "trustee", "family trust", "living trust", "revocable"]
 LLC_KEYWORDS = [" llc", "l.l.c.", "limited liability", " ll", " investments"]
-CORP_KEYWORDS = ["inc.", " inc", "incorporated", "corporation", "corp.", "company", " co.", "brothers", "holdings", "partners", "properties", "realty", "group"]
+CORP_KEYWORDS = [
+    "inc.", " inc", "incorporated", "corporation", "corp.", "company",
+    " co.", "brothers", "holdings", "partners", "properties", "realty", "group"
+]
 GOV_KEYWORDS = [
     "city of", "county of", "state of texas", "tarrant county", "federal",
     "department of", "housing authority", "isd",
@@ -103,14 +115,14 @@ def classify_owner(owner_name: str) -> str:
 
 # ---------- Scoring ----------
 def compute_scores(p: Dict[str, Any]) -> Dict[str, int]:
-    mv = max(1, p.get("market_value", 0))
-    asking = max(1, p.get("price", mv))
+    mv = max(1, int(p.get("market_value") or p.get("estimated_value") or p.get("price") or 1))
+    asking = max(1, int(p.get("price") or mv))
     equity_pct = max(0.0, (mv - asking) / mv)
-    annual_taxes = p.get("annual_taxes", 0)
+    annual_taxes = int(p.get("annual_taxes") or 0)
     tax_burden = annual_taxes / mv if mv else 0
     owner_type = p.get("owner_type", "Individual")
-    listing_type = p.get("listing_type", "As-Is")
-    year_built = p.get("year_built", 1990)
+    listing_type = p.get("listing_type", "For Sale")
+    year_built = int(p.get("year_built") or 1990)
     age = max(0, 2026 - year_built)
 
     investor_friendly = owner_type in ("Bank", "Government", "Trust")
@@ -141,6 +153,9 @@ ALLOWED_FLIP_TYPES = [
     "residential single family",
     "single-family",
     "single-family residential",
+    "singlefamily",
+    "house",
+    "detached",
     "multi family",
     "multifamily",
     "multi-family",
@@ -163,6 +178,7 @@ BLOCKED_FLIP_TYPES = [
     "medical",
     "shopping center",
     "condo",
+    "condominium",
     "townhome",
     "townhouse",
     "duplex",
@@ -170,6 +186,8 @@ BLOCKED_FLIP_TYPES = [
     "fourplex",
     "quadplex",
     "apartment",
+    "mobile",
+    "manufactured",
 ]
 
 
@@ -177,6 +195,9 @@ def get_property_type(p: Dict[str, Any]) -> str:
     return str(
         p.get("property_type")
         or p.get("home_type")
+        or p.get("homeType")
+        or p.get("property_subtype")
+        or p.get("propertyType")
         or p.get("land_use")
         or p.get("use_code")
         or p.get("property_class")
@@ -187,14 +208,13 @@ def get_property_type(p: Dict[str, Any]) -> str:
 def has_basic_house_facts(p: Dict[str, Any]) -> bool:
     """Legacy safety net for older records created before property_type existed.
 
-    This prevents the frontend from returning zero items after the V1 validator was added.
     It does not block any Fort Worth streets/corridors; it only checks house-like facts.
     """
     try:
-        beds = float(p.get("beds") or 0)
-        baths = float(p.get("baths") or 0)
-        sqft = float(p.get("sqft") or 0)
-        year_built = int(p.get("year_built") or 0)
+        beds = float(p.get("beds") or p.get("bedrooms") or 0)
+        baths = float(p.get("baths") or p.get("bathrooms") or 0)
+        sqft = float(p.get("sqft") or p.get("living_area") or p.get("livingArea") or 0)
+        year_built = int(p.get("year_built") or p.get("yearBuilt") or 0)
     except Exception:
         return False
 
@@ -202,26 +222,16 @@ def has_basic_house_facts(p: Dict[str, Any]) -> bool:
 
 
 def infer_legacy_property_type(p: Dict[str, Any]) -> Optional[str]:
-    """Infer a safe residential type for old/demo records missing property_type.
-
-    Real imported records should eventually use county CAD fields like property_type,
-    land_use, use_code, or property_class. This only keeps old records from vanishing.
-    No Fort Worth streets or corridors are blocked here; the rule is property-type based.
-    """
     if get_property_type(p):
         return None
-
     if has_basic_house_facts(p):
         return "Single Family Residential"
-
     return None
 
 
 def is_allowed_flip_house(p: Dict[str, Any]) -> bool:
     t = get_property_type(p)
 
-    # Legacy fallback: old database records may not have property_type/home_type yet.
-    # If they look like a house by beds/baths/sqft/year_built, allow them.
     if not t:
         return infer_legacy_property_type(p) is not None
 
@@ -231,7 +241,36 @@ def is_allowed_flip_house(p: Dict[str, Any]) -> bool:
     return any(allowed in t for allowed in ALLOWED_FLIP_TYPES)
 
 
+def is_fort_worth_property(p: Dict[str, Any]) -> bool:
+    city = str(p.get("city") or p.get("situs_city") or p.get("property_city") or "").lower()
+    address = str(p.get("situs_address") or p.get("address") or p.get("full_address") or "").lower()
+    return city == "fort worth" or "fort worth" in address
+
+
+def safe_int(v: Any, default: Optional[int] = None) -> Optional[int]:
+    try:
+        if v is None or v == "":
+            return default
+        if isinstance(v, str):
+            v = re.sub(r"[^0-9.]", "", v)
+        return int(float(v))
+    except Exception:
+        return default
+
+
+def safe_float(v: Any, default: Optional[float] = None) -> Optional[float]:
+    try:
+        if v is None or v == "":
+            return default
+        if isinstance(v, str):
+            v = re.sub(r"[^0-9.]", "", v)
+        return float(v)
+    except Exception:
+        return default
+
+
 # ---------- Seed Data ----------
+# Demo seed data remains only as a fallback if DB is empty.
 FW_STREETS = [
     "Oak Grove Ln", "Sycamore St", "Magnolia Ave", "Hemphill St",
     "Hulen St", "McCart Ave", "Granbury Rd", "Trail Lake Dr",
@@ -355,7 +394,7 @@ def generate_seed_properties(n: int = 36) -> List[Dict[str, Any]]:
             "high_equity": high_equity,
             "cash_buyer": cash_buyer,
             "investor_owned": investor_owned,
-            "data_source": "Tarrant County Tax Roll (Master.dat / Rec.DAT - seeded sample)",
+            "data_source": "Demo Seed Data - NOT LIVE",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         prop.update(compute_scores(prop))
@@ -366,6 +405,7 @@ def generate_seed_properties(n: int = 36) -> List[Dict[str, Any]]:
 # ---------- Filter Definitions ----------
 INVESTOR_FILTERS = [
     {"key": "all", "label": "All"},
+    {"key": "live", "label": "Live Listings"},
     {"key": "reo", "label": "REO"},
     {"key": "foreclosure", "label": "Foreclosure"},
     {"key": "as_is", "label": "As-Is"},
@@ -389,7 +429,9 @@ def apply_filter(filter_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
     f = filter_key.lower()
     if f in ("all", ""):
         return query
-    if f == "reo":
+    if f == "live":
+        query["is_live_listing"] = True
+    elif f == "reo":
         query["listing_type"] = "REO"
     elif f == "foreclosure":
         query["listing_type"] = "Foreclosure"
@@ -434,10 +476,306 @@ class SaveRequest(BaseModel):
     property_id: str
 
 
+# ---------- RapidAPI Helpers ----------
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
+HOST_LOOKUP = "us-real-estate-data1.p.rapidapi.com"
+HOST_LISTINGS = "us-real-estate-listings.p.rapidapi.com"
+HOST_REALTIME = "real-time-real-estate-data.p.rapidapi.com"
+
+
+async def _rapid_get(host: str, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    if not RAPIDAPI_KEY:
+        raise HTTPException(503, "RAPIDAPI_KEY not configured in environment variables")
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": host,
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(f"https://{host}{path}", headers=headers, params=params)
+        if r.status_code >= 400:
+            raise HTTPException(r.status_code, f"RapidAPI error from {host}{path}: {r.text[:300]}")
+        return r.json()
+
+
+def _deep_find_items(obj: Any) -> List[Dict[str, Any]]:
+    """Find likely property listing dicts inside unknown RapidAPI response shapes."""
+    found: List[Dict[str, Any]] = []
+
+    def walk(x: Any):
+        if isinstance(x, dict):
+            keys = set(k.lower() for k in x.keys())
+            looks_like_listing = (
+                any(k in keys for k in ["zpid", "property_id", "listing_id", "id"])
+                and any(k in keys for k in ["price", "listprice", "list_price"])
+                and any(k in keys for k in ["address", "streetaddress", "street_address", "location"])
+            )
+            if looks_like_listing:
+                found.append(x)
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for item in x:
+                walk(item)
+
+    walk(obj)
+
+    # Deduplicate
+    out = []
+    seen = set()
+    for item in found:
+        ident = str(item.get("zpid") or item.get("property_id") or item.get("listing_id") or item.get("id") or item.get("address") or item)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        out.append(item)
+    return out
+
+
+def _extract_address(item: Dict[str, Any]) -> Dict[str, str]:
+    address_obj = item.get("address") if isinstance(item.get("address"), dict) else {}
+    location_obj = item.get("location") if isinstance(item.get("location"), dict) else {}
+
+    street = (
+        item.get("streetAddress") or item.get("street_address") or item.get("street")
+        or address_obj.get("streetAddress") or address_obj.get("street_address") or address_obj.get("street")
+        or location_obj.get("streetAddress") or location_obj.get("street")
+        or ""
+    )
+    city = (
+        item.get("city") or address_obj.get("city") or location_obj.get("city") or "Fort Worth"
+    )
+    state = (
+        item.get("state") or address_obj.get("state") or location_obj.get("state") or "TX"
+    )
+    zipc = (
+        item.get("zipcode") or item.get("zip") or item.get("postal_code")
+        or address_obj.get("zipcode") or address_obj.get("zip") or address_obj.get("postal_code")
+        or ""
+    )
+
+    full = (
+        item.get("full_address") or item.get("formattedAddress") or item.get("address_line")
+        or (f"{street}, {city}, {state} {zipc}".strip(", ") if street else "")
+    )
+
+    return {
+        "street": str(street).strip(),
+        "city": str(city).strip(),
+        "state": str(state).strip() or "TX",
+        "zip": str(zipc).strip(),
+        "full": str(full).strip(),
+    }
+
+
+def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[Dict[str, Any]]:
+    addr = _extract_address(item)
+
+    if not addr["street"] and not addr["full"]:
+        return None
+
+    raw_type = (
+        item.get("homeType") or item.get("home_type") or item.get("propertyType") or
+        item.get("property_type") or item.get("propertySubType") or item.get("type") or
+        "Single Family Residential"
+    )
+
+    candidate = {
+        "property_type": raw_type,
+        "home_type": raw_type,
+        "city": addr["city"] or "Fort Worth",
+        "situs_address": addr["full"] or f"{addr['street']}, {addr['city']}, {addr['state']} {addr['zip']}",
+    }
+
+    if not is_fort_worth_property(candidate):
+        return None
+
+    if not is_allowed_flip_house(candidate):
+        return None
+
+    price = safe_int(
+        item.get("price") or item.get("listPrice") or item.get("list_price") or item.get("unformattedPrice"),
+        0,
+    )
+    zestimate = safe_int(item.get("zestimate") or item.get("estimate") or item.get("estimated_value"), None)
+    market_value = zestimate or price or 0
+    assessed_value = safe_int(item.get("taxAssessedValue") or item.get("tax_assessed_value"), market_value)
+    annual_taxes = safe_int(item.get("annualTaxAmount") or item.get("annual_taxes") or item.get("taxAnnualAmount"), 0)
+
+    beds = safe_float(item.get("beds") or item.get("bedrooms"), None)
+    baths = safe_float(item.get("baths") or item.get("bathrooms") or item.get("bathroomsFloat"), None)
+    sqft = safe_int(item.get("livingArea") or item.get("living_area") or item.get("area") or item.get("area_sqft"), None)
+    year_built = safe_int(item.get("yearBuilt") or item.get("year_built"), None)
+
+    photos = []
+    for k in ["imgSrc", "image", "image_url", "hiResImageLink"]:
+        if item.get(k):
+            photos.append(item[k])
+    for arr_key in ["photos", "originalPhotos", "responsivePhotos"]:
+        arr = item.get(arr_key)
+        if isinstance(arr, list):
+            for p in arr[:5]:
+                if isinstance(p, str):
+                    photos.append(p)
+                elif isinstance(p, dict):
+                    if p.get("url"):
+                        photos.append(p["url"])
+                    mixed = p.get("mixedSources") if isinstance(p.get("mixedSources"), dict) else {}
+                    jpeg = mixed.get("jpeg") if isinstance(mixed.get("jpeg"), list) else []
+                    if jpeg and isinstance(jpeg[-1], dict) and jpeg[-1].get("url"):
+                        photos.append(jpeg[-1]["url"])
+
+    listing_status = str(item.get("homeStatus") or item.get("status") or item.get("listingStatus") or "For Sale")
+    listing_type = "For Sale"
+    if "foreclosure" in listing_status.lower():
+        listing_type = "Foreclosure"
+    elif "reo" in listing_status.lower():
+        listing_type = "REO"
+
+    equity_estimate = max(0, int(market_value or 0) - int(price or 0)) if market_value and price else 0
+    est_roi_pct = round((equity_estimate / max(price or 1, 1)) * 100, 1) if price else 0
+
+    zpid = item.get("zpid") or item.get("property_id") or item.get("listing_id") or item.get("id")
+    stable_key = f"{source_name}:{zpid or candidate['situs_address']}"
+
+    prop = {
+        "id": str(uuid.uuid5(uuid.NAMESPACE_URL, stable_key)),
+        "external_id": str(zpid or ""),
+        "situs_address": candidate["situs_address"],
+        "city": addr["city"] or "Fort Worth",
+        "state": addr["state"] or "TX",
+        "zip": addr["zip"],
+        "county": "Tarrant",
+        "property_type": raw_type,
+        "home_type": raw_type,
+        "beds": beds,
+        "baths": baths,
+        "sqft": sqft,
+        "year_built": year_built,
+        "lot_size_sqft": safe_int(item.get("lotSize") or item.get("lot_size") or item.get("lotAreaValue"), None),
+        "image_url": photos[0] if photos else None,
+        "photos": photos,
+        "price": price,
+        "market_value": market_value,
+        "assessed_value": assessed_value,
+        "annual_taxes": annual_taxes,
+        "equity_estimate": equity_estimate,
+        "est_roi_pct": est_roi_pct,
+        "legal_description": "",
+        "listing_type": listing_type,
+        "listing_status": listing_status,
+        "owner_name": item.get("owner_name") or "",
+        "owner_type": classify_owner(item.get("owner_name") or ""),
+        "owner_mailing_address": "",
+        "out_of_state_owner": False,
+        "tax_delinquent": False,
+        "vacant": False,
+        "high_equity": equity_estimate > 0 and market_value and equity_estimate / max(market_value, 1) >= 0.20,
+        "cash_buyer": False,
+        "investor_owned": False,
+        "latitude": item.get("latitude") or item.get("lat"),
+        "longitude": item.get("longitude") or item.get("lng") or item.get("lon"),
+        "zpid": item.get("zpid"),
+        "mls_id": item.get("mlsId") or item.get("mls_id"),
+        "listing_agent_name": item.get("listing_agent_name") or item.get("agentName"),
+        "listing_agent_phone": item.get("listing_agent_phone") or item.get("agentPhone"),
+        "broker_name": item.get("broker_name") or item.get("brokerName"),
+        "detail_url": item.get("detailUrl") or item.get("url"),
+        "is_live_listing": True,
+        "data_source": source_name,
+        "raw_source_excerpt": item,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    prop.update(compute_scores(prop))
+    return prop
+
+
+async def fetch_live_fort_worth_residential_listings(limit: int = 50) -> List[Dict[str, Any]]:
+    """Try multiple RapidAPI listing endpoints and normalize live Fort Worth residential listings.
+
+    The endpoint names vary between RapidAPI providers/plans, so this function tries
+    several common patterns and uses the first successful responses.
+    """
+    attempts = [
+        {
+            "host": HOST_REALTIME,
+            "path": "/search",
+            "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "Newest", "limit": limit},
+            "source": "RapidAPI real-time-real-estate-data /search",
+        },
+        {
+            "host": HOST_REALTIME,
+            "path": "/search-by-location",
+            "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "Newest", "limit": limit},
+            "source": "RapidAPI real-time-real-estate-data /search-by-location",
+        },
+        {
+            "host": HOST_REALTIME,
+            "path": "/propertyExtendedSearch",
+            "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "Newest", "limit": limit},
+            "source": "RapidAPI real-time-real-estate-data /propertyExtendedSearch",
+        },
+        {
+            "host": HOST_REALTIME,
+            "path": "/properties/list",
+            "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "limit": limit},
+            "source": "RapidAPI real-time-real-estate-data /properties/list",
+        },
+        {
+            "host": HOST_LISTINGS,
+            "path": "/for-sale",
+            "params": {"location": "Fort Worth, TX", "property_type": "single_family", "limit": limit},
+            "source": "RapidAPI us-real-estate-listings /for-sale",
+        },
+    ]
+
+    normalized: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    for attempt in attempts:
+        try:
+            raw = await _rapid_get(attempt["host"], attempt["path"], attempt["params"])
+            items = _deep_find_items(raw)
+            for item in items:
+                prop = normalize_live_listing(item, attempt["source"])
+                if prop:
+                    normalized.append(prop)
+            if normalized:
+                break
+        except Exception as e:
+            errors.append(f"{attempt['source']}: {str(e)[:200]}")
+            logger.info("Live listing attempt failed: %s", errors[-1])
+
+    # Deduplicate by address / id
+    out = []
+    seen = set()
+    for p in normalized:
+        key = (p.get("external_id") or p.get("situs_address") or "").lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+
+    if not out and errors:
+        logger.warning("No live listings fetched. Attempts: %s", errors)
+
+    return out[:limit]
+
+
 # ---------- Routes ----------
 @api_router.get("/")
 async def root():
-    return {"name": "TarrantREI API", "status": "ok"}
+    return {
+        "name": "TarrantREI / InvestorFlip API",
+        "status": "ok",
+        "mode": "live residential listings enabled",
+        "live_endpoints": [
+            "POST /api/live/sync-fort-worth",
+            "GET /api/live/fort-worth-listings",
+            "GET /api/live/status",
+        ],
+    }
 
 
 @api_router.get("/filters")
@@ -460,13 +798,69 @@ async def get_filters():
     return {
         "filters": out,
         "raw_total_before_flip_filter": raw_total,
-        "rule": "InvestorFlip V1 only shows single-family houses and residential multi-family houses.",
+        "rule": "InvestorFlip V1 only shows live/verified single-family houses and residential multi-family houses.",
+    }
+
+
+@api_router.post("/live/sync-fort-worth")
+async def sync_live_fort_worth(limit: int = Query(50, ge=1, le=100)):
+    listings = await fetch_live_fort_worth_residential_listings(limit=limit)
+
+    upserted = 0
+    for p in listings:
+        await db.properties.update_one(
+            {"id": p["id"]},
+            {"$set": p},
+            upsert=True,
+        )
+        upserted += 1
+
+    await db.live_sync_log.insert_one({
+        "source": "live Fort Worth residential listings",
+        "count": upserted,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {
+        "ok": True,
+        "upserted": upserted,
+        "items": listings,
+        "rule": "Synced live Fort Worth for-sale houses only.",
+        "note": "If upserted is 0, verify RAPIDAPI_KEY and that your RapidAPI plan supports one of the listing endpoints.",
+    }
+
+
+@api_router.get("/live/fort-worth-listings")
+async def live_fort_worth_listings(limit: int = Query(50, ge=1, le=100)):
+    docs = await db.properties.find(
+        {"is_live_listing": True},
+        {"_id": 0},
+    ).sort("updated_at", -1).limit(limit * 3).to_list(length=limit * 3)
+
+    items = [p for p in docs if is_fort_worth_property(p) and is_allowed_flip_house(p)][:limit]
+
+    return {
+        "count": len(items),
+        "items": items,
+        "rule": "Live Fort Worth residential for-sale listings only.",
+    }
+
+
+@api_router.get("/live/status")
+async def live_status():
+    total_live = await db.properties.count_documents({"is_live_listing": True})
+    latest = await db.live_sync_log.find({}, {"_id": 0}).sort("created_at", -1).limit(5).to_list(length=5)
+    return {
+        "rapidapi_configured": bool(RAPIDAPI_KEY),
+        "live_listing_count": total_live,
+        "recent_syncs": latest,
+        "sync_endpoint": "POST /api/live/sync-fort-worth",
     }
 
 
 @api_router.get("/properties")
 async def list_properties(
-    filter: str = Query("all"),
+    filter: str = Query("live"),
     search: Optional[str] = Query(None),
     limit: int = Query(60, ge=1, le=200),
 ):
@@ -482,14 +876,14 @@ async def list_properties(
             {"owner_name": regex},
         ]
 
-    cursor = db.properties.find(q, {"_id": 0}).limit(limit * 5)
+    cursor = db.properties.find(q, {"_id": 0}).sort("updated_at", -1).limit(limit * 5)
     raw_items = await cursor.to_list(length=limit * 5)
     items = [p for p in raw_items if is_allowed_flip_house(p)][:limit]
 
     return {
         "count": len(items),
         "items": items,
-        "rule": "InvestorFlip V1 only shows single-family houses and residential multi-family houses.",
+        "rule": "InvestorFlip V1 prioritizes live single-family and residential multi-family listings.",
     }
 
 
@@ -524,11 +918,11 @@ async def get_nearby(property_id: str):
     zipc = base["zip"]
     near_foreclosures_raw = await db.properties.find(
         {"zip": zipc, "listing_type": {"$in": ["REO", "Foreclosure"]}, "id": {"$ne": property_id}},
-        {"_id": 0, "id": 1, "situs_address": 1, "price": 1, "listing_type": 1, "image_url": 1, "property_type": 1, "home_type": 1},
+        {"_id": 0},
     ).limit(20).to_list(length=20)
     near_investor_raw = await db.properties.find(
         {"zip": zipc, "investor_owned": True, "id": {"$ne": property_id}},
-        {"_id": 0, "id": 1, "situs_address": 1, "price": 1, "owner_type": 1, "image_url": 1, "property_type": 1, "home_type": 1},
+        {"_id": 0},
     ).limit(20).to_list(length=20)
 
     near_foreclosures = [p for p in near_foreclosures_raw if is_allowed_flip_house(p)][:4]
@@ -555,7 +949,7 @@ async def ai_analysis(property_id: str):
             raise RuntimeError("EMERGENT_LLM_KEY missing")
 
         system = (
-            "You are a senior real estate investor analyst. InvestorFlip V1 only analyzes "
+            "You are Quill, a senior real estate investor analyst. InvestorFlip V1 only analyzes "
             "single-family houses and residential multi-family houses for house flipping. "
             "Given a valid property record, produce a concise investment analysis in 4 short bullet points. "
             "Be specific, reference numbers (equity, taxes, ROI). End with a one-line verdict: "
@@ -568,22 +962,21 @@ async def ai_analysis(property_id: str):
         ).with_model("anthropic", "claude-sonnet-4-6")
 
         payload = (
-            f"Address: {doc['situs_address']}\n"
+            f"Address: {doc.get('situs_address')}\n"
             f"Property Type: {get_property_type(doc)}\n"
-            f"Listing Type: {doc['listing_type']}\n"
-            f"Owner: {doc['owner_name']} ({doc['owner_type']})\n"
-            f"Out-of-State Owner: {doc['out_of_state_owner']}\n"
-            f"Asking Price: ${doc['price']:,}\n"
-            f"Market Value: ${doc['market_value']:,}\n"
-            f"Assessed Value: ${doc['assessed_value']:,}\n"
-            f"Annual Taxes: ${doc['annual_taxes']:,}\n"
-            f"Equity Estimate: ${doc['equity_estimate']:,}\n"
-            f"Est ROI: {doc['est_roi_pct']}%\n"
-            f"Beds/Baths/SqFt: {doc['beds']}/{doc['baths']}/{doc['sqft']}\n"
-            f"Year Built: {doc['year_built']}\n"
-            f"Tax Delinquent: {doc['tax_delinquent']} | Vacant: {doc['vacant']}\n"
-            f"Scores → Investment {doc['investment_score']}, Flip {doc['flip_score']}, "
-            f"Rental {doc['rental_score']}, Wholesale {doc['wholesale_score']}, Risk {doc['risk_score']}"
+            f"Data Source: {doc.get('data_source')}\n"
+            f"Listing Type: {doc.get('listing_type')}\n"
+            f"Owner: {doc.get('owner_name')} ({doc.get('owner_type')})\n"
+            f"Asking Price: ${int(doc.get('price') or 0):,}\n"
+            f"Market Value: ${int(doc.get('market_value') or 0):,}\n"
+            f"Assessed Value: ${int(doc.get('assessed_value') or 0):,}\n"
+            f"Annual Taxes: ${int(doc.get('annual_taxes') or 0):,}\n"
+            f"Equity Estimate: ${int(doc.get('equity_estimate') or 0):,}\n"
+            f"Est ROI: {doc.get('est_roi_pct')}%\n"
+            f"Beds/Baths/SqFt: {doc.get('beds')}/{doc.get('baths')}/{doc.get('sqft')}\n"
+            f"Year Built: {doc.get('year_built')}\n"
+            f"Scores → Investment {doc.get('investment_score')}, Flip {doc.get('flip_score')}, "
+            f"Rental {doc.get('rental_score')}, Wholesale {doc.get('wholesale_score')}, Risk {doc.get('risk_score')}"
         )
         msg = UserMessage(text=payload)
         narrative = await chat.send_message(msg)
@@ -600,20 +993,17 @@ async def ai_analysis(property_id: str):
         return AIAnalysisResponse(property_id=property_id, narrative=narrative)
     except Exception as e:
         logger.exception("AI analysis failed: %s", e)
-        verdict = "STRONG BUY" if doc["investment_score"] >= 75 else (
-            "BUY" if doc["investment_score"] >= 60 else (
-                "WATCH" if doc["investment_score"] >= 45 else "PASS"
+        verdict = "STRONG BUY" if doc.get("investment_score", 0) >= 75 else (
+            "BUY" if doc.get("investment_score", 0) >= 60 else (
+                "WATCH" if doc.get("investment_score", 0) >= 45 else "PASS"
             )
         )
         narrative = (
-            f"• {doc['listing_type']} {doc.get('property_type', 'house')} in {doc['city']} with ${doc['equity_estimate']:,} "
-            f"of estimated equity ({doc['est_roi_pct']}% ROI).\n"
-            f"• Owned by {doc['owner_name']} ({doc['owner_type']})"
-            f"{' — out-of-state, may motivate quick sale.' if doc['out_of_state_owner'] else '.'}\n"
-            f"• Annual taxes ${doc['annual_taxes']:,} against ${doc['assessed_value']:,} assessed value "
-            f"({round(doc['annual_taxes']/max(doc['assessed_value'],1)*100,2)}% effective rate).\n"
-            f"• Risk score {doc['risk_score']}/99 — "
-            f"{'distressed asset, expect repairs.' if doc['listing_type'] in ('REO','Foreclosure') else 'standard underwriting.'}\n"
+            f"• {doc.get('listing_type', 'For Sale')} {doc.get('property_type', 'house')} in {doc.get('city')} with "
+            f"${int(doc.get('equity_estimate') or 0):,} of estimated equity ({doc.get('est_roi_pct')}% ROI).\n"
+            f"• Data source: {doc.get('data_source')}.\n"
+            f"• Asking price ${int(doc.get('price') or 0):,}; estimated market value ${int(doc.get('market_value') or 0):,}.\n"
+            f"• Risk score {doc.get('risk_score')}/99 — verify comps, repairs, title, and taxes before offer.\n"
             f"Verdict: {verdict}"
         )
         return AIAnalysisResponse(property_id=property_id, narrative=narrative)
@@ -663,7 +1053,7 @@ async def classify(name: str):
     return {"name": name, "type": classify_owner(name)}
 
 
-# ---------- Feed Sync, Upload, Export ----------
+# ---------- Existing Feed Sync, Upload, Export ----------
 @api_router.post("/feeds/sync")
 async def feeds_sync(only: Optional[str] = None, limit: int = 50):
     result = await feeds_mod.run_feed_sync(
@@ -756,7 +1146,7 @@ async def propstream_merge(
 
 @api_router.get("/export.csv")
 async def export_csv(
-    filter: str = Query("all"),
+    filter: str = Query("live"),
     search: Optional[str] = Query(None),
     limit: int = Query(10000, ge=1, le=50000),
 ):
@@ -768,7 +1158,7 @@ async def export_csv(
     docs_raw = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
     docs = [p for p in docs_raw if is_allowed_flip_house(p)]
     csv_text = feeds_mod.docs_to_csv(docs)
-    fname = f"tarrant_rei_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    fname = f"investorflip_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
     return Response(
         content=csv_text,
         media_type="text/csv",
@@ -778,7 +1168,7 @@ async def export_csv(
 
 @api_router.get("/export.xlsx")
 async def export_xlsx(
-    filter: str = Query("all"),
+    filter: str = Query("live"),
     search: Optional[str] = Query(None),
     limit: int = Query(10000, ge=1, le=50000),
 ):
@@ -790,7 +1180,7 @@ async def export_xlsx(
     docs_raw = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
     docs = [p for p in docs_raw if is_allowed_flip_house(p)]
     blob = feeds_mod.docs_to_xlsx_bytes(docs)
-    fname = f"tarrant_rei_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.xlsx"
+    fname = f"investorflip_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.xlsx"
     return Response(
         content=blob,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -798,41 +1188,13 @@ async def export_xlsx(
     )
 
 
-# ---------- RapidAPI Enrichment ----------
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
-HOST_LOOKUP = "us-real-estate-data1.p.rapidapi.com"
-HOST_LISTINGS = "us-real-estate-listings.p.rapidapi.com"
-
-
-async def _rapid_get(host: str, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    if not RAPIDAPI_KEY:
-        raise HTTPException(503, "RAPIDAPI_KEY not configured")
-    headers = {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": host,
-        "Content-Type": "application/json",
-    }
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.get(f"https://{host}{path}", headers=headers, params=params)
-        if r.status_code >= 400:
-            raise HTTPException(r.status_code, f"RapidAPI error: {r.text[:200]}")
-        return r.json()
-
-
+# ---------- Property Enrichment / Tax ----------
 def _build_address_query(prop: Dict[str, Any]) -> str:
     situs = (prop.get("situs_address") or "").strip()
     base = re.sub(r",?\s*Tarrant County,?\s*(TX)?\.?\s*$", "", situs, flags=re.I).strip().rstrip(",")
     if re.search(r"\bTX\s*\d{5}\b", base, flags=re.I):
         return base
-    mailing_city = (prop.get("city") or "").title().strip()
-    mailing_state = (prop.get("state") or "TX").upper()
-    TARRANT_CITIES = {
-        "Fort Worth", "Arlington", "Mansfield", "Bedford", "Euless", "Hurst",
-        "North Richland Hills", "Grapevine", "Keller", "Southlake", "Colleyville",
-        "Watauga", "Haltom City", "White Settlement", "Saginaw", "Forest Hill",
-        "Crowley", "Burleson", "Kennedale", "Benbrook", "Richland Hills",
-    }
-    city = mailing_city if mailing_state == "TX" and mailing_city in TARRANT_CITIES else "Fort Worth"
+    city = (prop.get("city") or "Fort Worth").title().strip()
     return f"{base}, {city}, TX"
 
 
@@ -863,12 +1225,10 @@ async def enrich_property(property_id: str):
                 "baths": data.get("baths"),
                 "sqft": data.get("area_sqft"),
                 "year_built": data.get("year_built"),
-                "lot_size": f"{data.get('lot_area_value')} {data.get('lot_area_unit')}" if data.get("lot_area_value") else None,
                 "home_type": data.get("home_type"),
                 "home_status": data.get("status"),
                 "list_price": data.get("price"),
                 "zestimate": data.get("zestimate"),
-                "rent_zestimate": data.get("rent_zestimate"),
                 "tax_assessed_value": data.get("tax_assessed_value"),
                 "latitude": data.get("latitude"),
                 "longitude": data.get("longitude"),
@@ -876,13 +1236,6 @@ async def enrich_property(property_id: str):
                 "rapidapi_city": data.get("city"),
                 "rapidapi_state": data.get("state"),
                 "rapidapi_zip": data.get("zipcode"),
-                "is_foreclosure": data.get("is_foreclosure"),
-                "mls_id": data.get("mls_id"),
-                "listing_agent_name": data.get("listing_agent_name"),
-                "listing_agent_phone": data.get("listing_agent_phone"),
-                "broker_name": data.get("broker_name"),
-                "photos": [],
-                "hi_res_image": None,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
             await _persist_enrichment(property_id, enriched)
@@ -890,92 +1243,31 @@ async def enrich_property(property_id: str):
     except HTTPException as e:
         logger.info("Primary enrichment failed: %s", e.detail)
 
-    try:
-        raw = await _rapid_get(
-            "real-time-real-estate-data.p.rapidapi.com",
-            "/property-details-address",
-            {"address": address},
-        )
-        data = raw.get("data") or {}
-        if not data:
-            return {"property_id": property_id, "address_queried": address, "found": False}
-
-        reso = data.get("resoFacts") or {}
-        photos = data.get("originalPhotos") or data.get("responsivePhotos") or []
-        photo_urls: List[str] = []
-        for p in photos[:6]:
-            if isinstance(p, dict):
-                mixed = p.get("mixedSources") or {}
-                jpg = mixed.get("jpeg") or []
-                if jpg:
-                    photo_urls.append(jpg[-1].get("url") if isinstance(jpg[-1], dict) else None)
-                elif p.get("url"):
-                    photo_urls.append(p["url"])
-        photo_urls = [u for u in photo_urls if u]
-
-        def _safe_int_local(v: Any) -> Optional[int]:
-            try:
-                return int(re.sub(r"[^0-9]", "", str(v))) if v else None
-            except Exception:
-                return None
-
-        def _aag(label: str) -> Optional[str]:
-            for f in reso.get("atAGlanceFacts") or []:
-                if isinstance(f, dict) and f.get("factLabel") == label:
-                    return f.get("factValue")
-            return None
-
-        enriched = {
-            "property_id": property_id,
-            "address_queried": address,
-            "source_api": "real-time-real-estate-data",
-            "found": True,
-            "zpid": data.get("zpid"),
-            "beds": reso.get("bedrooms") or data.get("bedrooms"),
-            "baths": reso.get("bathroomsFloat") or reso.get("bathrooms") or data.get("bathrooms"),
-            "sqft": data.get("livingAreaValue") or data.get("livingArea"),
-            "year_built": reso.get("yearBuilt") or _safe_int_local(_aag("Year Built")),
-            "lot_size": _aag("Lot"),
-            "home_type": data.get("homeType") or _aag("Type"),
-            "home_status": data.get("homeStatus"),
-            "list_price": data.get("price"),
-            "rapidapi_address": data.get("streetAddress"),
-            "rapidapi_city": data.get("city"),
-            "rapidapi_state": data.get("state"),
-            "rapidapi_zip": data.get("zipcode"),
-            "appliances": reso.get("appliances") or [],
-            "cooling": reso.get("cooling") or [],
-            "heating": reso.get("heating") or [],
-            "parcel_id": data.get("parcelId"),
-            "photos": photo_urls,
-            "hi_res_image": data.get("hiResImageLink"),
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-        }
-        await _persist_enrichment(property_id, enriched, photo_urls=photo_urls)
-        return enriched
-    except HTTPException as e:
-        return {"property_id": property_id, "address_queried": address, "error": str(e.detail), "found": False}
+    return {"property_id": property_id, "address_queried": address, "found": False}
 
 
 async def _persist_enrichment(property_id: str, enriched: Dict[str, Any], photo_urls: Optional[List[str]] = None) -> None:
     update: Dict[str, Any] = {}
     if enriched.get("beds"):
-        update["beds"] = int(enriched["beds"])
+        update["beds"] = safe_float(enriched["beds"])
     if enriched.get("baths"):
-        update["baths"] = float(enriched["baths"])
+        update["baths"] = safe_float(enriched["baths"])
     if enriched.get("sqft"):
-        update["sqft"] = int(enriched["sqft"])
+        update["sqft"] = safe_int(enriched["sqft"])
     if enriched.get("year_built"):
-        update["year_built"] = int(enriched["year_built"])
+        update["year_built"] = safe_int(enriched["year_built"])
     if enriched.get("latitude") and enriched.get("longitude"):
         update["latitude"] = enriched["latitude"]
         update["longitude"] = enriched["longitude"]
     if enriched.get("home_type"):
         update["home_type"] = enriched["home_type"]
         update["property_type"] = enriched["home_type"]
+    if enriched.get("zestimate"):
+        update["market_value"] = safe_int(enriched["zestimate"])
     if photo_urls:
         update["image_url"] = photo_urls[0]
     if update:
+        update["updated_at"] = datetime.now(timezone.utc).isoformat()
         await db.properties.update_one({"id": property_id}, {"$set": update})
     await db.enrichment.update_one({"property_id": property_id}, {"$set": enriched}, upsert=True)
 
@@ -1008,14 +1300,15 @@ async def tax_history(property_id: str):
     return {"property_id": property_id, "tax_history": history, "available": bool(history)}
 
 
+# ---------- Scout + Quill ----------
 @api_router.post("/scout/analyze-deal")
 async def analyze_deal():
     return {"message": "Scout analyze deal endpoint is working"}
 
 
 @api_router.post("/scout/find-opportunities")
-async def find_opportunities(limit: int = 10):
-    raw_docs = await db.properties.find({}, {"_id": 0}).to_list(length=500)
+async def find_opportunities(limit: int = Query(10, ge=1, le=100)):
+    raw_docs = await db.properties.find({"is_live_listing": True}, {"_id": 0}).to_list(length=500)
     docs = [p for p in raw_docs if is_allowed_flip_house(p)]
 
     opportunities = []
@@ -1036,14 +1329,10 @@ async def find_opportunities(limit: int = 10):
         score = min(score, 100)
 
         reason = []
+        if p.get("is_live_listing"):
+            reason.append("Live for-sale listing")
         if p.get("high_equity"):
-            reason.append("High equity")
-        if p.get("tax_delinquent"):
-            reason.append("Tax delinquent")
-        if p.get("vacant"):
-            reason.append("Vacant")
-        if p.get("out_of_state_owner"):
-            reason.append("Out-of-state owner")
+            reason.append("Potential equity spread")
         if p.get("listing_type") in ["REO", "Foreclosure", "Cash House"]:
             reason.append(f"{p.get('listing_type')} property")
 
@@ -1066,17 +1355,12 @@ async def find_opportunities(limit: int = 10):
     return {
         "count": len(opportunities),
         "best_today": opportunities,
-        "rule": "InvestorFlip V1 only shows single-family houses and residential multi-family houses.",
+        "rule": "Live Fort Worth residential listings only.",
     }
 
 
 @api_router.post("/admin/backfill-flip-property-types")
 async def backfill_flip_property_types():
-    """Add property_type to older records that look like houses.
-
-    Run this once after deploying if /api/properties returns 0 because old records
-    were created before property_type/home_type existed.
-    """
     docs = await db.properties.find({}, {"_id": 0}).to_list(length=10000)
     updated = 0
     skipped = 0
@@ -1114,7 +1398,6 @@ async def backfill_flip_property_types():
         "updated": updated,
         "skipped": skipped,
         "examples": examples,
-        "rule": "Backfilled only legacy records that look like single-family houses.",
     }
 
 
@@ -1122,18 +1405,26 @@ async def backfill_flip_property_types():
 async def data_quality():
     docs = await db.properties.find({}, {"_id": 0}).to_list(length=10000)
     allowed = [p for p in docs if is_allowed_flip_house(p)]
+    live = [p for p in allowed if p.get("is_live_listing")]
     missing_type = [p for p in docs if not get_property_type(p)]
 
     return {
         "raw_total": len(docs),
         "allowed_flip_houses": len(allowed),
+        "live_allowed_flip_houses": len(live),
         "missing_property_type": len(missing_type),
-        "sample_allowed": [
-            {"address": p.get("situs_address"), "property_type": get_property_type(p) or infer_legacy_property_type(p)}
-            for p in allowed[:10]
+        "sample_live_allowed": [
+            {"address": p.get("situs_address"), "property_type": get_property_type(p), "price": p.get("price")}
+            for p in live[:10]
         ],
-        "rule": "InvestorFlip V1 only shows single-family houses and residential multi-family houses.",
+        "rule": "InvestorFlip V1 prioritizes live single-family houses and residential multi-family houses.",
     }
+
+
+@api_router.delete("/admin/cleanup-demo-properties")
+async def cleanup_demo_properties():
+    result = await db.properties.delete_many({"data_source": {"$regex": "Demo Seed Data", "$options": "i"}})
+    return {"ok": True, "deleted_demo_records": result.deleted_count}
 
 
 @api_router.delete("/admin/cleanup-non-flip-properties")
@@ -1165,7 +1456,6 @@ async def cleanup_non_flip_properties():
     }
 
 
-# ---------- Scout + Quill ----------
 @api_router.post("/scout/quill-analysis", response_model=QuillAnalyzeResponse)
 async def scout_quill_analysis(body: QuillAnalyzeRequest):
     return analyze_property_with_quill(body)
@@ -1191,39 +1481,16 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     count = await db.properties.count_documents({})
-    if count == 0:
+    seed_demo = os.environ.get("SEED_DEMO_DATA", "false").lower() == "true"
+
+    # Do NOT seed demo data by default anymore. This prevents fake commercial-looking addresses
+    # from appearing as houses.
+    if count == 0 and seed_demo:
         seeds = generate_seed_properties(36)
         await db.properties.insert_many(seeds)
         logger.info("Seeded %d demo Tarrant County flip-house properties", len(seeds))
     else:
-        # Auto-backfill old records that existed before property_type/home_type was added.
-        # This prevents /api/properties from returning 0 immediately after deploying V1 validation.
-        docs = await db.properties.find({}, {"_id": 0}).to_list(length=10000)
-        backfilled = 0
-        for p in docs:
-            if get_property_type(p):
-                continue
-            inferred = infer_legacy_property_type(p)
-            if not inferred:
-                continue
-            await db.properties.update_one(
-                {"id": p.get("id")},
-                {"$set": {
-                    "property_type": inferred,
-                    "home_type": inferred,
-                    "property_type_source": "startup legacy backfill",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }}
-            )
-            backfilled += 1
-
-        real_count = await db.properties.count_documents({"data_source": {"$regex": "Master.dat"}})
-        if real_count > 0:
-            logger.info("Real Tarrant County tax roll loaded: %d properties", real_count)
-        else:
-            logger.info("Properties collection already has %d docs", count)
-        if backfilled:
-            logger.info("Backfilled %d legacy records with Single Family Residential property_type", backfilled)
+        logger.info("Properties collection has %d docs. Demo seeding disabled by default.", count)
 
 
 @app.on_event("shutdown")
