@@ -6,6 +6,8 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from ai.models import QuillAnalyzeRequest, QuillAnalyzeResponse
 from ai.quill import analyze_property_with_quill
+from ai.quill import analyze_property_with_quill
+from ai.scout import scout_analyze_property
 import os
 import re
 import math
