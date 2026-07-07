@@ -1,71 +1,66 @@
-# backend/app/ai/scout.py
-
-from app.models.quill import QuillAnalyzeRequest, QuillAnalyzeResponse
+from .models import QuillAnalyzeRequest, QuillAnalyzeResponse
+from .calculations import calculate_max_offer, decide_buy_pass_negotiate
+from .offer_letters import generate_offer_letter
 
 
 def analyze_property_with_quill(body: QuillAnalyzeRequest) -> QuillAnalyzeResponse:
-    listing_price = body.listing_price or 0
     arv = body.arv_estimate or 0
     repairs = body.repair_estimate or 0
+    price = body.listing_price or 0
+    rent = body.rent_estimate or 0
 
-    max_offer = round((arv * 0.70) - repairs, 2) if arv else None
+    max_offer = calculate_max_offer(arv, repairs)
+    decision = decide_buy_pass_negotiate(price, max_offer)
 
     risk_flags = []
 
-    if not arv:
-        risk_flags.append("Missing ARV estimate")
+    if arv <= 0:
+        risk_flags.append("Missing ARV estimate.")
 
-    if not repairs:
-        risk_flags.append("Repair estimate needs verification")
+    if repairs <= 0:
+        risk_flags.append("Repair estimate should be verified.")
 
-    if body.mortgage_estimate and listing_price:
-        if body.mortgage_estimate >= listing_price * 0.9:
-            risk_flags.append("Seller may have limited equity")
+    if not body.mortgage_estimate:
+        risk_flags.append("Mortgage balance is unknown.")
 
-    if body.tax_info:
-        if body.tax_info.get("delinquent"):
-            risk_flags.append("Tax delinquency detected")
+    if not body.permits:
+        risk_flags.append("Permit history needs review.")
 
-    if body.permits:
-        risk_flags.append("Permit history should be reviewed")
+    if not body.comps:
+        risk_flags.append("Comparable sales need verification.")
 
-    if max_offer and listing_price:
-        if listing_price <= max_offer:
-            recommendation = "BUY"
-        elif listing_price <= max_offer * 1.15:
-            recommendation = "NEGOTIATE"
-        else:
-            recommendation = "PASS"
-    else:
-        recommendation = "NEGOTIATE"
+    if not rent:
+        risk_flags.append("Rental estimate unavailable.")
 
-    offer_letter = f"""
-Hi,
+    if repairs > 50000:
+        risk_flags.append("High repair estimate may reduce flip margin.")
 
-I’m interested in the property at {body.address}. Based on the current condition, repair estimate, and comparable values, I would be able to make a cash/as-is offer around ${max_offer:,.0f}.
-
-This would be a simple as-is purchase with no repair requests.
-
-Please let me know if the seller would consider an offer in that range.
-
-Thank you.
-""".strip() if max_offer else "Offer amount needs ARV and repair estimate before generating."
+    if body.tax_info and "delinquent" in body.tax_info.lower():
+        risk_flags.append("Possible tax delinquency.")
 
     questions = [
-        "Are there any known foundation, roof, plumbing, or electrical issues?",
-        "Are there any existing offers on the property?",
-        "How did the seller arrive at the asking price?",
-        "Are there any liens, unpaid taxes, or title issues?",
-        "Would the seller consider an as-is cash offer?",
-        "Are there inspection reports, seller disclosures, or repair estimates available?",
+        "Are there any known foundation, roof, plumbing, HVAC, or electrical issues?",
+        "Are there any liens, code violations, unpaid taxes, or title issues?",
+        "Has the seller received any other cash or as-is offers?",
+        "Is the property currently vacant or occupied?",
+        "Are permits available for previous renovations?",
+        "What is the seller's ideal closing timeline?",
     ]
 
+    if arv > 0:
+        arv_explanation = (
+            f"Estimated ARV: ${arv:,.0f}. "
+            "This estimate should be verified using nearby sold comparable properties."
+        )
+    else:
+        arv_explanation = "No ARV estimate was provided. Comparable sales should be reviewed."
+
     return QuillAnalyzeResponse(
-        recommendation=recommendation,
+        decision=decision,
         max_offer=max_offer,
-        arv_explanation=f"ARV is estimated at ${arv:,.0f}. Max offer uses the 70% rule: ARV x 70% minus repairs.",
+        arv_explanation=arv_explanation,
         repair_estimate=repairs,
         risk_flags=risk_flags,
-        offer_letter=offer_letter,
+        offer_letter=generate_offer_letter(body.address, max_offer),
         questions_to_ask_agent=questions,
     )
