@@ -395,6 +395,20 @@ async def get_property(property_id: str):
         raise HTTPException(404, "Property not found")
     return doc
 
+@api_router.post("/properties/{property_id}/quill-analysis", response_model=QuillAnalyzeResponse)
+async def property_quill_analysis(property_id: str):
+    """
+    Scout loads the property from MongoDB,
+    builds a Quill request,
+    then Quill analyzes the investment.
+    """
+    doc = await db.properties.find_one({"id": property_id}, {"_id": 0})
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Property not found")
+
+    return scout_analyze_property(doc)
+
 
 @api_router.get("/properties/{property_id}/nearby")
 async def get_nearby(property_id: str):
