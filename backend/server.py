@@ -478,6 +478,7 @@ class SaveRequest(BaseModel):
 
 # ---------- RapidAPI Helpers ----------
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
+OPENWEB_NINJA_API_KEY = os.environ.get("ak_b7axwlm1k75a4z2dj1ff98y0nknfuez3k2w0xn66nrped05", "")
 HOST_LOOKUP = "us-real-estate-data1.p.rapidapi.com"
 HOST_LISTINGS = "us-real-estate-listings.p.rapidapi.com"
 HOST_REALTIME = "real-time-real-estate-data.p.rapidapi.com"
