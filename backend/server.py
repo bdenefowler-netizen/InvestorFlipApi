@@ -525,7 +525,7 @@ def _deep_find_items(obj: Any) -> List[Dict[str, Any]]:
     out = []
     seen = set()
     for item in found:
-        ident = str(item.get("zpid") or item.get("property_id") or item.get("listing_id") or item.get("id") or item.get("address") or item)
+        ident = str(item.get("zpid") or item.get("property_id") or item.get("propertyId") or item.get("listing_id") or item.get("listingId") or item.get("id") or item.get("address") or item)
         if ident in seen:
             continue
         seen.add(ident)
@@ -534,29 +534,47 @@ def _deep_find_items(obj: Any) -> List[Dict[str, Any]]:
 
 
 def _extract_address(item: Dict[str, Any]) -> Dict[str, str]:
-    address_obj = item.get("address") if isinstance(item.get("address"), dict) else {}
+    raw_address = item.get("address")
+    address_obj = raw_address if isinstance(raw_address, dict) else {}
     location_obj = item.get("location") if isinstance(item.get("location"), dict) else {}
+    location_address = location_obj.get("address") if isinstance(location_obj.get("address"), dict) else {}
 
     street = (
         item.get("streetAddress") or item.get("street_address") or item.get("street")
-        or address_obj.get("streetAddress") or address_obj.get("street_address") or address_obj.get("street")
+        or item.get("address1") or item.get("addressLine") or item.get("address_line_1")
+        or address_obj.get("streetAddress") or address_obj.get("street_address")
+        or address_obj.get("street") or address_obj.get("line") or address_obj.get("address1")
         or location_obj.get("streetAddress") or location_obj.get("street")
-        or ""
+        or location_address.get("streetAddress") or location_address.get("street")
+        or location_address.get("line") or ""
     )
     city = (
-        item.get("city") or address_obj.get("city") or location_obj.get("city") or "Fort Worth"
+        item.get("city") or item.get("addressCity") or item.get("locality")
+        or address_obj.get("city") or address_obj.get("locality")
+        or location_obj.get("city") or location_obj.get("locality")
+        or location_address.get("city") or "Fort Worth"
     )
     state = (
-        item.get("state") or address_obj.get("state") or location_obj.get("state") or "TX"
+        item.get("state") or item.get("addressState") or item.get("region")
+        or address_obj.get("state") or address_obj.get("region")
+        or location_obj.get("state") or location_obj.get("region")
+        or location_address.get("state") or "TX"
     )
     zipc = (
-        item.get("zipcode") or item.get("zip") or item.get("postal_code")
-        or address_obj.get("zipcode") or address_obj.get("zip") or address_obj.get("postal_code")
-        or ""
+        item.get("zipcode") or item.get("zip") or item.get("postal_code") or item.get("postalCode")
+        or address_obj.get("zipcode") or address_obj.get("zip")
+        or address_obj.get("postal_code") or address_obj.get("postalCode")
+        or location_obj.get("postal_code") or location_obj.get("postalCode")
+        or location_address.get("postal_code") or location_address.get("postalCode") or ""
     )
 
     full = (
-        item.get("full_address") or item.get("formattedAddress") or item.get("address_line")
+        (raw_address if isinstance(raw_address, str) else "")
+        or item.get("full_address") or item.get("fullAddress")
+        or item.get("formattedAddress") or item.get("formatted_address")
+        or item.get("address_line") or item.get("addressLine")
+        or address_obj.get("formattedAddress") or address_obj.get("formatted_address")
+        or location_obj.get("formattedAddress") or location_obj.get("formatted_address")
         or (f"{street}, {city}, {state} {zipc}".strip(", ") if street else "")
     )
 
@@ -576,10 +594,15 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
         return None
 
     raw_type = (
-        item.get("homeType") or item.get("home_type") or item.get("propertyType") or
-        item.get("property_type") or item.get("propertySubType") or item.get("type") or
-        "Single Family Residential"
+        item.get("homeType") or item.get("home_type") or item.get("propertyType")
+        or item.get("property_type") or item.get("propertySubType")
+        or item.get("property_sub_type") or item.get("propertyTypeText")
+        or item.get("property_type_name") or item.get("style") or item.get("type")
     )
+    # The us-real-estate-listings request is explicitly constrained to
+    # property_type=single_family, so a missing type field is safe to infer here.
+    if not raw_type and "us-real-estate-listings" in source_name.lower():
+        raw_type = "Single Family Residential"
 
     candidate = {
         "property_type": raw_type,
@@ -595,7 +618,7 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
         return None
 
     price = safe_int(
-        item.get("price") or item.get("listPrice") or item.get("list_price") or item.get("unformattedPrice"),
+        item.get("price") or item.get("listPrice") or item.get("list_price") or item.get("asking_price") or item.get("unformattedPrice"),
         0,
     )
     zestimate = safe_int(item.get("zestimate") or item.get("estimate") or item.get("estimated_value"), None)
@@ -603,13 +626,13 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
     assessed_value = safe_int(item.get("taxAssessedValue") or item.get("tax_assessed_value"), market_value)
     annual_taxes = safe_int(item.get("annualTaxAmount") or item.get("annual_taxes") or item.get("taxAnnualAmount"), 0)
 
-    beds = safe_float(item.get("beds") or item.get("bedrooms"), None)
-    baths = safe_float(item.get("baths") or item.get("bathrooms") or item.get("bathroomsFloat"), None)
-    sqft = safe_int(item.get("livingArea") or item.get("living_area") or item.get("area") or item.get("area_sqft"), None)
+    beds = safe_float(item.get("beds") or item.get("bedrooms") or item.get("bedroom_count"), None)
+    baths = safe_float(item.get("baths") or item.get("bathrooms") or item.get("bathroom_count") or item.get("bathroomsFloat"), None)
+    sqft = safe_int(item.get("livingArea") or item.get("living_area") or item.get("square_feet") or item.get("building_size") or item.get("area") or item.get("area_sqft"), None)
     year_built = safe_int(item.get("yearBuilt") or item.get("year_built"), None)
 
     photos = []
-    for k in ["imgSrc", "image", "image_url", "hiResImageLink"]:
+    for k in ["imgSrc", "image", "image_url", "photo_url", "primary_photo", "hiResImageLink"]:
         if item.get(k):
             photos.append(item[k])
     for arr_key in ["photos", "originalPhotos", "responsivePhotos"]:
@@ -636,7 +659,7 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
     equity_estimate = max(0, int(market_value or 0) - int(price or 0)) if market_value and price else 0
     est_roi_pct = round((equity_estimate / max(price or 1, 1)) * 100, 1) if price else 0
 
-    zpid = item.get("zpid") or item.get("property_id") or item.get("listing_id") or item.get("id")
+    zpid = item.get("zpid") or item.get("property_id") or item.get("propertyId") or item.get("listing_id") or item.get("listingId") or item.get("id")
     stable_key = f"{source_name}:{zpid or candidate['situs_address']}"
 
     prop = {
@@ -681,7 +704,7 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
         "listing_agent_name": item.get("listing_agent_name") or item.get("agentName"),
         "listing_agent_phone": item.get("listing_agent_phone") or item.get("agentPhone"),
         "broker_name": item.get("broker_name") or item.get("brokerName"),
-        "detail_url": item.get("detailUrl") or item.get("url"),
+        "detail_url": item.get("detailUrl") or item.get("detail_url") or item.get("href") or item.get("url"),
         "is_live_listing": True,
         "data_source": source_name,
         "raw_source_excerpt": item,
@@ -702,19 +725,19 @@ async def fetch_live_fort_worth_residential_listings(limit: int = 50) -> List[Di
         {
             "host": HOST_REALTIME,
             "path": "/search",
-            "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "Newest", "limit": limit},
+            "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "NEWEST", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /search",
         },
         {
             "host": HOST_REALTIME,
             "path": "/search-by-location",
-            "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "Newest", "limit": limit},
+            "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "NEWEST", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /search-by-location",
         },
         {
             "host": HOST_REALTIME,
             "path": "/propertyExtendedSearch",
-            "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "Newest", "limit": limit},
+            "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "NEWEST", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /propertyExtendedSearch",
         },
         {
