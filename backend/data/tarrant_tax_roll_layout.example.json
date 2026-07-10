@@ -1,0 +1,24 @@
+{
+  "master": {
+    "member": "Master.dat",
+    "fields": {
+      "account_id": {"start": 0, "end": 0, "kind": "text"},
+      "situs_address": {"start": 0, "end": 0, "kind": "text"},
+      "situs_city": {"start": 0, "end": 0, "kind": "text"},
+      "situs_state": {"start": 0, "end": 0, "kind": "text"},
+      "situs_zip": {"start": 0, "end": 0, "kind": "text"},
+      "owner_name": {"start": 0, "end": 0, "kind": "text"},
+      "mailing_address": {"start": 0, "end": 0, "kind": "text"},
+      "mailing_city": {"start": 0, "end": 0, "kind": "text"},
+      "mailing_state": {"start": 0, "end": 0, "kind": "text"},
+      "mailing_zip": {"start": 0, "end": 0, "kind": "text"},
+      "market_value": {"start": 0, "end": 0, "kind": "money", "scale": 0},
+      "assessed_value": {"start": 0, "end": 0, "kind": "money", "scale": 0},
+      "land_value": {"start": 0, "end": 0, "kind": "money", "scale": 0},
+      "improvement_value": {"start": 0, "end": 0, "kind": "money", "scale": 0},
+      "year_built": {"start": 0, "end": 0, "kind": "int"},
+      "legal_description": {"start": 0, "end": 0, "kind": "text"},
+      "homestead": {"start": 0, "end": 0, "kind": "bool"}
+    }
+  }
+}
