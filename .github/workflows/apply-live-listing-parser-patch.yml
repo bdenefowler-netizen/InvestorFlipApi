@@ -1,0 +1,41 @@
+name: Apply live listing parser patch
+
+on:
+  push:
+    branches:
+      - feature/investorflip-v1
+    paths:
+      - scripts/patch_live_listing_parser.py
+      - .github/workflows/apply-live-listing-parser-patch.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/investorflip-v1
+          fetch-depth: 0
+
+      - name: Apply guarded patch
+        run: python scripts/patch_live_listing_parser.py
+
+      - name: Validate Python syntax
+        run: python -m py_compile backend/server.py
+
+      - name: Commit patched server
+        run: |
+          if git diff --quiet -- backend/server.py; then
+            echo "Server already patched; nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/server.py
+          git commit -m "fix: parse live RapidAPI house listings"
+          git push origin HEAD:feature/investorflip-v1
