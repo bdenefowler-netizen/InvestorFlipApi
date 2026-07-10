@@ -9,6 +9,7 @@ The good girl who frequented the Naughty List, but was never actually on it.
 """
 
 from .models import QuillAnalyzeRequest, QuillAnalyzeResponse
+from .openweb_ninja import enrich_property, openweb_ninja_status
 from .quill import analyze_property_with_quill
 
 
@@ -40,12 +41,24 @@ def build_quill_request_from_property(p: dict) -> QuillAnalyzeRequest:
             f"Listing type: {p.get('listing_type')}. "
             f"Equity estimate: {p.get('equity_estimate')}. "
             f"Investment score: {p.get('investment_score')}. "
-            f"Owner type: {p.get('owner_type')}."
+            f"Owner type: {p.get('owner_type')}. "
+            f"Data sources: {p.get('serenity_sources', [])}."
         ),
     )
 
 
+def serenity_status() -> dict:
+    """Return Serenity and provider status without exposing API secrets."""
+    return {
+        "name": "Serenity",
+        "role": "Protector of Your Deals",
+        "dedication": SERENITY_DEDICATION,
+        "openweb_ninja": openweb_ninja_status(),
+    }
+
+
 def serenity_analyze_property(p: dict) -> QuillAnalyzeResponse:
-    """Serenity prepares the deal; Quill analyzes it."""
-    request = build_quill_request_from_property(p)
+    """Serenity enriches and prepares the deal; Quill analyzes it."""
+    protected_property = enrich_property(p)
+    request = build_quill_request_from_property(protected_property)
     return analyze_property_with_quill(request)
