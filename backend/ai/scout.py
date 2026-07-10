@@ -1,35 +1,16 @@
-from .models import QuillAnalyzeRequest, QuillAnalyzeResponse
-from .quill import analyze_property_with_quill
+"""Backward-compatible bridge from the retired Scout name to Serenity.
 
+Existing routes can continue importing ``scout_analyze_property`` while every
+request is now protected and prepared by Serenity before Quill analyzes it.
+"""
 
-def build_quill_request_from_property(p: dict) -> QuillAnalyzeRequest:
-    return QuillAnalyzeRequest(
-        address=p.get("situs_address", "Unknown address"),
-        owner_info=f"{p.get('owner_name', '')} ({p.get('owner_type', '')})",
-        listing_price=p.get("price"),
-
-        beds=p.get("beds"),
-        baths=p.get("baths"),
-        sqft=p.get("sqft"),
-
-        arv_estimate=p.get("market_value"),
-        repair_estimate=None,
-        rent_estimate=None,
-        mortgage_estimate=None,
-
-        photos=[p.get("image_url")] if p.get("image_url") else [],
-        tax_info="Delinquent" if p.get("tax_delinquent") else "Current",
-        permits="Unknown",
-        comps="Needs verification",
-        notes=(
-            f"Listing type: {p.get('listing_type')}. "
-            f"Equity estimate: {p.get('equity_estimate')}. "
-            f"Investment score: {p.get('investment_score')}. "
-            f"Owner type: {p.get('owner_type')}."
-        ),
-    )
+from .models import QuillAnalyzeResponse
+from .serenity import (
+    build_quill_request_from_property,
+    serenity_analyze_property,
+)
 
 
 def scout_analyze_property(p: dict) -> QuillAnalyzeResponse:
-    request = build_quill_request_from_property(p)
-    return analyze_property_with_quill(request)
+    """Compatibility alias: Scout now hands the request to Serenity."""
+    return serenity_analyze_property(p)
