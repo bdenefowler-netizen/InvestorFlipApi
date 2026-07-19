@@ -1,1 +1,2 @@
--r backend/requirements.txt
+asyncpg==0.30.0
+httpx==0.28.1
