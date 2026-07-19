@@ -117,6 +117,19 @@ def build_situs_address(record: Mapping[str, Any]) -> str:
     return _clean_text(f"{number} {street}")
 
 
+def is_fort_worth_texas_property(property_data: Mapping[str, Any]) -> bool:
+    """Return True only for properties explicitly located in Fort Worth, Texas."""
+    city = _clean_text(str(property_data.get("city") or "")).upper()
+    state = _clean_text(str(property_data.get("state") or "")).upper()
+    address = _clean_text(str(property_data.get("situs_address") or "")).upper()
+
+    city_matches = city == "FORT WORTH" or bool(re.search(r"\bFORT\s+WORTH\b", address))
+    state_matches = state in {"TX", "TEXAS"} or bool(
+        re.search(r"\bFORT\s+WORTH\s*,?\s*(?:TX|TEXAS)\b", address)
+    )
+    return city_matches and state_matches
+
+
 def iter_member_lines(archive: zipfile.ZipFile, member: str) -> Iterator[str]:
     with archive.open(member, "r") as stream:
         for raw in stream:
@@ -128,15 +141,12 @@ async def ensure_indexes(db: PostgresDatabase) -> None:
 
 
 async def load_live_targets(db: PostgresDatabase) -> Dict[str, List[Dict[str, str]]]:
-    query = {
-        "is_live_listing": True,
-        "$or": [
-            {"city": {"$regex": "^Fort Worth$", "$options": "i"}},
-            {"situs_address": {"$regex": "Fort Worth", "$options": "i"}},
-        ],
-    }
+    query = {"is_live_listing": True}
     targets: Dict[str, List[Dict[str, str]]] = {}
-    async for prop in db.properties.find(query, {"_id": 0, "id": 1, "situs_address": 1}):
+    projection = {"_id": 0, "id": 1, "situs_address": 1, "city": 1, "state": 1}
+    async for prop in db.properties.find(query, projection):
+        if not is_fort_worth_texas_property(prop):
+            continue
         key = normalize_address(str(prop.get("situs_address") or ""))
         if key and prop.get("id"):
             targets.setdefault(key, []).append({"id": str(prop["id"]), "address": str(prop.get("situs_address") or "")})
