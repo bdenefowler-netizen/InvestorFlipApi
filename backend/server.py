@@ -20,10 +20,10 @@ from fastapi import FastAPI, APIRouter, HTTPException, Query, UploadFile, File, 
 from fastapi.responses import StreamingResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 from ai.models import QuillAnalyzeRequest, QuillAnalyzeResponse
 from ai.quill import analyze_property_with_quill
 from ai.scout import scout_analyze_property
+from database import PostgresDatabase
 import os
 import re
 import random
@@ -41,10 +41,8 @@ from importers import feeds as feeds_mod
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB
-mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
+# PostgreSQL
+db = PostgresDatabase()
 
 app = FastAPI(title="TarrantREI / InvestorFlip API")
 api_router = APIRouter(prefix="/api")
@@ -1504,6 +1502,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
+    await db.connect()
     count = await db.properties.count_documents({})
     seed_demo = os.environ.get("SEED_DEMO_DATA", "false").lower() == "true"
 
@@ -1519,4 +1518,4 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    client.close()
+    await db.close()
