@@ -21,7 +21,7 @@ import re
 import asyncio
 from pathlib import Path
 from typing import Dict, Any, Iterator, Optional
-from motor.motor_asyncio import AsyncIOMotorClient
+from database import PostgresDatabase
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -227,9 +227,7 @@ def enrich(rec: Dict[str, Any], idx: int, delinquent: bool) -> Dict[str, Any]:
 
 
 async def run_import(limit_master: int = 25000, limit_rec: int = 200000) -> None:
-    mongo_url = os.environ["MONGO_URL"]
-    client = AsyncIOMotorClient(mongo_url)
-    db = client[os.environ["DB_NAME"]]
+    db = PostgresDatabase()
 
     print(f"[1/3] Building delinquent-account set from Rec.DAT (cap {limit_rec})…")
     delinquent_set = set()
@@ -278,7 +276,7 @@ async def run_import(limit_master: int = 25000, limit_rec: int = 200000) -> None
 
     total = await db.properties.count_documents({})
     print(f"\n✓ Import complete. Total real Tarrant County properties in DB: {total}")
-    client.close()
+    await db.close()
 
 
 if __name__ == "__main__":

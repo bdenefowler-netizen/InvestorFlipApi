@@ -37,7 +37,7 @@ SERENITY_PROFILE: Dict[str, Any] = {
     "tags": ["Goofy girl", "Protector", "My shadow", "Naughty List forever"],
 }
 
-# Safe fallback storage for local/demo mode. If server.py passes a Mongo db later,
+# Safe fallback storage for local/demo mode. If server.py passes a database later,
 # this router can be expanded to use a real collection without changing the frontend.
 SERENITY_MEMORIES: List[Dict[str, Any]] = [
     {

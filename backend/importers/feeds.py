@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Iterable
 
 import httpx
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from database import PostgresDatabase
 
 logger = logging.getLogger("tarrantrei.feeds")
 
@@ -213,7 +213,7 @@ def _normalize_addr(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").upper().strip())
 
 
-async def cross_match_tax_roll(db: AsyncIOMotorDatabase, listing: FeedListing) -> Optional[Dict[str, Any]]:
+async def cross_match_tax_roll(db: PostgresDatabase, listing: FeedListing) -> Optional[Dict[str, Any]]:
     """Try to find this listing's parcel in our Master.dat data by address+zip."""
     addr_re = re.escape(listing.situs_address.split(",")[0].strip())
     q = {"$and": [
@@ -225,7 +225,7 @@ async def cross_match_tax_roll(db: AsyncIOMotorDatabase, listing: FeedListing) -
 
 
 async def ingest_listings(
-    db: AsyncIOMotorDatabase,
+    db: PostgresDatabase,
     listings: Iterable[FeedListing],
     classify_owner_fn,
     compute_scores_fn,
@@ -310,7 +310,7 @@ async def ingest_listings(
 
 
 async def run_feed_sync(
-    db: AsyncIOMotorDatabase,
+    db: PostgresDatabase,
     classify_owner_fn,
     compute_scores_fn,
     only_feed: Optional[str] = None,
@@ -336,7 +336,7 @@ async def run_feed_sync(
 
 # ---------- CSV upload (Texas Foreclosure or any feed) ----------
 async def ingest_csv_text(
-    db: AsyncIOMotorDatabase,
+    db: PostgresDatabase,
     csv_text: str,
     feed_source: str,
     listing_type: str,

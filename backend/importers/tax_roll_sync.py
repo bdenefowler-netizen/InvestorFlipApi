@@ -25,7 +25,7 @@ from typing import Any, Dict
 from urllib.parse import urlparse
 
 import httpx
-from motor.motor_asyncio import AsyncIOMotorClient
+from database import PostgresDatabase
 
 from .tax_roll import ensure_indexes, import_matches, load_layout
 
@@ -91,19 +91,17 @@ async def run(args: argparse.Namespace) -> None:
         raise FileNotFoundError(layout_path)
     layout = load_layout(layout_path)
 
-    mongo_url = os.environ.get("MONGO_URL", "").strip()
-    db_name = os.environ.get("DB_NAME", "").strip()
-    if not mongo_url or not db_name:
-        raise RuntimeError("MONGO_URL and DB_NAME are required")
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is required")
 
     with tempfile.TemporaryDirectory(prefix="investorflip-taxroll-") as temp_dir:
         zip_path = Path(temp_dir) / "tarrant-tax-roll.zip"
         download_result = await download_zip(args.url, zip_path)
         archive_result = validate_archive(zip_path, layout)
 
-        client = AsyncIOMotorClient(mongo_url)
+        db = PostgresDatabase(database_url)
         try:
-            db = client[db_name]
             await ensure_indexes(db)
             match_result = await import_matches(
                 db=db,
@@ -113,7 +111,7 @@ async def run(args: argparse.Namespace) -> None:
                 max_records=args.max_records,
             )
         finally:
-            client.close()
+            await db.close()
 
         print(json.dumps({
             "ok": True,
@@ -132,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--layout", default=str(DEFAULT_LAYOUT))
     parser.add_argument("--max-records", type=int, default=None, help="Optional scan limit for diagnostics")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--apply", action="store_true", help="Write matched tax data to MongoDB")
+    mode.add_argument("--apply", action="store_true", help="Write matched tax data to PostgreSQL")
     mode.add_argument("--dry-run", action="store_true", help="Report matches only; this is the default")
     return parser
 

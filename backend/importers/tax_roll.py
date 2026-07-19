@@ -2,7 +2,7 @@
 
 The official MASTER.DAT layout does not contain a property-city field. To avoid
 misclassifying addresses, this importer loads the live Fort Worth listings from
-MongoDB, scans MASTER.DAT once, and imports only exact normalized street-address
+PostgreSQL, scans MASTER.DAT once, and imports only exact normalized street-address
 matches. Matched tax facts are stored in ``tax_roll`` and copied onto the live
 property records for Serenity and Quill.
 
@@ -29,8 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
-from pymongo import ASCENDING, UpdateOne
+from database import PostgresDatabase
 
 REQUIRED_MASTER_FIELDS = ("account_id", "street_name", "street_number")
 
@@ -124,13 +123,11 @@ def iter_member_lines(archive: zipfile.ZipFile, member: str) -> Iterator[str]:
             yield raw.decode("utf-8", errors="replace").rstrip("\r\n")
 
 
-async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
-    await db.tax_roll.create_index([("account_id", ASCENDING)], unique=True)
-    await db.tax_roll.create_index([("normalized_situs_address", ASCENDING)])
-    await db.tax_roll.create_index([("matched_property_ids", ASCENDING)])
+async def ensure_indexes(db: PostgresDatabase) -> None:
+    await db.connect()
 
 
-async def load_live_targets(db: AsyncIOMotorDatabase) -> Dict[str, List[Dict[str, str]]]:
+async def load_live_targets(db: PostgresDatabase) -> Dict[str, List[Dict[str, str]]]:
     query = {
         "is_live_listing": True,
         "$or": [
@@ -214,7 +211,7 @@ def property_enrichment(document: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 async def import_matches(
-    db: AsyncIOMotorDatabase,
+    db: PostgresDatabase,
     zip_path: Path,
     layout: Mapping[str, Any],
     dry_run: bool = False,
@@ -222,7 +219,7 @@ async def import_matches(
 ) -> Dict[str, int]:
     targets = await load_live_targets(db)
     if not targets:
-        raise RuntimeError("No live Fort Worth listings found in MongoDB. Sync live listings first.")
+        raise RuntimeError("No live Fort Worth listings found in PostgreSQL. Sync live listings first.")
 
     master = layout["master"]
     member = master.get("member", "Master.dat")
@@ -231,8 +228,8 @@ async def import_matches(
     source_name = f"Tarrant County Tax Roll ({zip_path.name})"
 
     scanned = malformed = matched_records = matched_properties = 0
-    tax_ops: List[UpdateOne] = []
-    property_ops: List[UpdateOne] = []
+    tax_records: List[Dict[str, Any]] = []
+    property_updates: List[tuple[str, Dict[str, Any]]] = []
 
     with zipfile.ZipFile(zip_path, "r") as archive:
         if member not in archive.namelist():
@@ -258,25 +255,25 @@ async def import_matches(
             matched_records += 1
             matched_properties += len(property_ids)
             if not dry_run:
-                tax_ops.append(UpdateOne(
-                    {"account_id": document["account_id"]},
-                    {"$set": document, "$setOnInsert": {"created_at": datetime.now(timezone.utc).isoformat()}},
-                    upsert=True,
-                ))
+                document["created_at"] = datetime.now(timezone.utc).isoformat()
+                tax_records.append(document)
                 enrichment = property_enrichment(document)
                 for property_id in property_ids:
-                    property_ops.append(UpdateOne({"id": property_id}, {"$set": enrichment}))
+                    property_updates.append((property_id, enrichment))
 
             if max_records and scanned >= max_records:
                 break
 
     tax_written = properties_enriched = 0
-    if not dry_run and tax_ops:
-        result = await db.tax_roll.bulk_write(tax_ops, ordered=False)
-        tax_written = result.upserted_count + result.modified_count
-    if not dry_run and property_ops:
-        result = await db.properties.bulk_write(property_ops, ordered=False)
-        properties_enriched = result.modified_count
+    if not dry_run:
+        for document in tax_records:
+            result = await db.tax_roll.update_one(
+                {"account_id": document["account_id"]}, {"$set": document}, upsert=True
+            )
+            tax_written += result.upserted_count + result.modified_count
+        for property_id, enrichment in property_updates:
+            result = await db.properties.update_one({"id": property_id}, {"$set": enrichment})
+            properties_enriched += result.modified_count
 
     return {
         "live_address_keys": len(targets),
@@ -297,14 +294,12 @@ async def run(args: argparse.Namespace) -> None:
     if not layout_path.exists():
         raise FileNotFoundError(layout_path)
 
-    mongo_url = os.environ.get("MONGO_URL", "").strip()
-    db_name = os.environ.get("DB_NAME", "").strip()
-    if not mongo_url or not db_name:
-        raise RuntimeError("MONGO_URL and DB_NAME are required")
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is required")
 
-    client = AsyncIOMotorClient(mongo_url)
+    db = PostgresDatabase(database_url)
     try:
-        db = client[db_name]
         await ensure_indexes(db)
         result = await import_matches(
             db=db,
@@ -315,7 +310,7 @@ async def run(args: argparse.Namespace) -> None:
         )
         print(json.dumps({"ok": True, "dry_run": args.dry_run, **result}, indent=2))
     finally:
-        client.close()
+        await db.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -323,7 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zip", required=True, help="Path to the Tarrant County TaxRoll ZIP")
     parser.add_argument("--layout", default="data/tarrant_tax_roll_layout.json")
     parser.add_argument("--max-records", type=int, default=None, help="Optional scan limit for testing")
-    parser.add_argument("--dry-run", action="store_true", help="Report matches without writing to MongoDB")
+    parser.add_argument("--dry-run", action="store_true", help="Report matches without writing to PostgreSQL")
     return parser
 
 
