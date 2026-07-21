@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, Any, Iterator, Optional
 from database import PostgresDatabase
 from dotenv import load_dotenv
+from investor_logic import classify_owner, compute_scores
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -31,11 +32,6 @@ DATA = ROOT / "data"
 MASTER = DATA / "big_b"   # Master.dat
 REC = DATA / "big_a"      # Rec.DAT
 RECORD_LEN = 742          # bytes per record (incl trailing \r)
-
-# Import the classifier from server (relative import workaround)
-import sys
-sys.path.insert(0, str(ROOT))
-from server import classify_owner, compute_scores  # type: ignore
 
 PROPERTY_IMAGES = [
     "https://images.pexels.com/photos/18280830/pexels-photo-18280830.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",

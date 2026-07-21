@@ -8,11 +8,12 @@ export function ScoreBar({
   testID,
 }: {
   label: string;
-  value: number; // 1-99
+  value?: number | null; // 1-99 when enough source data exists
   tone?: "primary" | "success" | "warning" | "error";
   testID?: string;
 }) {
-  const pct = Math.max(0, Math.min(100, value));
+  const hasValue = typeof value === "number" && Number.isFinite(value);
+  const pct = hasValue ? Math.max(0, Math.min(100, value)) : 0;
   const fill =
     tone === "success" ? colors.success :
     tone === "warning" ? colors.warning :
@@ -22,7 +23,7 @@ export function ScoreBar({
     <View style={styles.wrap} testID={testID}>
       <View style={styles.row}>
         <Text style={styles.label}>{label}</Text>
-        <Text style={[styles.value, tabularNums]}>{value}</Text>
+        <Text style={[styles.value, tabularNums]}>{hasValue ? value : "—"}</Text>
       </View>
       <View style={styles.track}>
         <View style={[styles.fill, { width: `${pct}%`, backgroundColor: fill }]} />

@@ -24,10 +24,21 @@ from ai.models import QuillAnalyzeRequest, QuillAnalyzeResponse
 from ai.quill import analyze_property_with_quill
 from ai.scout import scout_analyze_property
 from database import PostgresDatabase
+from investor_logic import (
+    classify_owner,
+    compute_scores,
+    derive_owner_signals,
+    is_synthetic_property,
+    merge_live_refresh,
+)
+from listing_normalization import extract_listing_fields
+from property_enrichment import normalize_property_detail
+from address_suggestions import normalize_address_suggestions
 import os
 import re
 import random
 import logging
+import time
 import pandas as pd
 from io import BytesIO
 from pathlib import Path
@@ -49,99 +60,6 @@ api_router = APIRouter(prefix="/api")
 
 logger = logging.getLogger("tarrantrei")
 logging.basicConfig(level=logging.INFO)
-
-
-# ---------- Owner Classifier ----------
-LAW_FIRM_KEYWORDS = [
-    "law office", "law offices", "attorney", "attorneys", "legal",
-    "counsel", "litigation", "law firm", "law group", "lawyer",
-]
-LAW_FIRM_SUFFIXES = ["LLP", "PLLC", "PC", "P.C.", "P.L.L.C."]
-KNOWN_LAW_FIRMS = ["Jackson Walker", "Thompson Knight", "Kelly Hart"]
-
-BANK_KEYWORDS = [
-    "bank", "mortgage", "wells fargo", "chase", "bank of america",
-    "citibank", "fannie mae", "freddie mac", "hud", "us bank",
-    "deutsche bank", "nationstar", "mr. cooper", "carrington",
-]
-TRUST_KEYWORDS = ["trust", "trustee", "family trust", "living trust", "revocable"]
-LLC_KEYWORDS = [" llc", "l.l.c.", "limited liability", " ll", " investments"]
-CORP_KEYWORDS = [
-    "inc.", " inc", "incorporated", "corporation", "corp.", "company",
-    " co.", "brothers", "holdings", "partners", "properties", "realty", "group"
-]
-GOV_KEYWORDS = [
-    "city of", "county of", "state of texas", "tarrant county", "federal",
-    "department of", "housing authority", "isd",
-]
-NONPROFIT_KEYWORDS = [
-    "nonprofit", "non-profit", "foundation", "charity", "habitat for humanity",
-    "ministry", "church", "diocese",
-]
-
-
-def classify_owner(owner_name: str) -> str:
-    if not owner_name:
-        return "Individual"
-    name = owner_name.strip()
-    upper = name.upper()
-    lower = name.lower()
-
-    for firm in KNOWN_LAW_FIRMS:
-        if firm.lower() in lower:
-            return "Law Firm"
-    for kw in LAW_FIRM_KEYWORDS:
-        if kw in lower:
-            return "Attorney" if "attorney" in kw or "lawyer" in kw else "Law Firm"
-    if any(re.search(rf"\b{re.escape(suf)}\b", upper) for suf in LAW_FIRM_SUFFIXES):
-        return "Law Firm"
-
-    if any(k in lower for k in GOV_KEYWORDS):
-        return "Government"
-    if any(k in lower for k in NONPROFIT_KEYWORDS):
-        return "Nonprofit"
-    if any(k in lower for k in BANK_KEYWORDS):
-        return "Bank"
-    if any(k in lower for k in TRUST_KEYWORDS):
-        return "Trust"
-    if any(k in lower for k in LLC_KEYWORDS):
-        return "LLC"
-    if any(k in lower for k in CORP_KEYWORDS):
-        return "Corporation"
-    return "Individual"
-
-
-# ---------- Scoring ----------
-def compute_scores(p: Dict[str, Any]) -> Dict[str, int]:
-    mv = max(1, int(p.get("market_value") or p.get("estimated_value") or p.get("price") or 1))
-    asking = max(1, int(p.get("price") or mv))
-    equity_pct = max(0.0, (mv - asking) / mv)
-    annual_taxes = int(p.get("annual_taxes") or 0)
-    tax_burden = annual_taxes / mv if mv else 0
-    owner_type = p.get("owner_type", "Individual")
-    listing_type = p.get("listing_type", "For Sale")
-    year_built = int(p.get("year_built") or 1990)
-    age = max(0, 2026 - year_built)
-
-    investor_friendly = owner_type in ("Bank", "Government", "Trust")
-    distress = listing_type in ("REO", "Foreclosure")
-
-    investment = 50 + int(equity_pct * 80) + (15 if distress else 0) + (5 if investor_friendly else 0)
-    wholesale = 40 + int(equity_pct * 100) + (20 if distress else 0)
-    flip = 35 + int(equity_pct * 70) + (20 if age > 25 else 5) + (10 if distress else 0)
-    rental = 60 + int((1 - tax_burden * 30) * 20) - (8 if age > 50 else 0)
-    risk = 30 + (25 if distress else 0) + (15 if owner_type == "Bank" else 0) + (10 if age > 40 else 0)
-
-    def clamp(v):
-        return max(1, min(99, int(v)))
-
-    return {
-        "investment_score": clamp(investment),
-        "wholesale_score": clamp(wholesale),
-        "flip_score": clamp(flip),
-        "rental_score": clamp(rental),
-        "risk_score": clamp(risk),
-    }
 
 
 # ---------- Flip House Validator ----------
@@ -393,6 +311,7 @@ def generate_seed_properties(n: int = 36) -> List[Dict[str, Any]]:
             "cash_buyer": cash_buyer,
             "investor_owned": investor_owned,
             "data_source": "Demo Seed Data - NOT LIVE",
+            "is_synthetic": True,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         prop.update(compute_scores(prop))
@@ -415,6 +334,7 @@ INVESTOR_FILTERS = [
     {"key": "llc", "label": "LLC"},
     {"key": "law_firm", "label": "Law Firm"},
     {"key": "tax_delinquent", "label": "Tax Delinquent"},
+    {"key": "absentee_owner", "label": "Absentee Owner"},
     {"key": "out_of_state", "label": "Out-of-State Owner"},
     {"key": "vacant", "label": "Vacant"},
     {"key": "corporate", "label": "Corporate Owner"},
@@ -451,6 +371,8 @@ def apply_filter(filter_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
         query["owner_type"] = {"$in": ["Law Firm", "Attorney"]}
     elif f == "tax_delinquent":
         query["tax_delinquent"] = True
+    elif f == "absentee_owner":
+        query["absentee_owner"] = True
     elif f == "out_of_state":
         query["out_of_state_owner"] = True
     elif f == "vacant":
@@ -462,6 +384,39 @@ def apply_filter(filter_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
     elif f == "bank_owned":
         query["owner_type"] = "Bank"
     return query
+
+
+def is_user_visible_property(property_record: Dict[str, Any]) -> bool:
+    return not is_synthetic_property(property_record) and is_allowed_flip_house(property_record)
+
+
+def matches_investor_filter(property_record: Dict[str, Any], filter_key: str) -> bool:
+    key = filter_key.lower()
+    if key in ("all", ""):
+        return True
+    if key == "live":
+        return property_record.get("is_live_listing") is True
+    if key in {"reo", "foreclosure", "as_is", "investor", "cash_house"}:
+        expected = {
+            "reo": "REO", "foreclosure": "Foreclosure", "as_is": "As-Is",
+            "investor": "Investor", "cash_house": "Cash House",
+        }[key]
+        return property_record.get("listing_type") == expected
+    if key in {"high_equity", "cash_buyer", "investor_owned", "tax_delinquent", "vacant", "absentee_owner"}:
+        return property_record.get(key) is True
+    if key == "out_of_state":
+        return property_record.get("out_of_state_owner") is True
+    if key == "llc":
+        return property_record.get("owner_type") == "LLC"
+    if key == "law_firm":
+        return property_record.get("owner_type") in {"Law Firm", "Attorney"}
+    if key == "corporate":
+        return property_record.get("owner_type") == "Corporation"
+    if key == "trust":
+        return property_record.get("owner_type") == "Trust"
+    if key == "bank_owned":
+        return property_record.get("owner_type") == "Bank"
+    return True
 
 
 # ---------- Models ----------
@@ -480,6 +435,10 @@ OPENWEB_NINJA_API_KEY = os.environ.get("OPENWEB_NINJA_API_KEY", "")
 HOST_LOOKUP = "us-real-estate-data1.p.rapidapi.com"
 HOST_LISTINGS = "us-real-estate-listings.p.rapidapi.com"
 HOST_REALTIME = "real-time-real-estate-data.p.rapidapi.com"
+HOST_PROPERTY_REACH = "property-reach.p.rapidapi.com"
+PROPERTY_DETAIL_CACHE_VERSION = 1
+ADDRESS_SUGGESTION_CACHE_SECONDS = 24 * 60 * 60
+_address_suggestion_cache: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
 
 
 async def _rapid_get(host: str, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -531,72 +490,31 @@ def _deep_find_items(obj: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def _extract_address(item: Dict[str, Any]) -> Dict[str, str]:
-    raw_address = item.get("address")
-    address_obj = raw_address if isinstance(raw_address, dict) else {}
-    location_obj = item.get("location") if isinstance(item.get("location"), dict) else {}
-    location_address = location_obj.get("address") if isinstance(location_obj.get("address"), dict) else {}
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
-    street = (
-        item.get("streetAddress") or item.get("street_address") or item.get("street")
-        or item.get("address1") or item.get("addressLine") or item.get("address_line_1")
-        or address_obj.get("streetAddress") or address_obj.get("street_address")
-        or address_obj.get("street") or address_obj.get("line") or address_obj.get("address1")
-        or location_obj.get("streetAddress") or location_obj.get("street")
-        or location_address.get("streetAddress") or location_address.get("street")
-        or location_address.get("line") or ""
-    )
-    city = (
-        item.get("city") or item.get("addressCity") or item.get("locality")
-        or address_obj.get("city") or address_obj.get("locality")
-        or location_obj.get("city") or location_obj.get("locality")
-        or location_address.get("city") or "Fort Worth"
-    )
-    state = (
-        item.get("state") or item.get("addressState") or item.get("region")
-        or address_obj.get("state") or address_obj.get("region")
-        or location_obj.get("state") or location_obj.get("region")
-        or location_address.get("state") or "TX"
-    )
-    zipc = (
-        item.get("zipcode") or item.get("zip") or item.get("postal_code") or item.get("postalCode")
-        or address_obj.get("zipcode") or address_obj.get("zip")
-        or address_obj.get("postal_code") or address_obj.get("postalCode")
-        or location_obj.get("postal_code") or location_obj.get("postalCode")
-        or location_address.get("postal_code") or location_address.get("postalCode") or ""
-    )
 
-    full = (
-        (raw_address if isinstance(raw_address, str) else "")
-        or item.get("full_address") or item.get("fullAddress")
-        or item.get("formattedAddress") or item.get("formatted_address")
-        or item.get("address_line") or item.get("addressLine")
-        or address_obj.get("formattedAddress") or address_obj.get("formatted_address")
-        or location_obj.get("formattedAddress") or location_obj.get("formatted_address")
-        or (f"{street}, {city}, {state} {zipc}".strip(", ") if street else "")
-    )
-
-    return {
-        "street": str(street).strip(),
-        "city": str(city).strip(),
-        "state": str(state).strip() or "TX",
-        "zip": str(zipc).strip(),
-        "full": str(full).strip(),
-    }
+def _photo_url(value: Any) -> Optional[str]:
+    if isinstance(value, str) and value.strip():
+        return value.strip().replace("http://", "https://", 1)
+    if isinstance(value, dict):
+        for key in ("href", "url", "src"):
+            url = value.get(key)
+            if isinstance(url, str) and url.strip():
+                return url.strip().replace("http://", "https://", 1)
+    return None
 
 
 def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[Dict[str, Any]]:
-    addr = _extract_address(item)
+    fields = extract_listing_fields(item)
+    addr = fields["address"]
+    source = fields["source"]
+    source_agent = fields["source_agent"]
 
     if not addr["street"] and not addr["full"]:
         return None
 
-    raw_type = (
-        item.get("homeType") or item.get("home_type") or item.get("propertyType")
-        or item.get("property_type") or item.get("propertySubType")
-        or item.get("property_sub_type") or item.get("propertyTypeText")
-        or item.get("property_type_name") or item.get("style") or item.get("type")
-    )
+    raw_type = fields["property_type"]
     # The us-real-estate-listings request is explicitly constrained to
     # property_type=single_family, so a missing type field is safe to infer here.
     if not raw_type and "us-real-estate-listings" in source_name.lower():
@@ -615,37 +533,16 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
     if not is_allowed_flip_house(candidate):
         return None
 
-    price = safe_int(
-        item.get("price") or item.get("listPrice") or item.get("list_price") or item.get("asking_price") or item.get("unformattedPrice"),
-        0,
-    )
-    zestimate = safe_int(item.get("zestimate") or item.get("estimate") or item.get("estimated_value"), None)
-    market_value = zestimate or price or 0
-    assessed_value = safe_int(item.get("taxAssessedValue") or item.get("tax_assessed_value"), market_value)
-    annual_taxes = safe_int(item.get("annualTaxAmount") or item.get("annual_taxes") or item.get("taxAnnualAmount"), 0)
-
-    beds = safe_float(item.get("beds") or item.get("bedrooms") or item.get("bedroom_count"), None)
-    baths = safe_float(item.get("baths") or item.get("bathrooms") or item.get("bathroom_count") or item.get("bathroomsFloat"), None)
-    sqft = safe_int(item.get("livingArea") or item.get("living_area") or item.get("square_feet") or item.get("building_size") or item.get("area") or item.get("area_sqft"), None)
-    year_built = safe_int(item.get("yearBuilt") or item.get("year_built"), None)
-
-    photos = []
-    for k in ["imgSrc", "image", "image_url", "photo_url", "primary_photo", "hiResImageLink"]:
-        if item.get(k):
-            photos.append(item[k])
-    for arr_key in ["photos", "originalPhotos", "responsivePhotos"]:
-        arr = item.get(arr_key)
-        if isinstance(arr, list):
-            for p in arr[:5]:
-                if isinstance(p, str):
-                    photos.append(p)
-                elif isinstance(p, dict):
-                    if p.get("url"):
-                        photos.append(p["url"])
-                    mixed = p.get("mixedSources") if isinstance(p.get("mixedSources"), dict) else {}
-                    jpeg = mixed.get("jpeg") if isinstance(mixed.get("jpeg"), list) else []
-                    if jpeg and isinstance(jpeg[-1], dict) and jpeg[-1].get("url"):
-                        photos.append(jpeg[-1]["url"])
+    price = fields["price"]
+    zestimate = fields["zestimate"]
+    market_value = zestimate
+    assessed_value = fields["assessed_value"]
+    annual_taxes = fields["annual_taxes"]
+    beds = fields["beds"]
+    baths = fields["baths"]
+    sqft = fields["sqft"]
+    year_built = fields["year_built"]
+    photos = fields["photos"]
 
     listing_status = str(item.get("homeStatus") or item.get("status") or item.get("listingStatus") or "For Sale")
     listing_type = "For Sale"
@@ -653,9 +550,6 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
         listing_type = "Foreclosure"
     elif "reo" in listing_status.lower():
         listing_type = "REO"
-
-    equity_estimate = max(0, int(market_value or 0) - int(price or 0)) if market_value and price else 0
-    est_roi_pct = round((equity_estimate / max(price or 1, 1)) * 100, 1) if price else 0
 
     zpid = item.get("zpid") or item.get("property_id") or item.get("propertyId") or item.get("listing_id") or item.get("listingId") or item.get("id")
     stable_key = f"{source_name}:{zpid or candidate['situs_address']}"
@@ -674,15 +568,18 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
         "baths": baths,
         "sqft": sqft,
         "year_built": year_built,
-        "lot_size_sqft": safe_int(item.get("lotSize") or item.get("lot_size") or item.get("lotAreaValue"), None),
+        "lot_size_sqft": fields["lot_size_sqft"],
         "image_url": photos[0] if photos else None,
         "photos": photos,
         "price": price,
         "market_value": market_value,
+        "market_value_source": "third-party automated estimate" if zestimate else None,
         "assessed_value": assessed_value,
         "annual_taxes": annual_taxes,
-        "equity_estimate": equity_estimate,
-        "est_roi_pct": est_roi_pct,
+        "equity_estimate": None,
+        "equity_status": "unknown - mortgage balance required",
+        "est_roi_pct": None,
+        "roi_status": "unknown - ARV, repairs, holding, and selling costs required",
         "legal_description": "",
         "listing_type": listing_type,
         "listing_status": listing_status,
@@ -692,23 +589,43 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
         "out_of_state_owner": False,
         "tax_delinquent": False,
         "vacant": False,
-        "high_equity": equity_estimate > 0 and market_value and equity_estimate / max(market_value, 1) >= 0.20,
+        "high_equity": False,
         "cash_buyer": False,
         "investor_owned": False,
-        "latitude": item.get("latitude") or item.get("lat"),
-        "longitude": item.get("longitude") or item.get("lng") or item.get("lon"),
+        "latitude": fields["latitude"],
+        "longitude": fields["longitude"],
         "zpid": item.get("zpid"),
-        "mls_id": item.get("mlsId") or item.get("mls_id"),
-        "listing_agent_name": item.get("listing_agent_name") or item.get("agentName"),
+        "mls_id": item.get("mlsId") or item.get("mls_id") or source.get("listing_id"),
+        "listing_agent_name": item.get("listing_agent_name") or item.get("agentName") or source_agent.get("agent_name"),
         "listing_agent_phone": item.get("listing_agent_phone") or item.get("agentPhone"),
-        "broker_name": item.get("broker_name") or item.get("brokerName"),
+        "broker_name": item.get("broker_name") or item.get("brokerName") or source_agent.get("office_name"),
         "detail_url": item.get("detailUrl") or item.get("detail_url") or item.get("href") or item.get("url"),
+        "listing_date": item.get("list_date") or item.get("listDate"),
+        "last_sold_date": item.get("last_sold_date") or item.get("lastSoldDate"),
+        "last_sold_price": safe_int(item.get("last_sold_price") or item.get("lastSoldPrice"), None),
         "is_live_listing": True,
         "data_source": source_name,
+        "source_platform": "Realtor.com" if "realtor.com" in str(item.get("href") or "").lower() else None,
+        "source_mls": source.get("name"),
+        "source_disclaimer": _as_dict(source.get("disclaimer")).get("text"),
+        "data_provenance": {
+            "listing": source_name,
+            "underlying_platform": "Realtor.com" if "realtor.com" in str(item.get("href") or "").lower() else None,
+            "mls": source.get("name"),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        },
         "raw_source_excerpt": item,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
+        "listing_last_seen_at": datetime.now(timezone.utc).isoformat(),
+        "missed_syncs": 0,
     }
+    prop.update(derive_owner_signals(
+        prop.get("owner_name") or "",
+        prop.get("owner_mailing_address") or "",
+        prop.get("situs_address") or "",
+        prop.get("state") or "TX",
+    ))
     prop.update(compute_scores(prop))
     return prop
 
@@ -785,6 +702,83 @@ async def fetch_live_fort_worth_residential_listings(limit: int = 50) -> List[Di
     return out[:limit]
 
 
+async def sync_live_listings_to_database(
+    database: PostgresDatabase,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """Upsert current listings and retire a listing only after two missed syncs.
+
+    An empty provider response never marks existing data stale; this protects the
+    database from transient provider failures or exhausted API quotas.
+    """
+    listings = await fetch_live_fort_worth_residential_listings(limit=limit)
+    previous = await database.properties.find(
+        {"is_live_listing": True}, {"_id": 0}
+    ).to_list(length=5000)
+    previous_by_id = {record.get("id"): record for record in previous if record.get("id")}
+    def address_key(record: Dict[str, Any]) -> str:
+        street = str(record.get("situs_address") or "").split(",", 1)[0].upper()
+        return re.sub(r"[^A-Z0-9]", "", street) + ":" + str(record.get("zip") or "")[:5]
+    previous_by_address = {address_key(record): record for record in previous if address_key(record) != ":"}
+
+    upserted = 0
+    returned_ids = set()
+    for property_record in listings:
+        existing = previous_by_id.get(property_record.get("id")) or previous_by_address.get(address_key(property_record), {})
+        property_record = merge_live_refresh(
+            existing, property_record
+        )
+        returned_ids.add(property_record["id"])
+        await database.properties.update_one(
+            {"id": property_record["id"]},
+            {"$set": property_record},
+            upsert=True,
+        )
+        upserted += 1
+
+    missed = retired = 0
+    if listings:
+        now = datetime.now(timezone.utc).isoformat()
+        for property_record in previous:
+            if is_synthetic_property(property_record) or property_record.get("id") in returned_ids:
+                continue
+            missed_syncs = int(property_record.get("missed_syncs") or 0) + 1
+            updates: Dict[str, Any] = {
+                "missed_syncs": missed_syncs,
+                "last_checked_at": now,
+            }
+            missed += 1
+            if missed_syncs >= 2:
+                updates.update({"is_live_listing": False, "listing_status": "stale"})
+                retired += 1
+            await database.properties.update_one(
+                {"id": property_record["id"]}, {"$set": updates}
+            )
+
+    await database.live_sync_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "sync_type": "live_listings",
+        "source": "live Fort Worth residential listings",
+        "status": "success" if listings else "empty",
+        "count": upserted,
+        "missed": missed,
+        "retired": retired,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {
+        "ok": bool(listings),
+        "upserted": upserted,
+        "missed": missed,
+        "retired": retired,
+        "items": listings,
+        "rule": "Synced current Fort Worth for-sale houses; two missed syncs retire stale rows.",
+        "note": (
+            "No existing listings were retired because the provider returned no usable records."
+            if not listings else None
+        ),
+    }
+
+
 # ---------- Routes ----------
 @api_router.get("/")
 async def root():
@@ -805,51 +799,23 @@ async def get_filters():
     out = []
     raw_total = await db.properties.count_documents({})
     all_docs = await db.properties.find({}, {"_id": 0}).to_list(length=5000)
-    flip_ids = [p.get("id") for p in all_docs if is_allowed_flip_house(p)]
-    total = len(flip_ids)
+    visible = [p for p in all_docs if is_user_visible_property(p)]
 
     for f in INVESTOR_FILTERS:
-        q: Dict[str, Any] = {}
-        if f["key"] != "all":
-            q = apply_filter(f["key"], q)
-        if flip_ids:
-            q["id"] = {"$in": flip_ids}
-        count = total if f["key"] == "all" else await db.properties.count_documents(q)
+        count = sum(matches_investor_filter(p, f["key"]) for p in visible)
         out.append({**f, "count": count})
 
     return {
         "filters": out,
         "raw_total_before_flip_filter": raw_total,
+        "synthetic_records_hidden": sum(is_synthetic_property(p) for p in all_docs),
         "rule": "InvestorFlip V1 only shows live/verified single-family houses and residential multi-family houses.",
     }
 
 
 @api_router.post("/live/sync-fort-worth")
 async def sync_live_fort_worth(limit: int = Query(50, ge=1, le=100)):
-    listings = await fetch_live_fort_worth_residential_listings(limit=limit)
-
-    upserted = 0
-    for p in listings:
-        await db.properties.update_one(
-            {"id": p["id"]},
-            {"$set": p},
-            upsert=True,
-        )
-        upserted += 1
-
-    await db.live_sync_log.insert_one({
-        "source": "live Fort Worth residential listings",
-        "count": upserted,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-
-    return {
-        "ok": True,
-        "upserted": upserted,
-        "items": listings,
-        "rule": "Synced live Fort Worth for-sale houses only.",
-        "note": "If upserted is 0, verify RAPIDAPI_KEY and that your RapidAPI plan supports one of the listing endpoints.",
-    }
+    return await sync_live_listings_to_database(db, limit=limit)
 
 
 @api_router.get("/live/fort-worth-listings")
@@ -859,7 +825,7 @@ async def live_fort_worth_listings(limit: int = Query(50, ge=1, le=100)):
         {"_id": 0},
     ).sort("updated_at", -1).limit(limit * 3).to_list(length=limit * 3)
 
-    items = [p for p in docs if is_fort_worth_property(p) and is_allowed_flip_house(p)][:limit]
+    items = [p for p in docs if is_fort_worth_property(p) and is_user_visible_property(p)][:limit]
 
     return {
         "count": len(items),
@@ -898,9 +864,9 @@ async def list_properties(
             {"owner_name": regex},
         ]
 
-    cursor = db.properties.find(q, {"_id": 0}).sort("updated_at", -1).limit(limit * 5)
-    raw_items = await cursor.to_list(length=limit * 5)
-    items = [p for p in raw_items if is_allowed_flip_house(p)][:limit]
+    cursor = db.properties.find(q, {"_id": 0}).sort("updated_at", -1).limit(limit * 10)
+    raw_items = await cursor.to_list(length=limit * 10)
+    items = [p for p in raw_items if is_user_visible_property(p)][:limit]
 
     return {
         "count": len(items),
@@ -909,13 +875,42 @@ async def list_properties(
     }
 
 
+@api_router.get("/address-suggestions")
+async def address_suggestions(
+    query: str = Query(..., min_length=5, max_length=160),
+    limit: int = Query(6, ge=1, le=10),
+):
+    """Return cached PropertyReach address suggestions without exposing the API key."""
+
+    cleaned = " ".join(query.strip().split())
+    cache_key = cleaned.casefold()
+    cached = _address_suggestion_cache.get(cache_key)
+    if cached and time.monotonic() - cached[0] < ADDRESS_SUGGESTION_CACHE_SECONDS:
+        items = cached[1][:limit]
+        return {"count": len(items), "items": items, "cached": True}
+
+    provider_query = cleaned
+    if "fort worth" not in cleaned.casefold():
+        provider_query = f"{cleaned}, Fort Worth, TX"
+
+    raw = await _rapid_get(HOST_PROPERTY_REACH, "/v1/suggestions", {"query": provider_query})
+    items = normalize_address_suggestions(raw)
+    _address_suggestion_cache[cache_key] = (time.monotonic(), items)
+
+    if len(_address_suggestion_cache) > 250:
+        oldest_key = min(_address_suggestion_cache, key=lambda key: _address_suggestion_cache[key][0])
+        _address_suggestion_cache.pop(oldest_key, None)
+
+    return {"count": len(items[:limit]), "items": items[:limit], "cached": False}
+
+
 @api_router.get("/properties/{property_id}")
 async def get_property(property_id: str):
     doc = await db.properties.find_one({"id": property_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Property not found")
-    if not is_allowed_flip_house(doc):
-        raise HTTPException(400, "Property blocked: not a single-family or residential multi-family flip target")
+    if not is_user_visible_property(doc):
+        raise HTTPException(404, "Property not available in verified search results")
     return doc
 
 
@@ -924,8 +919,8 @@ async def property_quill_analysis(property_id: str):
     doc = await db.properties.find_one({"id": property_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Property not found")
-    if not is_allowed_flip_house(doc):
-        raise HTTPException(status_code=400, detail="Property blocked: not a single-family or residential multi-family flip target")
+    if not is_user_visible_property(doc):
+        raise HTTPException(status_code=404, detail="Property not available in verified search results")
     return scout_analyze_property(doc)
 
 
@@ -934,8 +929,8 @@ async def get_nearby(property_id: str):
     base = await db.properties.find_one({"id": property_id}, {"_id": 0})
     if not base:
         raise HTTPException(404, "Property not found")
-    if not is_allowed_flip_house(base):
-        raise HTTPException(400, "Property blocked: not a single-family or residential multi-family flip target")
+    if not is_user_visible_property(base):
+        raise HTTPException(404, "Property not available in verified search results")
 
     zipc = base["zip"]
     near_foreclosures_raw = await db.properties.find(
@@ -947,8 +942,8 @@ async def get_nearby(property_id: str):
         {"_id": 0},
     ).limit(20).to_list(length=20)
 
-    near_foreclosures = [p for p in near_foreclosures_raw if is_allowed_flip_house(p)][:4]
-    near_investor = [p for p in near_investor_raw if is_allowed_flip_house(p)][:4]
+    near_foreclosures = [p for p in near_foreclosures_raw if is_user_visible_property(p)][:4]
+    near_investor = [p for p in near_investor_raw if is_user_visible_property(p)][:4]
     return {"nearby_foreclosures": near_foreclosures, "nearby_investor_purchases": near_investor}
 
 
@@ -957,8 +952,8 @@ async def ai_analysis(property_id: str):
     doc = await db.properties.find_one({"id": property_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Property not found")
-    if not is_allowed_flip_house(doc):
-        raise HTTPException(400, "Property blocked: not a single-family or residential multi-family flip target")
+    if not is_user_visible_property(doc):
+        raise HTTPException(404, "Property not available in verified search results")
 
     cached = await db.ai_analysis.find_one({"property_id": property_id}, {"_id": 0})
     if cached and cached.get("narrative"):
@@ -1015,9 +1010,10 @@ async def ai_analysis(property_id: str):
         return AIAnalysisResponse(property_id=property_id, narrative=narrative)
     except Exception as e:
         logger.exception("AI analysis failed: %s", e)
-        verdict = "STRONG BUY" if doc.get("investment_score", 0) >= 75 else (
-            "BUY" if doc.get("investment_score", 0) >= 60 else (
-                "WATCH" if doc.get("investment_score", 0) >= 45 else "PASS"
+        investment_score = doc.get("investment_score") or 0
+        verdict = "STRONG BUY" if investment_score >= 75 else (
+            "BUY" if investment_score >= 60 else (
+                "WATCH" if investment_score >= 45 else "NEEDS DATA"
             )
         )
         narrative = (
@@ -1038,7 +1034,7 @@ async def list_saved():
     if not ids:
         return {"count": 0, "items": []}
     props_raw = await db.properties.find({"id": {"$in": ids}}, {"_id": 0}).to_list(length=500)
-    props = [p for p in props_raw if is_allowed_flip_house(p)]
+    props = [p for p in props_raw if is_user_visible_property(p)]
     return {"count": len(props), "items": props}
 
 
@@ -1047,8 +1043,8 @@ async def add_saved(body: SaveRequest):
     exists = await db.properties.find_one({"id": body.property_id}, {"_id": 0})
     if not exists:
         raise HTTPException(404, "Property not found")
-    if not is_allowed_flip_house(exists):
-        raise HTTPException(400, "Property blocked: not a single-family or residential multi-family flip target")
+    if not is_user_visible_property(exists):
+        raise HTTPException(404, "Property not available in verified search results")
     await db.saved.update_one(
         {"property_id": body.property_id},
         {"$set": {"property_id": body.property_id,
@@ -1178,7 +1174,7 @@ async def export_csv(
         rg = {"$regex": re.escape(search), "$options": "i"}
         q["$or"] = [{"situs_address": rg}, {"city": rg}, {"zip": rg}, {"owner_name": rg}]
     docs_raw = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
-    docs = [p for p in docs_raw if is_allowed_flip_house(p)]
+    docs = [p for p in docs_raw if is_user_visible_property(p)]
     csv_text = feeds_mod.docs_to_csv(docs)
     fname = f"investorflip_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
     return Response(
@@ -1200,7 +1196,7 @@ async def export_xlsx(
         rg = {"$regex": re.escape(search), "$options": "i"}
         q["$or"] = [{"situs_address": rg}, {"city": rg}, {"zip": rg}, {"owner_name": rg}]
     docs_raw = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
-    docs = [p for p in docs_raw if is_allowed_flip_house(p)]
+    docs = [p for p in docs_raw if is_user_visible_property(p)]
     blob = feeds_mod.docs_to_xlsx_bytes(docs)
     fname = f"investorflip_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.xlsx"
     return Response(
@@ -1225,10 +1221,18 @@ async def enrich_property(property_id: str):
     prop = await db.properties.find_one({"id": property_id}, {"_id": 0})
     if not prop:
         raise HTTPException(404, "Property not found")
+    if not is_user_visible_property(prop):
+        raise HTTPException(404, "Property not available in verified search results")
 
     cached = await db.enrichment.find_one({"property_id": property_id}, {"_id": 0})
-    if cached and cached.get("zpid"):
+    if cached and cached.get("zpid") and cached.get("property_detail_cache_version") == PROPERTY_DETAIL_CACHE_VERSION:
+        await _persist_enrichment(property_id, cached, cached.get("photos"))
         return cached
+
+    if cached and cached.get("zpid"):
+        enriched = await _add_full_property_details(cached)
+        await _persist_enrichment(property_id, enriched, enriched.get("photos"))
+        return enriched
 
     address = _build_address_query(prop)
 
@@ -1251,6 +1255,7 @@ async def enrich_property(property_id: str):
                 "home_status": data.get("status"),
                 "list_price": data.get("price"),
                 "zestimate": data.get("zestimate"),
+                "rent_zestimate": data.get("rent_zestimate") or data.get("rentZestimate"),
                 "tax_assessed_value": data.get("tax_assessed_value"),
                 "latitude": data.get("latitude"),
                 "longitude": data.get("longitude"),
@@ -1258,9 +1263,17 @@ async def enrich_property(property_id: str):
                 "rapidapi_city": data.get("city"),
                 "rapidapi_state": data.get("state"),
                 "rapidapi_zip": data.get("zipcode"),
+                "mls_id": data.get("mls_id") or data.get("mlsId"),
+                "parcel_id": data.get("parcel_id") or data.get("parcelId"),
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
-            await _persist_enrichment(property_id, enriched)
+            photo_values = data.get("photos") if isinstance(data.get("photos"), list) else []
+            photo_urls = [url for url in (_photo_url(value) for value in photo_values) if url]
+            if photo_urls:
+                enriched["photos"] = photo_urls
+            enriched = await _add_full_property_details(enriched)
+            photo_urls = enriched.get("photos") if isinstance(enriched.get("photos"), list) else photo_urls
+            await _persist_enrichment(property_id, enriched, photo_urls)
             return enriched
     except HTTPException as e:
         logger.info("Primary enrichment failed: %s", e.detail)
@@ -1268,7 +1281,32 @@ async def enrich_property(property_id: str):
     return {"property_id": property_id, "address_queried": address, "found": False}
 
 
+async def _add_full_property_details(enriched: Dict[str, Any]) -> Dict[str, Any]:
+    """Fetch and normalize /properties/{zpid}; retain lookup data on failure."""
+    result = dict(enriched)
+    result["property_detail_cache_version"] = PROPERTY_DETAIL_CACHE_VERSION
+    result["property_detail_attempted_at"] = datetime.now(timezone.utc).isoformat()
+    zpid = str(result.get("zpid") or "").strip()
+    if not zpid or not re.fullmatch(r"[A-Za-z0-9_-]+", zpid):
+        result["property_detail_found"] = False
+        return result
+
+    try:
+        raw = await _rapid_get(HOST_LOOKUP, f"/properties/{zpid}", {})
+        detail = normalize_property_detail(raw)
+        result.update(detail)
+        result["property_detail_found"] = bool(detail.get("detail_found"))
+        result["property_detail_endpoint"] = f"/properties/{zpid}"
+        result["property_detail_fetched_at"] = datetime.now(timezone.utc).isoformat()
+    except HTTPException as exc:
+        result["property_detail_found"] = False
+        result["property_detail_status"] = exc.status_code
+        logger.info("Full property detail failed for %s: %s", zpid, exc.detail)
+    return result
+
+
 async def _persist_enrichment(property_id: str, enriched: Dict[str, Any], photo_urls: Optional[List[str]] = None) -> None:
+    existing = await db.properties.find_one({"id": property_id}, {"_id": 0}) or {}
     update: Dict[str, Any] = {}
     if enriched.get("beds"):
         update["beds"] = safe_float(enriched["beds"])
@@ -1278,6 +1316,8 @@ async def _persist_enrichment(property_id: str, enriched: Dict[str, Any], photo_
         update["sqft"] = safe_int(enriched["sqft"])
     if enriched.get("year_built"):
         update["year_built"] = safe_int(enriched["year_built"])
+    if enriched.get("lot_size_sqft"):
+        update["lot_size_sqft"] = safe_int(enriched["lot_size_sqft"])
     if enriched.get("latitude") and enriched.get("longitude"):
         update["latitude"] = enriched["latitude"]
         update["longitude"] = enriched["longitude"]
@@ -1286,9 +1326,31 @@ async def _persist_enrichment(property_id: str, enriched: Dict[str, Any], photo_
         update["property_type"] = enriched["home_type"]
     if enriched.get("zestimate"):
         update["market_value"] = safe_int(enriched["zestimate"])
+        update["zestimate"] = safe_int(enriched["zestimate"])
+        update["market_value_source"] = "third-party automated estimate"
+    if enriched.get("rent_zestimate"):
+        update["rent_zestimate"] = safe_int(enriched["rent_zestimate"])
+    if enriched.get("tax_assessed_value"):
+        update["provider_tax_assessed_value"] = safe_int(enriched["tax_assessed_value"])
+    if enriched.get("mls_id"):
+        update["mls_id"] = str(enriched["mls_id"])
+    if enriched.get("source_mls"):
+        update["source_mls"] = str(enriched["source_mls"])
+    if enriched.get("parcel_id"):
+        update["parcel_id"] = str(enriched["parcel_id"])
+    if enriched.get("listing_agent_name"):
+        update["listing_agent_name"] = enriched["listing_agent_name"]
+    if enriched.get("listing_agent_phone"):
+        update["listing_agent_phone"] = enriched["listing_agent_phone"]
+    if enriched.get("broker_name"):
+        update["broker_name"] = enriched["broker_name"]
+    if enriched.get("description"):
+        update["listing_description"] = enriched["description"]
     if photo_urls:
         update["image_url"] = photo_urls[0]
     if update:
+        combined = {**existing, **update}
+        update.update(compute_scores(combined))
         update["updated_at"] = datetime.now(timezone.utc).isoformat()
         await db.properties.update_one({"id": property_id}, {"$set": update})
     await db.enrichment.update_one({"property_id": property_id}, {"$set": enriched}, upsert=True)
@@ -1331,11 +1393,11 @@ async def analyze_deal():
 @api_router.post("/scout/find-opportunities")
 async def find_opportunities(limit: int = Query(10, ge=1, le=100)):
     raw_docs = await db.properties.find({"is_live_listing": True}, {"_id": 0}).to_list(length=500)
-    docs = [p for p in raw_docs if is_allowed_flip_house(p)]
+    docs = [p for p in raw_docs if is_user_visible_property(p)]
 
     opportunities = []
     for p in docs:
-        score = p.get("investment_score", 50)
+        score = p.get("investment_score") or 0
         if p.get("high_equity"):
             score += 10
         if p.get("tax_delinquent"):
@@ -1426,12 +1488,13 @@ async def backfill_flip_property_types():
 @api_router.get("/admin/data-quality")
 async def data_quality():
     docs = await db.properties.find({}, {"_id": 0}).to_list(length=10000)
-    allowed = [p for p in docs if is_allowed_flip_house(p)]
+    allowed = [p for p in docs if is_user_visible_property(p)]
     live = [p for p in allowed if p.get("is_live_listing")]
     missing_type = [p for p in docs if not get_property_type(p)]
 
     return {
         "raw_total": len(docs),
+        "synthetic_hidden": sum(is_synthetic_property(p) for p in docs),
         "allowed_flip_houses": len(allowed),
         "live_allowed_flip_houses": len(live),
         "missing_property_type": len(missing_type),

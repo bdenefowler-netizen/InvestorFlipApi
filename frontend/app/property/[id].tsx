@@ -15,6 +15,7 @@ import {
   unsaveProperty,
   enrichProperty,
   getTaxHistory,
+  propertyImageUrl,
   type Property,
   type Enrichment,
   type TaxHistoryEntry,
@@ -33,6 +34,10 @@ function KeyValue({ k, v, mono = true }: { k: string; v: string; mono?: boolean 
       <Text style={[kvStyles.v, mono && tabularNums]} numberOfLines={2}>{v}</Text>
     </View>
   );
+}
+
+function maybeMoney(value?: number | null): string {
+  return typeof value === "number" ? `$${value.toLocaleString()}` : "Needs data";
 }
 
 function ComparisonRow({
@@ -158,12 +163,13 @@ export default function PropertyDetail() {
             if (!cancelled) setProp(fresh);
           } catch {}
         }
+        try {
+          const t = await getTaxHistory(id);
+          if (!cancelled) setTaxHistory(t.tax_history || []);
+        } catch {}
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setEnrichLoading(false); });
-    getTaxHistory(id)
-      .then((t) => { if (!cancelled) setTaxHistory(t.tax_history || []); })
-      .catch(() => {});
     return () => { cancelled = true; };
   }, [id]);
 
@@ -202,14 +208,16 @@ export default function PropertyDetail() {
     );
   }
 
-  const taxRate = ((prop.annual_taxes / Math.max(prop.assessed_value, 1)) * 100).toFixed(2);
-  const equityPct = ((prop.equity_estimate / Math.max(prop.market_value, 1)) * 100).toFixed(1);
+  const taxBase = prop.tax_roll_market_value || prop.assessed_value;
+  const taxRate = prop.annual_taxes && taxBase
+    ? `${((prop.annual_taxes / taxBase) * 100).toFixed(2)}%`
+    : "Needs data";
 
   const beds = enrich?.beds ?? prop.beds;
   const baths = enrich?.baths ?? prop.baths;
   const sqft = enrich?.sqft ?? prop.sqft;
   const yearBuilt = enrich?.year_built ?? prop.year_built;
-  const heroPhoto = enrich?.hi_res_image || (enrich?.photos && enrich.photos[0]) || prop.image_url;
+  const heroPhoto = enrich?.hi_res_image || (enrich?.photos && enrich.photos[0]) || propertyImageUrl(prop);
   const enrichedAddress = enrich?.found && enrich.rapidapi_address
     ? `${enrich.rapidapi_address}, ${enrich.rapidapi_city}, ${enrich.rapidapi_state} ${enrich.rapidapi_zip}`
     : null;
@@ -219,7 +227,7 @@ export default function PropertyDetail() {
       <ScrollView contentContainerStyle={{ paddingBottom: 120 }} testID="property-detail-scroll">
         {/* Hero */}
         <View style={styles.hero}>
-          <Image source={{ uri: heroPhoto }} style={styles.heroImg} contentFit="cover" />
+          <Image source={heroPhoto ? { uri: heroPhoto } : undefined} style={styles.heroImg} contentFit="cover" />
           <LinearGradient colors={["rgba(0,0,0,0.55)", "transparent"]} style={styles.heroTopScrim} pointerEvents="none" />
           <LinearGradient colors={["transparent", "rgba(26,28,26,0.85)"]} style={styles.heroBottomScrim} pointerEvents="none" />
           <SafeAreaView edges={["top"]} style={styles.heroNav}>
@@ -278,6 +286,9 @@ export default function PropertyDetail() {
         <View style={styles.section} testID="section-scoring">
           <Text style={styles.sectionTitle}>AI DEAL SCORING</Text>
           <View style={styles.card}>
+            <Text style={styles.sourceNote}>
+              {prop.score_kind || "Preliminary screening"} · Confidence: {prop.score_confidence || "insufficient"}
+            </Text>
             <View style={styles.scoreGrid}>
               <View style={styles.scoreCol}>
                 <ScoreBar testID="score-investment" label="Investment" value={prop.investment_score} tone="success" />
@@ -288,13 +299,16 @@ export default function PropertyDetail() {
                 <ScoreBar testID="score-rental" label="Rental" value={prop.rental_score} />
                 <ScoreBar testID="score-risk" label="Risk" value={prop.risk_score} tone="error" />
                 <View style={{ marginBottom: spacing.md }}>
-                  <Text style={{ fontSize: 12, color: colors.muted, fontWeight: "600" }}>Equity</Text>
+                  <Text style={{ fontSize: 12, color: colors.muted, fontWeight: "600" }}>Value Spread</Text>
                   <Text style={[{ fontSize: 18, fontWeight: "800", color: colors.success }, tabularNums]}>
-                    {equityPct}%
+                    {prop.discount_to_benchmark_pct != null ? `${prop.discount_to_benchmark_pct.toFixed(1)}%` : "—"}
                   </Text>
                 </View>
               </View>
             </View>
+            {prop.score_missing_inputs?.length ? (
+              <Text style={styles.sourceNote}>Needs: {prop.score_missing_inputs.join(" · ")}</Text>
+            ) : null}
           </View>
         </View>
 
@@ -383,12 +397,15 @@ export default function PropertyDetail() {
           <Text style={styles.sectionTitle}>FINANCIALS · TAX ROLL</Text>
           <View style={styles.card}>
             <KeyValue k="Asking Price" v={`$${prop.price.toLocaleString()}`} />
-            <KeyValue k="Market Value" v={`$${prop.market_value.toLocaleString()}`} />
-            <KeyValue k="Assessed Value" v={`$${prop.assessed_value.toLocaleString()}`} />
-            <KeyValue k="Annual Taxes" v={`$${prop.annual_taxes.toLocaleString()}`} />
-            <KeyValue k="Effective Tax Rate" v={`${taxRate}%`} />
-            <KeyValue k="Equity Estimate" v={`$${prop.equity_estimate.toLocaleString()}`} />
-            <KeyValue k="Est ROI" v={`${prop.est_roi_pct.toFixed(1)}%`} />
+            <KeyValue k="Value Benchmark" v={maybeMoney(prop.value_benchmark)} />
+            <KeyValue k="Benchmark Source" v={prop.value_benchmark_source || "Needs verified comps"} mono={false} />
+            <KeyValue k="Tax-Roll Market Value" v={maybeMoney(prop.tax_roll_market_value)} />
+            <KeyValue k="Assessed Value" v={maybeMoney(prop.assessed_value)} />
+            <KeyValue k="Annual Taxes" v={maybeMoney(prop.annual_taxes)} />
+            <KeyValue k="Effective Tax Rate" v={taxRate} />
+            <KeyValue k="Value Spread" v={maybeMoney(prop.value_spread)} />
+            <KeyValue k="Owner Equity" v={prop.equity_estimate != null ? maybeMoney(prop.equity_estimate) : "Unknown · mortgage required"} />
+            <KeyValue k="Estimated ROI" v={prop.est_roi_pct != null ? `${prop.est_roi_pct.toFixed(1)}%` : "Unknown · full deal costs required"} />
             <KeyValue k="Legal Description" v={prop.legal_description} mono={false} />
             <KeyValue k="ZIP / County" v={`${prop.zip} · ${prop.county}`} />
             <KeyValue k="Tax Delinquent" v={prop.tax_delinquent ? "YES" : "NO"} />
@@ -438,7 +455,7 @@ export default function PropertyDetail() {
               <View>
                 {nearby.nearby_foreclosures.map((n) => (
                   <Pressable key={n.id} onPress={() => router.push(`/property/${n.id}`)} style={styles.nearbyRow} testID={`nearby-fc-${n.id}`}>
-                    <Image source={{ uri: n.image_url }} style={styles.nearbyImg} contentFit="cover" />
+                  <Image source={propertyImageUrl(n) ? { uri: propertyImageUrl(n) } : undefined} style={styles.nearbyImg} contentFit="cover" />
                     <View style={{ flex: 1, marginLeft: 10 }}>
                       <Text style={styles.nearbyAddr} numberOfLines={1}>{n.situs_address}</Text>
                       <Text style={[styles.nearbyMeta, tabularNums]}>{n.listing_type} · ${n.price.toLocaleString()}</Text>
@@ -455,7 +472,7 @@ export default function PropertyDetail() {
               <View>
                 {nearby.nearby_investor_purchases.map((n) => (
                   <Pressable key={n.id} onPress={() => router.push(`/property/${n.id}`)} style={styles.nearbyRow} testID={`nearby-inv-${n.id}`}>
-                    <Image source={{ uri: n.image_url }} style={styles.nearbyImg} contentFit="cover" />
+                  <Image source={propertyImageUrl(n) ? { uri: propertyImageUrl(n) } : undefined} style={styles.nearbyImg} contentFit="cover" />
                     <View style={{ flex: 1, marginLeft: 10 }}>
                       <Text style={styles.nearbyAddr} numberOfLines={1}>{n.situs_address}</Text>
                       <Text style={[styles.nearbyMeta, tabularNums]}>{n.owner_type} · ${n.price.toLocaleString()}</Text>

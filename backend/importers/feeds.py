@@ -14,10 +14,10 @@ import os
 import re
 import csv
 import io
+import json
 import uuid
 import logging
 import asyncio
-import random
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +25,7 @@ from typing import List, Optional, Dict, Any, Iterable
 
 import httpx
 from database import PostgresDatabase
+from investor_logic import compute_scores, derive_owner_signals
 
 logger = logging.getLogger("tarrantrei.feeds")
 
@@ -57,88 +58,187 @@ class FeedSource:
         raise NotImplementedError
 
 
+FORECLOSURE_FINDER_HOST = "foreclosure-finder1.p.rapidapi.com"
+FORT_WORTH_CENTER_ZIP = "76102"
+
+
+def _first_dict_list(payload: Any) -> List[Dict[str, Any]]:
+    """Return listing-shaped dictionaries from common RapidAPI wrappers."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("listings", "results", "properties", "items", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            items = [item for item in value if isinstance(item, dict)]
+            if items:
+                return items
+        if isinstance(value, dict):
+            items = _first_dict_list(value)
+            if items:
+                return items
+    return []
+
+
+def _nested_text(value: Any, *keys: str) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in keys:
+            candidate = value.get(key)
+            if candidate not in (None, ""):
+                return str(candidate).strip()
+    return ""
+
+
+def _feed_int(value: Any) -> int:
+    try:
+        return int(float(re.sub(r"[^0-9.-]", "", str(value or "0")) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _feed_float(value: Any) -> float:
+    try:
+        return float(re.sub(r"[^0-9.-]", "", str(value or "0")) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _foreclosure_finder_listing(item: Dict[str, Any]) -> Optional[FeedListing]:
+    """Normalize one auction record and reject anything outside Fort Worth, TX."""
+    address_value = item.get("address") or item.get("propertyAddress") or item.get("location")
+    full = _nested_text(
+        address_value,
+        "formattedAddress", "formatted_address", "fullAddress", "full_address", "address",
+    )
+    address_obj = address_value if isinstance(address_value, dict) else {}
+    street = str(
+        item.get("streetAddress") or item.get("street_address")
+        or address_obj.get("streetAddress") or address_obj.get("street_address")
+        or address_obj.get("street") or ""
+    ).strip()
+    city = str(item.get("city") or address_obj.get("city") or "").strip()
+    state = str(item.get("state") or address_obj.get("state") or "").strip().upper()
+    zip_code = str(
+        item.get("zipcode") or item.get("zip") or item.get("postalCode")
+        or item.get("postal_code") or address_obj.get("zipcode") or address_obj.get("zip")
+        or address_obj.get("postalCode") or address_obj.get("postal_code") or ""
+    ).strip()
+
+    if full:
+        parts = [part.strip() for part in full.split(",")]
+        street = street or (parts[0] if parts else "")
+        city = city or (parts[1] if len(parts) > 1 else "")
+        state_match = re.search(r"(?:,|\s)\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?\b", full.upper())
+        state = state or (state_match.group(1) if state_match else "")
+        zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", full)
+        zip_code = zip_code or (zip_match.group(1) if zip_match else "")
+
+    location_text = f"{city} {full}".lower().replace("-", " ")
+    if "fort worth" not in location_text:
+        return None
+    if state and state != "TX":
+        return None
+    if not street:
+        return None
+
+    city = "Fort Worth"
+    state = "TX"
+    zip_code = zip_code[:5]
+    full_address = full or f"{street}, {city}, {state} {zip_code}".strip()
+
+    asset_type = str(item.get("assetType") or item.get("asset_type") or "")
+    status_label = str(item.get("statusLabel") or item.get("status") or "")
+    type_text = f"{asset_type} {status_label}".lower().replace("_", " ")
+    listing_type = "REO" if any(term in type_text for term in ("bank owned", "reo")) else "Foreclosure"
+    seller = _nested_text(item.get("seller"), "name", "displayName", "display_name")
+
+    image = _nested_text(
+        item.get("photoUrl") or item.get("photo_url") or item.get("image") or item.get("primaryPhoto"),
+        "href", "url", "src",
+    )
+    source = _nested_text(item.get("source"), "name", "label")
+
+    return FeedListing(
+        feed_source="Foreclosure Finder",
+        listing_type=listing_type,
+        situs_address=full_address,
+        city=city,
+        state=state,
+        zip=zip_code,
+        price=_feed_int(item.get("openingBid") or item.get("opening_bid") or item.get("price")),
+        beds=_feed_int(item.get("bedrooms") or item.get("beds")),
+        baths=_feed_float(item.get("bathrooms") or item.get("baths")),
+        sqft=_feed_int(item.get("squareFootage") or item.get("square_footage") or item.get("sqft")),
+        year_built=_feed_int(item.get("yearBuilt") or item.get("year_built")),
+        owner_name=seller,
+        parcel_id=str(item.get("listingId") or item.get("listing_id") or item.get("id") or ""),
+        image_url=image,
+        extra={
+            "source": source,
+            "auction_date": item.get("auctionDate") or item.get("auction_date"),
+            "status_label": status_label,
+            "property_link": item.get("propertyLink") or item.get("property_link") or item.get("url"),
+            "asset_type": asset_type,
+            "property_type": item.get("propertyType") or item.get("property_type"),
+            "source_endpoint": "/zipcode/auction",
+        },
+    )
+
+
 class ForeclosureFinderFeed(FeedSource):
-    """Bulk-pull real foreclosure auction listings via Foreclosure Finder
-    (RapidAPI) — covers auction.com, HUD, Fannie Mae, Freddie Mac, Redfin."""
+    """Pull Auction.com-style foreclosure listings around Fort Worth via RapidAPI."""
     name = "Foreclosure Finder"
 
-    async def fetch(self, limit: int = 200, state: str = "TX", city: str = "fort-worth", **params) -> List[FeedListing]:
-        key = os.environ.get("RAPIDAPI_KEY", "")
+    async def fetch(
+        self,
+        limit: int = 200,
+        zipcode: str = FORT_WORTH_CENTER_ZIP,
+        radius: int = 25,
+        **params,
+    ) -> List[FeedListing]:
+        key = os.environ.get("RAPIDAPI_KEY", "").strip()
         if not key:
+            logger.info("Foreclosure Finder skipped: RAPIDAPI_KEY is not configured")
             return []
+
         headers = {
             "x-rapidapi-key": key,
-            "x-rapidapi-host": "foreclosure-finder1.p.rapidapi.com",
+            "x-rapidapi-host": FORECLOSURE_FINDER_HOST,
+            "Content-Type": "application/json",
         }
-        out: List[FeedListing] = []
-        # Use source-specific endpoints (the /city/all endpoint is deprecated)
-        endpoints = ["auction", "fanniemae", "freddiemac", "hud", "redfin"]
-        async with httpx.AsyncClient(timeout=30.0) as c:
-            for ep in endpoints:
-                if len(out) >= limit:
-                    break
-                try:
-                    r = await c.get(
-                        f"https://foreclosure-finder1.p.rapidapi.com/city/{ep}",
-                        headers=headers,
-                        params={"state": state, "city": city},
-                    )
-                    if r.status_code >= 400:
-                        logger.info("ForeclosureFinder %s → %s", ep, r.status_code)
-                        continue
-                    data = r.json()
-                    listings = data.get("listings") or []
-                    for it in listings:
-                        if len(out) >= limit:
-                            break
-                        full = it.get("address") or ""
-                        # "4876 Ambrosia Drive, Fort Worth, TX 76244, Tarrant County"
-                        parts = [p.strip() for p in full.split(",")]
-                        street = parts[0] if parts else ""
-                        c_city = parts[1] if len(parts) > 1 else "Fort Worth"
-                        zip_part = ""
-                        if len(parts) > 2:
-                            m = re.search(r"\b(\d{5})\b", parts[2])
-                            if m:
-                                zip_part = m.group(1)
-                        county = parts[3] if len(parts) > 3 else "Tarrant County"
-                        # Only ingest Tarrant County
-                        if "tarrant" not in county.lower():
-                            continue
-                        listing_type = "REO" if (it.get("assetType") == "BANK_OWNED" or ep != "auction") else "Foreclosure"
-                        owner_seller = it.get("seller") or {
-                            "fanniemae": "Fannie Mae",
-                            "freddiemac": "Freddie Mac",
-                            "hud": "HUD",
-                            "redfin": "REO Bank-Owned",
-                        }.get(ep, "Trustee / Auction")
-                        out.append(FeedListing(
-                            feed_source="Foreclosure Finder",
-                            listing_type=listing_type,
-                            situs_address=full,
-                            city=c_city,
-                            state=state.upper(),
-                            zip=zip_part,
-                            price=int(it.get("openingBid") or it.get("price") or 0),
-                            beds=int(it.get("bedrooms") or 0),
-                            baths=float(it.get("bathrooms") or 0),
-                            sqft=int(it.get("squareFootage") or 0),
-                            year_built=int(it.get("yearBuilt") or 0),
-                            owner_name=owner_seller,
-                            parcel_id=str(it.get("listingId") or ""),
-                            image_url=it.get("photoUrl") or "",
-                            extra={
-                                "source": it.get("source"),
-                                "auction_date": it.get("auctionDate"),
-                                "status_label": it.get("statusLabel"),
-                                "property_link": it.get("propertyLink"),
-                                "asset_type": it.get("assetType"),
-                                "property_type": it.get("propertyType"),
-                            },
-                        ))
-                except Exception as e:
-                    logger.warning("ForeclosureFinder %s error: %s", ep, e)
-        return out
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"https://{FORECLOSURE_FINDER_HOST}/zipcode/auction",
+                    headers=headers,
+                    params={"zipcode": str(zipcode), "radius": str(radius)},
+                )
+            if response.status_code >= 400:
+                logger.info("Foreclosure Finder /zipcode/auction → %s", response.status_code)
+                return []
+            items = _first_dict_list(response.json())
+        except Exception as exc:
+            logger.warning("Foreclosure Finder /zipcode/auction error: %s", exc)
+            return []
+
+        listings: List[FeedListing] = []
+        seen = set()
+        for item in items:
+            listing = _foreclosure_finder_listing(item)
+            if not listing:
+                continue
+            identity = listing.parcel_id or _normalize_addr(listing.situs_address)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            listings.append(listing)
+            if len(listings) >= limit:
+                break
+        return listings
 
 
 class TexasForeclosureFeed(FeedSource):
@@ -201,14 +301,6 @@ FEEDS: List[FeedSource] = [
 
 
 # ---------- Ingestion pipeline ----------
-PROPERTY_IMAGES = [
-    "https://images.pexels.com/photos/18280830/pexels-photo-18280830.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-    "https://images.pexels.com/photos/33404981/pexels-photo-33404981.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-    "https://images.pexels.com/photos/2102587/pexels-photo-2102587.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-    "https://images.pexels.com/photos/1396122/pexels-photo-1396122.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-]
-
-
 def _normalize_addr(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").upper().strip())
 
@@ -253,17 +345,17 @@ async def ingest_listings(
             if L.year_built: updates["year_built"] = L.year_built
             if L.image_url: updates["image_url"] = L.image_url
             updates["last_feed_sync"] = datetime.now(timezone.utc).isoformat()
+            combined = {**match, **updates}
+            updates.update(compute_scores(combined))
             await db.properties.update_one({"id": match["id"]}, {"$set": updates})
             matched += 1
             continue
 
         # Net-new property doc
-        owner_type = classify_owner_fn(L.owner_name or L.feed_source)
+        owner_name = (L.owner_name or "").strip()
+        owner_type = classify_owner_fn(owner_name)
         price = L.price or 0
-        mv = L.market_value or int(price * (1.05 if L.listing_type != "REO" else 1.25))
-        equity = max(0, mv - price)
-        roi = round((equity / max(price, 1)) * 100, 1) if price else 0.0
-        annual_taxes = int(mv * 0.025) if mv else 0
+        mv = L.market_value or None
 
         prop = {
             "id": str(uuid.uuid4()),
@@ -273,34 +365,46 @@ async def ingest_listings(
             "state": L.state or "TX",
             "zip": (L.zip or "")[:5],
             "county": "Tarrant",
+            "property_type": L.extra.get("property_type"),
+            "home_type": L.extra.get("property_type"),
             "beds": L.beds or 0,
             "baths": L.baths or 0,
             "sqft": L.sqft or 0,
             "year_built": L.year_built or 0,
             "lot_size_sqft": 0,
-            "image_url": L.image_url or random.choice(PROPERTY_IMAGES),
+            "image_url": L.image_url or None,
             "price": price,
             "market_value": mv,
-            "assessed_value": int(mv * 0.88) if mv else 0,
-            "annual_taxes": annual_taxes,
-            "equity_estimate": equity,
-            "est_roi_pct": roi,
+            "market_value_source": "feed-provided estimate" if mv else None,
+            "assessed_value": None,
+            "annual_taxes": None,
+            "equity_estimate": None,
+            "equity_status": "unknown - mortgage balance required",
+            "est_roi_pct": None,
+            "roi_status": "unknown - ARV, repairs, holding, and selling costs required",
             "legal_description": L.extra.get("legal", ""),
             "listing_type": L.listing_type,
-            "owner_name": L.owner_name or L.feed_source,
+            "owner_name": owner_name,
             "owner_type": owner_type,
             "owner_mailing_address": "",
             "out_of_state_owner": False,
-            "tax_delinquent": L.listing_type == "Foreclosure",
+            "tax_delinquent": False,
+            "distress_status": L.listing_type,
             "vacant": False,
-            "high_equity": (equity / max(mv, 1)) >= 0.20 if mv else False,
-            "cash_buyer": owner_type in ("LLC", "Corporation"),
-            "investor_owned": owner_type in ("LLC", "Corporation", "Trust"),
+            "high_equity": False,
+            "cash_buyer": False,
+            "investor_owned": owner_type in ("LLC", "Corporation", "Trust", "Bank"),
             "data_source": f"{L.feed_source} feed",
             "feed_extra": L.extra,
             "ingested_at": datetime.now(timezone.utc).isoformat(),
         }
-        prop.update(compute_scores_fn(prop))
+        prop.update(derive_owner_signals(
+            prop.get("owner_name") or "",
+            prop.get("owner_mailing_address") or "",
+            prop.get("situs_address") or "",
+            prop.get("state") or "TX",
+        ))
+        prop.update(compute_scores(prop))
         new_docs.append(prop)
         inserted += 1
 
@@ -374,13 +478,23 @@ EXPORT_COLUMNS = [
     "id", "account_id", "situs_address", "city", "state", "zip", "county",
     "listing_type", "data_source",
     "owner_name", "owner_type", "owner_mailing_address", "out_of_state_owner",
-    "investor_owned", "cash_buyer", "tax_delinquent", "vacant", "high_equity",
-    "price", "market_value", "assessed_value", "annual_taxes",
-    "equity_estimate", "est_roi_pct",
+    "absentee_owner", "investor_owned", "cash_buyer", "cash_buyer_status",
+    "tax_delinquent", "vacant", "high_equity",
+    "price", "market_value", "market_value_source", "tax_roll_market_value",
+    "assessed_value", "annual_taxes", "value_benchmark", "value_benchmark_source",
+    "value_spread", "discount_to_benchmark_pct", "equity_estimate", "equity_status",
+    "est_roi_pct", "roi_status",
     "beds", "baths", "sqft", "year_built",
     "investment_score", "wholesale_score", "flip_score", "rental_score", "risk_score",
+    "score_confidence", "score_kind", "score_missing_inputs",
     "legal_description",
 ]
+
+
+def _export_value(value: Any) -> Any:
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, separators=(",", ":"), default=str)
+    return value
 
 
 def docs_to_csv(docs: Iterable[Dict[str, Any]]) -> str:
@@ -388,7 +502,7 @@ def docs_to_csv(docs: Iterable[Dict[str, Any]]) -> str:
     w = csv.DictWriter(buf, fieldnames=EXPORT_COLUMNS, extrasaction="ignore")
     w.writeheader()
     for d in docs:
-        w.writerow({k: d.get(k, "") for k in EXPORT_COLUMNS})
+        w.writerow({k: _export_value(d.get(k, "")) for k in EXPORT_COLUMNS})
     return buf.getvalue()
 
 
@@ -402,7 +516,7 @@ def docs_to_xlsx_bytes(docs: List[Dict[str, Any]]) -> bytes:
     ws.title = "TarrantREI Deals"
     ws.append(EXPORT_COLUMNS)
     for d in docs:
-        ws.append([d.get(k, "") for k in EXPORT_COLUMNS])
+        ws.append([_export_value(d.get(k, "")) for k in EXPORT_COLUMNS])
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()

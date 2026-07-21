@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
 from database import PostgresDatabase
+from investor_logic import compute_scores, derive_owner_signals
 
 REQUIRED_MASTER_FIELDS = ("account_id", "street_name", "street_number")
 
@@ -140,16 +141,19 @@ async def ensure_indexes(db: PostgresDatabase) -> None:
     await db.connect()
 
 
-async def load_live_targets(db: PostgresDatabase) -> Dict[str, List[Dict[str, str]]]:
+async def load_live_targets(db: PostgresDatabase) -> Dict[str, List[Dict[str, Any]]]:
     query = {"is_live_listing": True}
-    targets: Dict[str, List[Dict[str, str]]] = {}
-    projection = {"_id": 0, "id": 1, "situs_address": 1, "city": 1, "state": 1}
-    async for prop in db.properties.find(query, projection):
+    targets: Dict[str, List[Dict[str, Any]]] = {}
+    async for prop in db.properties.find(query, {"_id": 0}):
         if not is_fort_worth_texas_property(prop):
             continue
         key = normalize_address(str(prop.get("situs_address") or ""))
         if key and prop.get("id"):
-            targets.setdefault(key, []).append({"id": str(prop["id"]), "address": str(prop.get("situs_address") or "")})
+            targets.setdefault(key, []).append({
+                "id": str(prop["id"]),
+                "address": str(prop.get("situs_address") or ""),
+                "property": prop,
+            })
     return targets
 
 
@@ -198,7 +202,10 @@ def master_document(record: Dict[str, Any], property_ids: List[str], source_name
     return {key: value for key, value in document.items() if value not in (None, "")}
 
 
-def property_enrichment(document: Mapping[str, Any]) -> Dict[str, Any]:
+def property_enrichment(
+    document: Mapping[str, Any],
+    existing_property: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
     updates = {
         "account_id": document.get("account_id"),
         "parcel_id": document.get("parcel_id"),
@@ -213,11 +220,32 @@ def property_enrichment(document: Mapping[str, Any]) -> Dict[str, Any]:
         "tax_delinquent": document.get("tax_delinquent", False),
         "tax_roll_source": document.get("data_source"),
         "tax_roll_matched_at": datetime.now(timezone.utc).isoformat(),
+        "data_provenance": {
+            **dict((existing_property or {}).get("data_provenance") or {}),
+            "tax_roll": {
+                "source": document.get("data_source"),
+                "matched_at": datetime.now(timezone.utc).isoformat(),
+                "match_method": "exact normalized street address",
+            },
+        },
     }
     for key in ("sqft", "lot_size_sqft", "year_built", "legal_description"):
         if document.get(key) not in (None, "", 0):
             updates[key] = document[key]
-    return {key: value for key, value in updates.items() if value not in (None, "")}
+    updates = {key: value for key, value in updates.items() if value not in (None, "")}
+
+    owner_signals = derive_owner_signals(
+        str(document.get("owner_name") or ""),
+        str(document.get("owner_mailing_address") or ""),
+        str((existing_property or {}).get("situs_address") or document.get("situs_address") or ""),
+        str((existing_property or {}).get("state") or "TX"),
+    )
+    updates.update(owner_signals)
+
+    combined = {**dict(existing_property or {}), **updates}
+    updates.update(compute_scores(combined))
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return updates
 
 
 async def import_matches(
@@ -267,9 +295,9 @@ async def import_matches(
             if not dry_run:
                 document["created_at"] = datetime.now(timezone.utc).isoformat()
                 tax_records.append(document)
-                enrichment = property_enrichment(document)
-                for property_id in property_ids:
-                    property_updates.append((property_id, enrichment))
+                for item in matches:
+                    enrichment = property_enrichment(document, item.get("property"))
+                    property_updates.append((item["id"], enrichment))
 
             if max_records and scanned >= max_records:
                 break

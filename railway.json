@@ -1,8 +1,8 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "cd backend && python -m importers.tax_roll_sync --apply",
-    "cronSchedule": "0 15 * * 1-5",
+    "startCommand": "cd backend && python -m importers.live_listing_sync --limit 50 && python -m importers.tax_roll_sync --apply",
+    "cronSchedule": "0 15 * * *",
     "restartPolicyType": "NEVER"
   }
 }

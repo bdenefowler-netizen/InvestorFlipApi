@@ -123,17 +123,17 @@ export default function SettingsScreen() {
             </Pressable>
           </View>
           <Text style={styles.exportNote}>
-            Exports include owner type, equity, ROI, all 5 deal scores, and tax-roll fields. Open the URL
-            directly to download the full filtered list.
+            Exports include owner signals, source-backed value fields, preliminary scores, and tax-roll data.
+            Unknown equity and ROI stay blank until their required inputs exist.
           </Text>
         </View>
 
         <View style={styles.card}>
           <Text style={styles.section}>Data Sources</Text>
-          <Row icon="document-text" label="Tarrant County Tax Roll" value="Master.dat + Rec.DAT · 4,222+ properties" />
-          <Row icon="hammer-outline" label="Foreclosure Finder API" value="Live · auction.com · Fannie Mae · Freddie Mac · HUD · Redfin" />
-          <Row icon="globe-outline" label="US Real Estate Data API" value="Live · property lookup · zestimate · lat/lng" />
-          <Row icon="receipt-outline" label="US Real Estate Listings API" value="Live · multi-year tax history" />
+          <Row icon="document-text" label="Tarrant County Tax Roll" value="Official county file · exact-address matches to Fort Worth listings" />
+          <Row icon="hammer-outline" label="Foreclosure Finder API" value="RapidAPI connector · provider availability shown above" />
+          <Row icon="globe-outline" label="Property Lookup API" value="Third-party RapidAPI lookup · not a direct Zillow connection" />
+          <Row icon="receipt-outline" label="Listing & Tax History APIs" value="Realtor.com / NTREIS data through RapidAPI wrappers" />
         </View>
 
         <View style={styles.card}>
@@ -144,8 +144,8 @@ export default function SettingsScreen() {
 
         <View style={styles.card}>
           <Text style={styles.section}>AI Deal Scoring</Text>
-          <Row icon="sparkles-outline" label="Narrative Engine" value="Claude Sonnet 4.6 · Emergent Universal Key" />
-          <Row icon="calculator-outline" label="Score Vectors" value="Investment · Wholesale · Flip · Rental · Risk" />
+          <Row icon="sparkles-outline" label="Narrative Engine" value="Quill analysis with explicit missing-data warnings" />
+          <Row icon="calculator-outline" label="Score Vectors" value="Preliminary screening · confidence and source labels included" />
         </View>
 
         <View style={[styles.card, { alignItems: "center" }]}>

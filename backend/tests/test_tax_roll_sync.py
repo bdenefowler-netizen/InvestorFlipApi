@@ -2,7 +2,7 @@
 
 import pytest
 
-from importers.tax_roll import is_fort_worth_texas_property
+from importers.tax_roll import is_fort_worth_texas_property, property_enrichment
 from importers.tax_roll_sync import select_latest_tax_roll_url, validate_tax_roll_url
 
 
@@ -26,3 +26,36 @@ def test_non_county_or_unversioned_urls_are_rejected():
         validate_tax_roll_url("https://example.com/TaxRoll20260717.zip")
     with pytest.raises(ValueError):
         validate_tax_roll_url("https://www.tarrantcountytx.gov/latest.zip")
+
+
+def test_tax_enrichment_reclassifies_owner_and_recomputes_screening():
+    existing = {
+        "id": "p1",
+        "situs_address": "6113 Whitman Ave, Fort Worth, TX 76133",
+        "state": "TX",
+        "price": 250000,
+        "owner_type": "Individual",
+        "investment_score": 50,
+    }
+    tax_record = {
+        "account_id": "123",
+        "owner_name": "M&C LEGACY LLC",
+        "owner_mailing_address": "PO BOX 4090, SCOTTSDALE, AZ 85261",
+        "market_value": 300000,
+        "land_value": 50000,
+        "improvement_value": 250000,
+        "annual_taxes": 6000,
+        "current_amount_due": 0,
+        "prior_amount_due": 0,
+        "tax_delinquent": False,
+        "data_source": "Tarrant County Tax Roll (TaxRoll20260717.zip)",
+    }
+
+    result = property_enrichment(tax_record, existing)
+
+    assert result["owner_type"] == "LLC"
+    assert result["investor_owned"] is True
+    assert result["out_of_state_owner"] is True
+    assert result["value_spread"] == 50000
+    assert result["equity_estimate"] is None
+    assert result["score_confidence"] == "low"

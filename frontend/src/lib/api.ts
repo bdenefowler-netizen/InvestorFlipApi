@@ -9,18 +9,25 @@ export type Property = {
   state: string;
   zip: string;
   county: string;
-  beds: number;
-  baths: number;
-  sqft: number;
-  year_built: number;
-  lot_size_sqft: number;
-  image_url: string;
+  beds?: number | null;
+  baths?: number | null;
+  sqft?: number | null;
+  year_built?: number | null;
+  lot_size_sqft?: number | null;
+  image_url?: string | { href?: string; url?: string } | null;
   price: number;
-  market_value: number;
-  assessed_value: number;
-  annual_taxes: number;
-  equity_estimate: number;
-  est_roi_pct: number;
+  market_value?: number | null;
+  tax_roll_market_value?: number | null;
+  assessed_value?: number | null;
+  annual_taxes?: number | null;
+  equity_estimate?: number | null;
+  equity_status?: string;
+  est_roi_pct?: number | null;
+  roi_status?: string;
+  value_benchmark?: number | null;
+  value_benchmark_source?: string | null;
+  value_spread?: number | null;
+  discount_to_benchmark_pct?: number | null;
   legal_description: string;
   listing_type: string;
   owner_name: string;
@@ -33,14 +40,36 @@ export type Property = {
   cash_buyer: boolean;
   investor_owned: boolean;
   data_source: string;
-  investment_score: number;
-  wholesale_score: number;
-  flip_score: number;
-  rental_score: number;
-  risk_score: number;
+  investment_score?: number | null;
+  wholesale_score?: number | null;
+  flip_score?: number | null;
+  rental_score?: number | null;
+  risk_score?: number | null;
+  score_confidence?: "high" | "medium" | "low" | "insufficient";
+  score_kind?: string;
+  score_missing_inputs?: string[];
+  source_platform?: string | null;
+  source_mls?: string | null;
 };
 
+export function propertyImageUrl(property: Pick<Property, "image_url">): string | undefined {
+  const value = property.image_url;
+  if (typeof value === "string") return value;
+  return value?.href || value?.url;
+}
+
 export type FilterDef = { key: string; label: string; count: number };
+
+export type AddressSuggestion = {
+  type: string;
+  title: string;
+  street_address: string;
+  city: string;
+  state: string;
+  zip: string;
+  county: string;
+  property_reach_id?: number | string | null;
+};
 
 async function jsonGet<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -59,6 +88,16 @@ export async function getProperties(
   const params = new URLSearchParams({ filter });
   if (search) params.set("search", search);
   return jsonGet(`${API}/properties?${params.toString()}`);
+}
+
+export async function getAddressSuggestions(
+  query: string,
+  signal?: AbortSignal,
+): Promise<{ count: number; items: AddressSuggestion[]; cached: boolean }> {
+  const params = new URLSearchParams({ query, limit: "6" });
+  const res = await fetch(`${API}/address-suggestions?${params.toString()}`, { signal });
+  if (!res.ok) throw new Error(`address suggestions failed (${res.status})`);
+  return res.json();
 }
 
 export async function getProperty(id: string): Promise<Property> {
@@ -87,6 +126,7 @@ export type Enrichment = {
   beds?: number;
   baths?: number;
   sqft?: number;
+  lot_size_sqft?: number;
   year_built?: number;
   lot_size?: string;
   home_type?: string;
@@ -103,6 +143,7 @@ export type Enrichment = {
   rapidapi_zip?: string;
   is_foreclosure?: boolean;
   mls_id?: string;
+  source_mls?: string;
   listing_agent_name?: string;
   listing_agent_phone?: string;
   broker_name?: string;
@@ -112,6 +153,11 @@ export type Enrichment = {
   parcel_id?: string;
   photos?: string[];
   hi_res_image?: string;
+  description?: string;
+  price_history?: Record<string, unknown>[];
+  provider_tax_history?: Record<string, unknown>[];
+  property_detail_found?: boolean;
+  property_detail_endpoint?: string;
   error?: string;
 };
 

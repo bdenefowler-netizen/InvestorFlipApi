@@ -4,7 +4,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing, tabularNums } from "../theme/tokens";
 import { OwnerBadge } from "./OwnerBadge";
-import type { Property } from "../lib/api";
+import { propertyImageUrl, type Property } from "../lib/api";
 
 export function fmtMoney(n: number): string {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
@@ -34,11 +34,13 @@ export function PropertyCard({
   testID?: string;
 }) {
   const p = property;
+  const photo = propertyImageUrl(p);
+  const spread = p.value_spread;
   const typeColor = LISTING_TYPE_COLORS[p.listing_type] || colors.brandPrimary;
   return (
     <Pressable testID={testID} onPress={onPress} style={styles.card}>
       <View style={styles.imageWrap}>
-        <Image source={{ uri: p.image_url }} style={styles.image} contentFit="cover" transition={200} />
+        <Image source={photo ? { uri: photo } : undefined} style={styles.image} contentFit="cover" transition={200} />
         <LinearGradient
           colors={["transparent", "rgba(26,28,26,0.85)"]}
           style={styles.scrim}
@@ -61,8 +63,8 @@ export function PropertyCard({
             <Text style={styles.priceLabel}>asking</Text>
           </View>
           <View style={{ alignItems: "flex-end" }}>
-            <Text style={styles.roi}>{p.est_roi_pct.toFixed(1)}%</Text>
-            <Text style={styles.priceLabel}>est ROI</Text>
+            <Text style={styles.roi}>{p.discount_to_benchmark_pct != null ? `${p.discount_to_benchmark_pct.toFixed(1)}%` : "—"}</Text>
+            <Text style={styles.priceLabel}>value spread</Text>
           </View>
         </View>
       </View>
@@ -94,17 +96,17 @@ export function PropertyCard({
         <View style={styles.statsRow}>
           <View style={styles.stat}>
             <Text style={styles.statLabel}>Investment</Text>
-            <Text style={[styles.statValue, tabularNums]}>{p.investment_score}</Text>
+            <Text style={[styles.statValue, tabularNums]}>{p.investment_score ?? "—"}</Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.stat}>
-            <Text style={styles.statLabel}>Equity</Text>
-            <Text style={[styles.statValue, tabularNums]}>{fmtMoney(p.equity_estimate)}</Text>
+            <Text style={styles.statLabel}>Spread</Text>
+            <Text style={[styles.statValue, tabularNums]}>{spread != null ? fmtMoney(spread) : "—"}</Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.stat}>
             <Text style={styles.statLabel}>Risk</Text>
-            <Text style={[styles.statValue, tabularNums]}>{p.risk_score}</Text>
+            <Text style={[styles.statValue, tabularNums]}>{p.risk_score ?? "—"}</Text>
           </View>
         </View>
       </View>

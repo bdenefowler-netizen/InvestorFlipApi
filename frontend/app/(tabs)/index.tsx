@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -16,10 +16,12 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   getFilters,
   getProperties,
+  getAddressSuggestions,
   getSavedIds,
   saveProperty,
   unsaveProperty,
   type FilterDef,
+  type AddressSuggestion,
   type Property,
 } from "@/src/lib/api";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
@@ -31,6 +33,9 @@ export default function ListingsScreen() {
   const [filters, setFilters] = useState<FilterDef[]>([]);
   const [active, setActive] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
+  const [suggesting, setSuggesting] = useState(false);
+  const suppressSuggestions = useRef(false);
   const [items, setItems] = useState<Property[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -76,6 +81,45 @@ export default function ListingsScreen() {
     const t = setTimeout(loadProperties, 200);
     return () => clearTimeout(t);
   }, [loadProperties]);
+
+  useEffect(() => {
+    const query = search.trim();
+    if (suppressSuggestions.current) {
+      suppressSuggestions.current = false;
+      setSuggestions([]);
+      setSuggesting(false);
+      return;
+    }
+    if (query.length < 5) {
+      setSuggestions([]);
+      setSuggesting(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setSuggesting(true);
+      try {
+        const data = await getAddressSuggestions(query, controller.signal);
+        setSuggestions(data.items);
+      } catch (error: any) {
+        if (error?.name !== "AbortError") setSuggestions([]);
+      } finally {
+        if (!controller.signal.aborted) setSuggesting(false);
+      }
+    }, 450);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [search]);
+
+  const selectSuggestion = (suggestion: AddressSuggestion) => {
+    suppressSuggestions.current = true;
+    setSuggestions([]);
+    setSearch(suggestion.street_address || suggestion.title);
+  };
 
   // Refetch when returning from detail page (enrichment may have updated beds/baths)
   useFocusEffect(
@@ -129,16 +173,54 @@ export default function ListingsScreen() {
             placeholder="Search address, city, owner, ZIP"
             placeholderTextColor={colors.muted}
             value={search}
-            onChangeText={setSearch}
+            onChangeText={(value) => {
+              suppressSuggestions.current = false;
+              setSearch(value);
+            }}
             style={styles.searchInput}
             returnKeyType="search"
           />
           {search ? (
-            <Pressable onPress={() => setSearch("")} hitSlop={10} testID="clear-search">
+            <Pressable
+              onPress={() => {
+                suppressSuggestions.current = true;
+                setSuggestions([]);
+                setSearch("");
+              }}
+              hitSlop={10}
+              testID="clear-search"
+            >
               <Ionicons name="close-circle" size={18} color={colors.muted} />
             </Pressable>
           ) : null}
         </View>
+
+        {suggesting || suggestions.length > 0 ? (
+          <View style={styles.suggestionPanel} testID="address-suggestions">
+            {suggesting && suggestions.length === 0 ? (
+              <View style={styles.suggestionLoading}>
+                <ActivityIndicator size="small" color={colors.brandPrimary} />
+                <Text style={styles.suggestionMeta}>Serenity is checking that address…</Text>
+              </View>
+            ) : (
+              suggestions.map((suggestion) => (
+                <Pressable
+                  key={`${suggestion.property_reach_id || "address"}-${suggestion.title}`}
+                  onPress={() => selectSuggestion(suggestion)}
+                  style={({ pressed }) => [styles.suggestionRow, pressed && styles.suggestionPressed]}
+                >
+                  <Ionicons name="location-outline" size={17} color={colors.brandPrimary} />
+                  <View style={styles.suggestionText}>
+                    <Text style={styles.suggestionTitle} numberOfLines={1}>{suggestion.title}</Text>
+                    <Text style={styles.suggestionMeta} numberOfLines={1}>
+                      {[suggestion.county, suggestion.zip].filter(Boolean).join(" · ")}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))
+            )}
+          </View>
+        ) : null}
 
         <ScrollView
           testID="filter-row"
@@ -238,6 +320,35 @@ const styles = StyleSheet.create({
     color: colors.onSurface,
     paddingVertical: 0,
   },
+  suggestionPanel: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    marginTop: 6,
+    overflow: "hidden",
+  },
+  suggestionLoading: {
+    minHeight: 46,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  suggestionRow: {
+    minHeight: 52,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  suggestionPressed: { backgroundColor: colors.surfaceSecondary },
+  suggestionText: { flex: 1 },
+  suggestionTitle: { color: colors.onSurface, fontSize: 13, fontWeight: "700" },
+  suggestionMeta: { color: colors.muted, fontSize: 11, marginTop: 2 },
   chipScroll: {
     marginTop: spacing.md,
     height: 36,
