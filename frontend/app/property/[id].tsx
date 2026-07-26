@@ -16,6 +16,7 @@ import {
   enrichProperty,
   getTaxHistory,
   propertyImageUrl,
+  propertyPhotoUrls,
   type Property,
   type Enrichment,
   type TaxHistoryEntry,
@@ -38,6 +39,12 @@ function KeyValue({ k, v, mono = true }: { k: string; v: string; mono?: boolean 
 
 function maybeMoney(value?: number | null): string {
   return typeof value === "number" ? `$${value.toLocaleString()}` : "Needs data";
+}
+
+function maybeDate(value?: string | null): string {
+  if (!value) return "Needs data";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
 
 function ComparisonRow({
@@ -130,6 +137,7 @@ export default function PropertyDetail() {
   const [enrich, setEnrich] = useState<Enrichment | null>(null);
   const [enrichLoading, setEnrichLoading] = useState(false);
   const [taxHistory, setTaxHistory] = useState<TaxHistoryEntry[]>([]);
+  const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -138,6 +146,7 @@ export default function PropertyDetail() {
     try {
       const [p, n, s] = await Promise.all([getProperty(id), getNearby(id), getSavedIds()]);
       setProp(p);
+      setSelectedPhoto(null);
       setNearby(n);
       setSaved(s.ids.includes(id));
     } catch (e) {
@@ -217,7 +226,13 @@ export default function PropertyDetail() {
   const baths = enrich?.baths ?? prop.baths;
   const sqft = enrich?.sqft ?? prop.sqft;
   const yearBuilt = enrich?.year_built ?? prop.year_built;
-  const heroPhoto = enrich?.hi_res_image || (enrich?.photos && enrich.photos[0]) || propertyImageUrl(prop);
+  const sourcePhotos = propertyPhotoUrls(prop);
+  const photos = [
+    ...(enrich?.hi_res_image ? [enrich.hi_res_image] : []),
+    ...(enrich?.photos || []),
+    ...sourcePhotos,
+  ].filter((url, index, all) => url && all.indexOf(url) === index);
+  const heroPhoto = selectedPhoto || photos[0] || propertyImageUrl(prop);
   const enrichedAddress = enrich?.found && enrich.rapidapi_address
     ? `${enrich.rapidapi_address}, ${enrich.rapidapi_city}, ${enrich.rapidapi_state} ${enrich.rapidapi_zip}`
     : null;
@@ -266,6 +281,87 @@ export default function PropertyDetail() {
           ) : null}
         </View>
 
+        {photos.length > 1 ? (
+          <View style={styles.section} testID="section-photos">
+            <Text style={styles.sectionTitle}>LISTING PHOTOS · {photos.length}</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.photoStrip}
+            >
+              {photos.map((photo, index) => (
+                <Pressable
+                  key={`${photo}-${index}`}
+                  onPress={() => setSelectedPhoto(photo)}
+                  style={[
+                    styles.photoThumbWrap,
+                    heroPhoto === photo && styles.photoThumbSelected,
+                  ]}
+                  testID={`photo-${index}`}
+                >
+                  <Image source={{ uri: photo }} style={styles.photoThumb} contentFit="cover" />
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
+
+        <View style={styles.section} testID="section-listing-details">
+          <Text style={styles.sectionTitle}>LISTING DETAILS</Text>
+          <View style={styles.card}>
+            <KeyValue
+              k="Property Type"
+              v={(prop.property_type || prop.home_type || "Needs data").replace(/_/g, " ")}
+              mono={false}
+            />
+            <KeyValue k="Status" v={prop.listing_status || prop.listing_type || "Needs data"} mono={false} />
+            <KeyValue
+              k="Lot Size"
+              v={prop.lot_size_sqft ? `${prop.lot_size_sqft.toLocaleString()} sqft` : "Needs data"}
+            />
+            <KeyValue k="Listed" v={maybeDate(prop.listing_date)} />
+            <KeyValue k="MLS" v={prop.source_mls || "Needs data"} mono={false} />
+            <KeyValue k="MLS ID" v={prop.mls_id || "Needs data"} />
+            <KeyValue
+              k="HOA"
+              v={prop.hoa_fee != null ? `$${prop.hoa_fee.toLocaleString()}` : "Needs data"}
+            />
+            <KeyValue k="Listing Agent" v={prop.listing_agent_name || "Needs data"} mono={false} />
+            <KeyValue k="Contact" v={prop.listing_agent_phone || "Needs data"} />
+            {prop.listing_agent_email ? <KeyValue k="Agent Email" v={prop.listing_agent_email} mono={false} /> : null}
+            {prop.listing_agent_rating != null ? (
+              <KeyValue
+                k="Agent Rating"
+                v={`${prop.listing_agent_rating.toFixed(1)} · ${prop.listing_agent_review_count ?? 0} reviews`}
+              />
+            ) : null}
+            <KeyValue k="Broker" v={prop.broker_name || "Needs data"} mono={false} />
+            <KeyValue
+              k="Coordinates"
+              v={
+                prop.latitude != null && prop.longitude != null
+                  ? `${prop.latitude.toFixed(5)}, ${prop.longitude.toFixed(5)}`
+                  : "Needs data"
+              }
+            />
+          </View>
+          {prop.listing_description ? (
+            <View style={[styles.card, styles.descriptionCard]}>
+              <Text style={styles.descriptionLabel}>PROPERTY DESCRIPTION</Text>
+              <Text style={styles.descriptionText}>{prop.listing_description}</Text>
+            </View>
+          ) : null}
+          {prop.listing_tags?.length ? (
+            <View style={styles.tagWrap}>
+              {prop.listing_tags.slice(0, 12).map((tag) => (
+                <View key={tag} style={styles.featureTag}>
+                  <Text style={styles.featureTagText}>{tag.replace(/_/g, " ")}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </View>
+
         {/* Owner Intelligence */}
         <View style={styles.section} testID="section-owner">
           <Text style={styles.sectionTitle}>OWNER INTELLIGENCE</Text>
@@ -281,6 +377,32 @@ export default function PropertyDetail() {
             <KeyValue k="Cash Buyer" v={prop.cash_buyer ? "YES" : "NO"} />
           </View>
         </View>
+
+        {prop.agent_listings?.length ? (
+          <View style={styles.section} testID="section-agent-listings">
+            <Text style={styles.sectionTitle}>MORE LISTINGS BY THIS AGENT</Text>
+            <View style={styles.card}>
+              {prop.agent_listings.map((listing) => (
+                <View key={listing.id} style={styles.agentListingRow}>
+                  {listing.image_url ? (
+                    <Image source={{ uri: listing.image_url }} style={styles.agentListingImage} contentFit="cover" />
+                  ) : null}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.agentListingAddress} numberOfLines={2}>
+                      {listing.address || "Address unavailable"}
+                    </Text>
+                    <Text style={[styles.agentListingMeta, tabularNums]}>
+                      {listing.price ? `$${listing.price.toLocaleString()}` : "Price unavailable"}
+                      {listing.beds ? ` · ${listing.beds} bd` : ""}
+                      {listing.baths ? ` · ${listing.baths} ba` : ""}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+            <Text style={styles.sourceNote}>Source: {prop.agent_listings_source || "Realty in US"}</Text>
+          </View>
+        ) : null}
 
         {/* AI Deal Scoring */}
         <View style={styles.section} testID="section-scoring">
@@ -538,6 +660,58 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
+  photoStrip: { gap: 10, paddingRight: spacing.lg },
+  photoThumbWrap: {
+    width: 112,
+    height: 78,
+    borderRadius: radius.md,
+    overflow: "hidden",
+    borderWidth: 2,
+    borderColor: "transparent",
+  },
+  photoThumbSelected: { borderColor: colors.brandPrimary },
+  photoThumb: { width: "100%", height: "100%" },
+  descriptionCard: { marginTop: spacing.sm },
+  descriptionLabel: {
+    fontSize: 10,
+    color: colors.muted,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    marginBottom: 8,
+  },
+  descriptionText: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: colors.onSurface,
+  },
+  tagWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: spacing.sm,
+  },
+  featureTag: {
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.pill,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+  },
+  featureTagText: {
+    color: colors.onSurfaceTertiary,
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  agentListingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 9,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.divider,
+  },
+  agentListingImage: { width: 58, height: 44, borderRadius: radius.sm },
+  agentListingAddress: { color: colors.onSurface, fontSize: 13, fontWeight: "700" },
+  agentListingMeta: { color: colors.muted, fontSize: 11, marginTop: 3 },
   ownerName: { fontSize: 16, fontWeight: "800", color: colors.onSurface, flex: 1, marginRight: 12 },
 
   quickRow: {

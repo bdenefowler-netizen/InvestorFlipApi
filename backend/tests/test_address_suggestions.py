@@ -57,3 +57,22 @@ def test_accepts_top_level_suggestions_and_deduplicates():
 
     assert len(result) == 1
     assert result[0]["street_address"] == "100 Main St"
+
+
+def test_accepts_us_real_estate_location_autocomplete_wrapper():
+    payload = {
+        "data": {
+            "autocomplete": [
+                {
+                    "title": "Fort Worth, TX",
+                    "city": "Fort Worth",
+                    "state": "TX",
+                }
+            ]
+        }
+    }
+
+    result = normalize_address_suggestions(payload)
+
+    assert len(result) == 1
+    assert result[0]["title"] == "Fort Worth, TX"

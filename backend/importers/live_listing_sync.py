@@ -19,11 +19,17 @@ async def run(limit: int) -> None:
             "reason": "Set ENABLE_LIVE_LISTING_CRON=true after confirming the provider quota",
         }))
         return
-    if not os.environ.get("RAPIDAPI_KEY", "").strip():
+    if not (
+        os.environ.get("OPENWEB_NINJA_REAL_ESTATE_API_KEY", "").strip()
+        or os.environ.get("OPENWEB_NINJA_ZILLOW_API_KEY", "").strip()
+        or os.environ.get("OPENWEB_NINJA_API_KEY", "").strip()
+        or os.environ.get("OPENWEB_NINJA_KEY", "").strip()
+        or os.environ.get("RAPIDAPI_KEY", "").strip()
+    ):
         print(json.dumps({
             "ok": False,
             "skipped": True,
-            "reason": "RAPIDAPI_KEY is not configured for this Railway service",
+            "reason": "Configure an OpenWeb Ninja provider key or RAPIDAPI_KEY for this Railway service",
         }))
         return
 

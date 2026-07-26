@@ -24,8 +24,11 @@ def _raw_suggestions(payload: Any) -> List[Dict[str, Any]]:
     for candidate in (
         payload.get("suggestions"),
         _as_dict(payload.get("data")).get("suggestions"),
+        _as_dict(payload.get("data")).get("autocomplete"),
+        _as_dict(payload.get("data")).get("results"),
         payload.get("data"),
         payload.get("results"),
+        payload.get("autocomplete"),
     ):
         if isinstance(candidate, list):
             return [item for item in candidate if isinstance(item, dict)]

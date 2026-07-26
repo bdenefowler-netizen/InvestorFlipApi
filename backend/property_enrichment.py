@@ -24,12 +24,17 @@ def _subject(payload: Any) -> Dict[str, Any]:
         return {}
     data = payload.get("data")
     if isinstance(data, dict):
-        for key in ("property", "home", "details", "result"):
+        for key in ("property", "home", "details", "result", "listing", "mls"):
             value = data.get(key)
             if isinstance(value, dict):
                 return value
         return data
-    for key in ("property", "home", "details", "result"):
+    if isinstance(data, list):
+        return next((item for item in data if isinstance(item, dict)), {})
+    listings = payload.get("listings") or payload.get("results")
+    if isinstance(listings, list):
+        return next((item for item in listings if isinstance(item, dict)), {})
+    for key in ("property", "home", "details", "result", "listing", "mls"):
         value = payload.get(key)
         if isinstance(value, dict):
             return value
@@ -97,6 +102,21 @@ def normalize_property_detail(payload: Any) -> Dict[str, Any]:
         ),
         "listing_agent_phone": _first_present(
             attribution.get("agentPhoneNumber"), attribution.get("agent_phone"), subject.get("listing_agent_phone")
+        ),
+        "listing_agent_email": _first_present(
+            attribution.get("agentEmail"), attribution.get("agent_email"),
+            subject.get("listing_agent_email"), subject.get("ListAgentEmail"),
+        ),
+        "listing_agent_url": _first_present(
+            attribution.get("agentUrl"), attribution.get("agent_url"),
+            attribution.get("agentProfileUrl"), subject.get("listing_agent_url"),
+            subject.get("agentUrl"), subject.get("ListAgentURL"),
+        ),
+        "listing_agent_fulfillment_id": _first_present(
+            attribution.get("agentFulfillmentId"),
+            attribution.get("fulfillmentId"),
+            subject.get("agent_fulfillment_id"),
+            subject.get("fulfillmentId"),
         ),
         "broker_name": _first_present(
             attribution.get("brokerName"), attribution.get("broker_name"), subject.get("broker_name")

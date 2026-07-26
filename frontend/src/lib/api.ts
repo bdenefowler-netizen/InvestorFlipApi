@@ -15,6 +15,7 @@ export type Property = {
   year_built?: number | null;
   lot_size_sqft?: number | null;
   image_url?: string | { href?: string; url?: string } | null;
+  photos?: Array<string | { href?: string; url?: string }> | null;
   price: number;
   market_value?: number | null;
   tax_roll_market_value?: number | null;
@@ -50,12 +51,152 @@ export type Property = {
   score_missing_inputs?: string[];
   source_platform?: string | null;
   source_mls?: string | null;
+  mls_id?: string | null;
+  property_type?: string | null;
+  home_type?: string | null;
+  listing_status?: string | null;
+  listing_description?: string | null;
+  listing_agent_name?: string | null;
+  listing_agent_phone?: string | null;
+  listing_agent_email?: string | null;
+  listing_agent_url?: string | null;
+  listing_agent_rating?: number | null;
+  listing_agent_review_count?: number | null;
+  listing_agent_photo_url?: string | null;
+  listing_agent_fulfillment_id?: string | null;
+  agent_listings?: Array<{
+    id: string;
+    address?: string | null;
+    price?: number | null;
+    beds?: number | null;
+    baths?: number | null;
+    sqft?: number | null;
+    image_url?: string | null;
+    detail_url?: string | null;
+  }>;
+  agent_listings_source?: string | null;
+  broker_name?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  detail_url?: string | null;
+  listing_date?: string | null;
+  hoa_fee?: number | null;
+  listing_tags?: string[];
+  raw_source_excerpt?: unknown;
 };
 
-export function propertyImageUrl(property: Pick<Property, "image_url">): string | undefined {
-  const value = property.image_url;
-  if (typeof value === "string") return value;
-  return value?.href || value?.url;
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function mediaUrl(value: unknown): string | undefined {
+  if (typeof value === "string") return value.replace(/^http:\/\//, "https://");
+  const record = asRecord(value);
+  const url = record.href || record.url || record.src;
+  return typeof url === "string" ? url.replace(/^http:\/\//, "https://") : undefined;
+}
+
+function numberValue(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value.replace(/[^0-9.-]/g, ""));
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
+}
+
+function stringValue(...values: unknown[]): string | undefined {
+  return values.find((value) => typeof value === "string" && value.trim()) as string | undefined;
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/** Recover fields embedded by older Railway syncs in raw_source_excerpt. */
+export function normalizeProperty(property: Property): Property {
+  const raw = asRecord(property.raw_source_excerpt);
+  if (Object.keys(raw).length === 0) return property;
+
+  const description = asRecord(raw.description);
+  const location = asRecord(raw.location);
+  const address = asRecord(location.address);
+  const coordinate = asRecord(address.coordinate);
+  const source = asRecord(raw.source);
+  const sourceAgent = asRecord(arrayValue(source.agents)[0]);
+  const advertiser = asRecord(arrayValue(raw.advertisers)[0]);
+  const office = asRecord(advertiser.office);
+  const officePhone = asRecord(arrayValue(office.phones)[0]);
+  const fulfillmentValue = (
+    advertiser.fulfillment_id
+    ?? advertiser.fulfillmentId
+    ?? office.fulfillment_id
+    ?? office.fulfillmentId
+  );
+  const fulfillmentId = fulfillmentValue != null ? String(fulfillmentValue) : undefined;
+
+  const photos = [
+    ...arrayValue(property.photos),
+    ...arrayValue(raw.photos),
+    raw.primary_photo,
+  ]
+    .map(mediaUrl)
+    .filter((url): url is string => Boolean(url));
+  const uniquePhotos = [...new Set(photos)];
+  const tags = arrayValue(raw.tags).filter((tag): tag is string => typeof tag === "string");
+
+  return {
+    ...property,
+    beds: property.beds ?? numberValue(description.beds),
+    baths: property.baths ?? numberValue(description.baths, description.baths_full_calc),
+    sqft: property.sqft ?? numberValue(description.sqft),
+    year_built: property.year_built ?? numberValue(description.year_built),
+    lot_size_sqft: property.lot_size_sqft ?? numberValue(description.lot_sqft),
+    latitude: property.latitude ?? numberValue(coordinate.lat),
+    longitude: property.longitude ?? numberValue(coordinate.lon),
+    image_url: property.image_url || uniquePhotos[0],
+    photos: uniquePhotos,
+    property_type: property.property_type || stringValue(description.type),
+    home_type: property.home_type || stringValue(description.type),
+    listing_status: property.listing_status || stringValue(raw.status),
+    listing_description: property.listing_description || stringValue(description.text),
+    source_mls: property.source_mls || stringValue(source.name),
+    mls_id: property.mls_id || stringValue(source.listing_id),
+    listing_agent_name: property.listing_agent_name || stringValue(sourceAgent.agent_name),
+    listing_agent_phone: property.listing_agent_phone || stringValue(officePhone.number),
+    listing_agent_email: property.listing_agent_email || stringValue(sourceAgent.email),
+    listing_agent_url: property.listing_agent_url || stringValue(
+      sourceAgent.agent_url,
+      sourceAgent.profile_url,
+      sourceAgent.href,
+    ),
+    listing_agent_fulfillment_id: property.listing_agent_fulfillment_id || fulfillmentId,
+    broker_name: property.broker_name || stringValue(sourceAgent.office_name, office.name),
+    detail_url: property.detail_url || stringValue(raw.href),
+    listing_date: property.listing_date || stringValue(raw.list_date),
+    hoa_fee: property.hoa_fee ?? numberValue(asRecord(raw.hoa).fee),
+    listing_tags: property.listing_tags?.length ? property.listing_tags : tags,
+  };
+}
+
+export function propertyPhotoUrls(
+  property: Pick<Property, "image_url" | "photos">,
+): string[] {
+  const urls = [
+    mediaUrl(property.image_url),
+    ...arrayValue(property.photos).map(mediaUrl),
+  ].filter((url): url is string => Boolean(url));
+  return [...new Set(urls)];
+}
+
+export function propertyImageUrl(
+  property: Pick<Property, "image_url" | "photos">,
+): string | undefined {
+  return propertyPhotoUrls(property)[0];
 }
 
 export type FilterDef = { key: string; label: string; count: number };
@@ -87,7 +228,10 @@ export async function getProperties(
 ): Promise<{ count: number; items: Property[] }> {
   const params = new URLSearchParams({ filter });
   if (search) params.set("search", search);
-  return jsonGet(`${API}/properties?${params.toString()}`);
+  const data = await jsonGet<{ count: number; items: Property[] }>(
+    `${API}/properties?${params.toString()}`,
+  );
+  return { ...data, items: data.items.map(normalizeProperty) };
 }
 
 export async function getAddressSuggestions(
@@ -101,7 +245,7 @@ export async function getAddressSuggestions(
 }
 
 export async function getProperty(id: string): Promise<Property> {
-  return jsonGet(`${API}/properties/${id}`);
+  return normalizeProperty(await jsonGet<Property>(`${API}/properties/${id}`));
 }
 
 export async function getNearby(id: string): Promise<{
@@ -185,7 +329,8 @@ export async function getSavedIds(): Promise<{ ids: string[] }> {
 }
 
 export async function getSaved(): Promise<{ count: number; items: Property[] }> {
-  return jsonGet(`${API}/saved`);
+  const data = await jsonGet<{ count: number; items: Property[] }>(`${API}/saved`);
+  return { ...data, items: data.items.map(normalizeProperty) };
 }
 
 export async function saveProperty(id: string): Promise<void> {

@@ -31,7 +31,11 @@ from investor_logic import (
     is_synthetic_property,
     merge_live_refresh,
 )
-from listing_normalization import extract_listing_fields
+from listing_normalization import (
+    build_provider_address_query,
+    extract_listing_fields,
+    hydrate_listing_record,
+)
 from property_enrichment import normalize_property_detail
 from address_suggestions import normalize_address_suggestions
 import os
@@ -431,11 +435,42 @@ class SaveRequest(BaseModel):
 
 # ---------- RapidAPI Helpers ----------
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
-OPENWEB_NINJA_API_KEY = os.environ.get("OPENWEB_NINJA_API_KEY", "")
+OPENWEB_NINJA_ZILLOW_API_KEY = (
+    os.environ.get("OPENWEB_NINJA_ZILLOW_API_KEY", "").strip()
+    or os.environ.get("OPENWEB_NINJA_API_KEY", "").strip()
+)
+OPENWEB_NINJA_REAL_ESTATE_API_KEY = (
+    os.environ.get("OPENWEB_NINJA_REAL_ESTATE_API_KEY", "").strip()
+    or os.environ.get("OPENWEB_NINJA_KEY", "").strip()
+    or os.environ.get("OPENWEB_NINJA_API_KEY", "").strip()
+)
+OPENWEB_NINJA_ZILLOW_BASE_URL = os.environ.get(
+    "OPENWEB_NINJA_ZILLOW_BASE_URL",
+    "https://api.openwebninja.com/realtime-zillow-data",
+).rstrip("/")
+OPENWEB_NINJA_REAL_ESTATE_BASE_URL = os.environ.get(
+    "OPENWEB_NINJA_REAL_ESTATE_BASE_URL",
+    "https://api.openwebninja.com/realtime-real-estate-data/zillow",
+).rstrip("/")
 HOST_LOOKUP = "us-real-estate-data1.p.rapidapi.com"
 HOST_LISTINGS = "us-real-estate-listings.p.rapidapi.com"
 HOST_REALTIME = "real-time-real-estate-data.p.rapidapi.com"
 HOST_PROPERTY_REACH = "property-reach.p.rapidapi.com"
+HOST_CAKEMLS = "cakemls.p.rapidapi.com"
+HOST_REALTOR_SEARCH = "realtor-search.p.rapidapi.com"
+HOST_REALTY_US = "realty-us.p.rapidapi.com"
+RAPIDAPI_CAKEMLS_ENABLED = os.environ.get(
+    "RAPIDAPI_CAKEMLS_ENABLED",
+    "false",
+).lower() == "true"
+RAPIDAPI_REALTOR_SEARCH_ENABLED = os.environ.get(
+    "RAPIDAPI_REALTOR_SEARCH_ENABLED",
+    "false",
+).lower() == "true"
+RAPIDAPI_REALTY_US_ENABLED = os.environ.get(
+    "RAPIDAPI_REALTY_US_ENABLED",
+    "false",
+).lower() == "true"
 PROPERTY_DETAIL_CACHE_VERSION = 1
 ADDRESS_SUGGESTION_CACHE_SECONDS = 24 * 60 * 60
 _address_suggestion_cache: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
@@ -454,6 +489,189 @@ async def _rapid_get(host: str, path: str, params: Dict[str, Any]) -> Dict[str, 
         if r.status_code >= 400:
             raise HTTPException(r.status_code, f"RapidAPI error from {host}{path}: {r.text[:300]}")
         return r.json()
+
+
+async def _rapid_post(host: str, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not RAPIDAPI_KEY:
+        raise HTTPException(503, "RAPIDAPI_KEY not configured in environment variables")
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": host,
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"https://{host}{path}",
+            headers=headers,
+            json=payload,
+        )
+        if response.status_code >= 400:
+            raise HTTPException(
+                response.status_code,
+                f"RapidAPI error from {host}{path}: {response.text[:300]}",
+            )
+        return response.json()
+
+
+async def _openweb_get(
+    path: str,
+    params: Dict[str, Any],
+    *,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Call OpenWeb Ninja's direct API without mixing in RapidAPI headers."""
+    key = api_key or OPENWEB_NINJA_ZILLOW_API_KEY
+    root = (base_url or OPENWEB_NINJA_ZILLOW_BASE_URL).rstrip("/")
+    if not key:
+        raise HTTPException(503, "OpenWeb Ninja API key not configured")
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    headers = {
+        "X-API-Key": key,
+        "Accept": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            f"{root}{normalized_path}",
+            headers=headers,
+            params=params,
+        )
+        if response.status_code >= 400:
+            raise HTTPException(
+                response.status_code,
+                f"OpenWeb Ninja error from {normalized_path}: {response.text[:300]}",
+            )
+        return response.json()
+
+
+def _agent_detail_patch(payload: Any) -> Dict[str, Any]:
+    """Extract a small, stable agent profile from Realtor Search responses."""
+    candidates: List[Dict[str, Any]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            lowered = {str(key).lower() for key in value}
+            if lowered & {
+                "agentname", "agent_name", "fullname", "full_name",
+                "phone", "email", "rating", "reviewcount",
+            }:
+                candidates.append(value)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(payload)
+    if not candidates:
+        return {}
+
+    record = max(candidates, key=lambda value: len(value))
+
+    def first(*keys: str) -> Any:
+        for key in keys:
+            value = record.get(key)
+            if value not in (None, ""):
+                return value
+        return None
+
+    photo = first("photo", "photo_url", "image", "avatar", "profilePhoto")
+    photo_url = _photo_url(photo)
+    return {
+        key: value
+        for key, value in {
+            "listing_agent_name": first("agentName", "agent_name", "fullName", "full_name", "name"),
+            "listing_agent_phone": first("phone", "phoneNumber", "phone_number", "mobile"),
+            "listing_agent_email": first("email", "emailAddress", "email_address"),
+            "listing_agent_rating": safe_float(first("rating", "averageRating", "reviewAverage")),
+            "listing_agent_review_count": safe_int(first("reviewCount", "review_count", "reviews")),
+            "listing_agent_photo_url": photo_url,
+            "broker_name": first("brokerName", "broker_name", "officeName", "office_name", "brokerage"),
+        }.items()
+        if value not in (None, "")
+    }
+
+
+async def _add_realtor_agent_details(enriched: Dict[str, Any]) -> Dict[str, Any]:
+    if not (RAPIDAPI_REALTOR_SEARCH_ENABLED and RAPIDAPI_KEY):
+        return enriched
+    url = str(enriched.get("listing_agent_url") or "").strip()
+    if not re.match(r"^https://(?:www\.)?realtor\.com/realestateagents/", url, flags=re.I):
+        return enriched
+    try:
+        raw = await _rapid_get(
+            HOST_REALTOR_SEARCH,
+            "/agents/detail-url",
+            {"url": url},
+        )
+        patch = _agent_detail_patch(raw)
+        return {**enriched, **{key: value for key, value in patch.items() if value not in (None, "")}}
+    except HTTPException as exc:
+        logger.info("Realtor Search agent detail failed: %s", exc.detail)
+        return enriched
+
+
+async def _add_realty_us_agent_listings(
+    enriched: Dict[str, Any],
+    property_record: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not (RAPIDAPI_REALTY_US_ENABLED and RAPIDAPI_KEY):
+        return enriched
+    if enriched.get("agent_listings"):
+        return enriched
+
+    fulfillment_id = str(
+        enriched.get("listing_agent_fulfillment_id")
+        or property_record.get("listing_agent_fulfillment_id")
+        or ""
+    ).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", fulfillment_id):
+        return enriched
+
+    try:
+        raw = await _rapid_get(
+            HOST_REALTY_US,
+            "/agents/v2/listings",
+            {"fulfillmentId": fulfillment_id},
+        )
+        compact = []
+        seen = set()
+        for item in _deep_find_items(raw):
+            fields = extract_listing_fields(item)
+            address = fields["address"]
+            identity = str(
+                item.get("property_id")
+                or item.get("zpid")
+                or item.get("listing_id")
+                or address.get("full")
+                or ""
+            )
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            compact.append({
+                "id": identity,
+                "address": address.get("full"),
+                "price": fields.get("price"),
+                "beds": fields.get("beds"),
+                "baths": fields.get("baths"),
+                "sqft": fields.get("sqft"),
+                "image_url": fields.get("photos", [None])[0] if fields.get("photos") else None,
+                "detail_url": item.get("href") or item.get("detail_url") or item.get("url"),
+            })
+            if len(compact) >= 8:
+                break
+        if compact:
+            return {
+                **enriched,
+                "listing_agent_fulfillment_id": fulfillment_id,
+                "agent_listings": compact,
+                "agent_listings_source": "Realty in US via RapidAPI",
+                "agent_listings_fetched_at": datetime.now(timezone.utc).isoformat(),
+            }
+    except HTTPException as exc:
+        logger.info("Realty in US agent listings failed: %s", exc.detail)
+    return enriched
 
 
 def _deep_find_items(obj: Any) -> List[Dict[str, Any]]:
@@ -636,45 +854,83 @@ async def fetch_live_fort_worth_residential_listings(limit: int = 50) -> List[Di
     The endpoint names vary between RapidAPI providers/plans, so this function tries
     several common patterns and uses the first successful responses.
     """
-    attempts = [
+    attempts = []
+    if OPENWEB_NINJA_REAL_ESTATE_API_KEY:
+        attempts.append({
+            "provider": "openweb",
+            "api_key": OPENWEB_NINJA_REAL_ESTATE_API_KEY,
+            "base_url": OPENWEB_NINJA_REAL_ESTATE_BASE_URL,
+            "path": "/search",
+            "params": {
+                "location": "Fort Worth, TX",
+                "home_status": "FOR_SALE",
+            },
+            "source": "OpenWeb Ninja Real-Time Real Estate Data /zillow/search",
+        })
+    if OPENWEB_NINJA_ZILLOW_API_KEY:
+        attempts.append({
+            "provider": "openweb",
+            "api_key": OPENWEB_NINJA_ZILLOW_API_KEY,
+            "base_url": OPENWEB_NINJA_ZILLOW_BASE_URL,
+            "path": "/search",
+            "params": {
+                "location": "Fort Worth, TX",
+                "home_status": "FOR_SALE",
+            },
+            "source": "OpenWeb Ninja Real-Time Zillow Data /search",
+        })
+    attempts.extend([
         {
+            "provider": "rapidapi",
             "host": HOST_REALTIME,
             "path": "/search",
             "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "NEWEST", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /search",
         },
         {
+            "provider": "rapidapi",
             "host": HOST_REALTIME,
             "path": "/search-by-location",
             "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "NEWEST", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /search-by-location",
         },
         {
+            "provider": "rapidapi",
             "host": HOST_REALTIME,
             "path": "/propertyExtendedSearch",
             "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "NEWEST", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /propertyExtendedSearch",
         },
         {
+            "provider": "rapidapi",
             "host": HOST_REALTIME,
             "path": "/properties/list",
             "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /properties/list",
         },
         {
+            "provider": "rapidapi",
             "host": HOST_LISTINGS,
             "path": "/for-sale",
             "params": {"location": "Fort Worth, TX", "property_type": "single_family", "limit": limit},
             "source": "RapidAPI us-real-estate-listings /for-sale",
         },
-    ]
+    ])
 
     normalized: List[Dict[str, Any]] = []
     errors: List[str] = []
 
     for attempt in attempts:
         try:
-            raw = await _rapid_get(attempt["host"], attempt["path"], attempt["params"])
+            if attempt["provider"] == "openweb":
+                raw = await _openweb_get(
+                    attempt["path"],
+                    attempt["params"],
+                    api_key=attempt["api_key"],
+                    base_url=attempt["base_url"],
+                )
+            else:
+                raw = await _rapid_get(attempt["host"], attempt["path"], attempt["params"])
             items = _deep_find_items(raw)
             for item in items:
                 prop = normalize_live_listing(item, attempt["source"])
@@ -825,7 +1081,11 @@ async def live_fort_worth_listings(limit: int = Query(50, ge=1, le=100)):
         {"_id": 0},
     ).sort("updated_at", -1).limit(limit * 3).to_list(length=limit * 3)
 
-    items = [p for p in docs if is_fort_worth_property(p) and is_user_visible_property(p)][:limit]
+    items = [
+        hydrate_listing_record(p)
+        for p in docs
+        if is_fort_worth_property(p) and is_user_visible_property(p)
+    ][:limit]
 
     return {
         "count": len(items),
@@ -838,8 +1098,70 @@ async def live_fort_worth_listings(limit: int = Query(50, ge=1, le=100)):
 async def live_status():
     total_live = await db.properties.count_documents({"is_live_listing": True})
     latest = await db.live_sync_log.find({}, {"_id": 0}).sort("created_at", -1).limit(5).to_list(length=5)
+    rapidapi_ready = bool(RAPIDAPI_KEY)
     return {
-        "rapidapi_configured": bool(RAPIDAPI_KEY),
+        "rapidapi_configured": rapidapi_ready,
+        "rapidapi_cakemls_enabled": RAPIDAPI_CAKEMLS_ENABLED,
+        "rapidapi_realtor_search_enabled": RAPIDAPI_REALTOR_SEARCH_ENABLED,
+        "rapidapi_realty_us_enabled": RAPIDAPI_REALTY_US_ENABLED,
+        "openweb_ninja_zillow_configured": bool(OPENWEB_NINJA_ZILLOW_API_KEY),
+        "openweb_ninja_real_estate_configured": bool(OPENWEB_NINJA_REAL_ESTATE_API_KEY),
+        "providers": {
+            "openweb_ninja_real_estate": {
+                "configured": bool(OPENWEB_NINJA_REAL_ESTATE_API_KEY),
+                "method": "GET",
+                "endpoint": f"{OPENWEB_NINJA_REAL_ESTATE_BASE_URL}/search",
+                "detail_endpoint": f"{OPENWEB_NINJA_REAL_ESTATE_BASE_URL}/property-details-address",
+                "trigger": "live sync and property detail",
+            },
+            "openweb_ninja_zillow": {
+                "configured": bool(OPENWEB_NINJA_ZILLOW_API_KEY),
+                "method": "GET",
+                "endpoint": f"{OPENWEB_NINJA_ZILLOW_BASE_URL}/search",
+                "detail_endpoint": f"{OPENWEB_NINJA_ZILLOW_BASE_URL}/property-details-address",
+                "trigger": "live sync and property detail fallback",
+            },
+            "rapidapi_cakemls": {
+                "configured": rapidapi_ready,
+                "enabled": RAPIDAPI_CAKEMLS_ENABLED,
+                "method": "POST",
+                "endpoint": f"https://{HOST_CAKEMLS}/api/mls/",
+                "trigger": "property detail",
+            },
+            "rapidapi_realtor_search": {
+                "configured": rapidapi_ready,
+                "enabled": RAPIDAPI_REALTOR_SEARCH_ENABLED,
+                "method": "GET",
+                "endpoint": f"https://{HOST_REALTOR_SEARCH}/agents/detail-url",
+                "trigger": "property detail when an agent profile URL exists",
+            },
+            "rapidapi_realty_us": {
+                "configured": rapidapi_ready,
+                "enabled": RAPIDAPI_REALTY_US_ENABLED,
+                "method": "GET",
+                "endpoint": f"https://{HOST_REALTY_US}/agents/v2/listings",
+                "trigger": "property detail when a fulfillmentId exists",
+            },
+            "rapidapi_us_real_estate_listings": {
+                "configured": rapidapi_ready,
+                "method": "GET",
+                "endpoints": [
+                    f"https://{HOST_LISTINGS}/for-sale",
+                    f"https://{HOST_LISTINGS}/location-suggest",
+                    f"https://{HOST_LISTINGS}/taxHistory",
+                ],
+                "trigger": "live sync, address search fallback, and tax history",
+            },
+            "rapidapi_us_real_estate_data1": {
+                "configured": rapidapi_ready,
+                "method": "GET",
+                "endpoints": [
+                    f"https://{HOST_LOOKUP}/properties/lookup",
+                    f"https://{HOST_LOOKUP}/properties/{{zpid}}",
+                ],
+                "trigger": "property detail fallback",
+            },
+        },
         "live_listing_count": total_live,
         "recent_syncs": latest,
         "sync_endpoint": "POST /api/live/sync-fort-worth",
@@ -866,7 +1188,11 @@ async def list_properties(
 
     cursor = db.properties.find(q, {"_id": 0}).sort("updated_at", -1).limit(limit * 10)
     raw_items = await cursor.to_list(length=limit * 10)
-    items = [p for p in raw_items if is_user_visible_property(p)][:limit]
+    items = [
+        hydrate_listing_record(p)
+        for p in raw_items
+        if is_user_visible_property(p)
+    ][:limit]
 
     return {
         "count": len(items),
@@ -893,8 +1219,28 @@ async def address_suggestions(
     if "fort worth" not in cleaned.casefold():
         provider_query = f"{cleaned}, Fort Worth, TX"
 
-    raw = await _rapid_get(HOST_PROPERTY_REACH, "/v1/suggestions", {"query": provider_query})
-    items = normalize_address_suggestions(raw)
+    items: List[Dict[str, Any]] = []
+    try:
+        raw = await _rapid_get(
+            HOST_PROPERTY_REACH,
+            "/v1/suggestions",
+            {"query": provider_query},
+        )
+        items = normalize_address_suggestions(raw)
+    except HTTPException as exc:
+        logger.info("PropertyReach suggestions failed: %s", exc.detail)
+
+    if not items:
+        try:
+            raw = await _rapid_get(
+                HOST_LISTINGS,
+                "/location-suggest",
+                {"query": provider_query},
+            )
+            items = normalize_address_suggestions(raw)
+        except HTTPException as exc:
+            logger.info("US Real Estate Listings location suggestions failed: %s", exc.detail)
+
     _address_suggestion_cache[cache_key] = (time.monotonic(), items)
 
     if len(_address_suggestion_cache) > 250:
@@ -911,7 +1257,7 @@ async def get_property(property_id: str):
         raise HTTPException(404, "Property not found")
     if not is_user_visible_property(doc):
         raise HTTPException(404, "Property not available in verified search results")
-    return doc
+    return hydrate_listing_record(doc)
 
 
 @api_router.post("/properties/{property_id}/quill-analysis", response_model=QuillAnalyzeResponse)
@@ -942,8 +1288,16 @@ async def get_nearby(property_id: str):
         {"_id": 0},
     ).limit(20).to_list(length=20)
 
-    near_foreclosures = [p for p in near_foreclosures_raw if is_user_visible_property(p)][:4]
-    near_investor = [p for p in near_investor_raw if is_user_visible_property(p)][:4]
+    near_foreclosures = [
+        hydrate_listing_record(p)
+        for p in near_foreclosures_raw
+        if is_user_visible_property(p)
+    ][:4]
+    near_investor = [
+        hydrate_listing_record(p)
+        for p in near_investor_raw
+        if is_user_visible_property(p)
+    ][:4]
     return {"nearby_foreclosures": near_foreclosures, "nearby_investor_purchases": near_investor}
 
 
@@ -1034,7 +1388,11 @@ async def list_saved():
     if not ids:
         return {"count": 0, "items": []}
     props_raw = await db.properties.find({"id": {"$in": ids}}, {"_id": 0}).to_list(length=500)
-    props = [p for p in props_raw if is_user_visible_property(p)]
+    props = [
+        hydrate_listing_record(p)
+        for p in props_raw
+        if is_user_visible_property(p)
+    ]
     return {"count": len(props), "items": props}
 
 
@@ -1208,12 +1566,7 @@ async def export_xlsx(
 
 # ---------- Property Enrichment / Tax ----------
 def _build_address_query(prop: Dict[str, Any]) -> str:
-    situs = (prop.get("situs_address") or "").strip()
-    base = re.sub(r",?\s*Tarrant County,?\s*(TX)?\.?\s*$", "", situs, flags=re.I).strip().rstrip(",")
-    if re.search(r"\bTX\s*\d{5}\b", base, flags=re.I):
-        return base
-    city = (prop.get("city") or "Fort Worth").title().strip()
-    return f"{base}, {city}, TX"
+    return build_provider_address_query(prop)
 
 
 @api_router.post("/properties/{property_id}/enrich")
@@ -1223,6 +1576,7 @@ async def enrich_property(property_id: str):
         raise HTTPException(404, "Property not found")
     if not is_user_visible_property(prop):
         raise HTTPException(404, "Property not available in verified search results")
+    prop = hydrate_listing_record(prop)
 
     cached = await db.enrichment.find_one({"property_id": property_id}, {"_id": 0})
     if cached and cached.get("zpid") and cached.get("property_detail_cache_version") == PROPERTY_DETAIL_CACHE_VERSION:
@@ -1235,6 +1589,83 @@ async def enrich_property(property_id: str):
         return enriched
 
     address = _build_address_query(prop)
+
+    if RAPIDAPI_CAKEMLS_ENABLED and RAPIDAPI_KEY:
+        try:
+            raw = await _rapid_post(HOST_CAKEMLS, "/api/mls/", {"address": address})
+            detail = normalize_property_detail(raw)
+            useful = any(
+                detail.get(key)
+                for key in (
+                    "beds",
+                    "baths",
+                    "sqft",
+                    "year_built",
+                    "list_price",
+                    "mls_id",
+                    "photos",
+                )
+            )
+            if useful:
+                enriched = {
+                    "property_id": property_id,
+                    "address_queried": address,
+                    "source_api": "CakeMLS via RapidAPI",
+                    "found": True,
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    **detail,
+                }
+                enriched["property_detail_cache_version"] = PROPERTY_DETAIL_CACHE_VERSION
+                enriched["property_detail_found"] = True
+                enriched = await _add_realtor_agent_details(enriched)
+                enriched = await _add_realty_us_agent_listings(enriched, prop)
+                photo_urls = enriched.get("photos") if isinstance(enriched.get("photos"), list) else []
+                await _persist_enrichment(property_id, enriched, photo_urls)
+                return enriched
+        except HTTPException as exc:
+            logger.info("CakeMLS enrichment failed: %s", exc.detail)
+
+    openweb_detail_providers = [
+        (
+            "OpenWeb Ninja Real-Time Real Estate Data",
+            OPENWEB_NINJA_REAL_ESTATE_API_KEY,
+            OPENWEB_NINJA_REAL_ESTATE_BASE_URL,
+        ),
+        (
+            "OpenWeb Ninja Real-Time Zillow Data",
+            OPENWEB_NINJA_ZILLOW_API_KEY,
+            OPENWEB_NINJA_ZILLOW_BASE_URL,
+        ),
+    ]
+    for provider_name, api_key, base_url in openweb_detail_providers:
+        if not api_key:
+            continue
+        try:
+            raw = await _openweb_get(
+                "/property-details-address",
+                {"address": address},
+                api_key=api_key,
+                base_url=base_url,
+            )
+            detail = normalize_property_detail(raw)
+            if detail.get("detail_found"):
+                enriched = {
+                    "property_id": property_id,
+                    "address_queried": address,
+                    "source_api": provider_name,
+                    "found": True,
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    **detail,
+                }
+                enriched["property_detail_cache_version"] = PROPERTY_DETAIL_CACHE_VERSION
+                enriched["property_detail_found"] = True
+                enriched = await _add_realtor_agent_details(enriched)
+                enriched = await _add_realty_us_agent_listings(enriched, prop)
+                photo_urls = enriched.get("photos") if isinstance(enriched.get("photos"), list) else []
+                await _persist_enrichment(property_id, enriched, photo_urls)
+                return enriched
+        except HTTPException as exc:
+            logger.info("%s enrichment failed: %s", provider_name, exc.detail)
 
     try:
         raw = await _rapid_get(HOST_LOOKUP, "/properties/lookup", {"address": address})
@@ -1272,6 +1703,8 @@ async def enrich_property(property_id: str):
             if photo_urls:
                 enriched["photos"] = photo_urls
             enriched = await _add_full_property_details(enriched)
+            enriched = await _add_realtor_agent_details(enriched)
+            enriched = await _add_realty_us_agent_listings(enriched, prop)
             photo_urls = enriched.get("photos") if isinstance(enriched.get("photos"), list) else photo_urls
             await _persist_enrichment(property_id, enriched, photo_urls)
             return enriched
@@ -1342,6 +1775,21 @@ async def _persist_enrichment(property_id: str, enriched: Dict[str, Any], photo_
         update["listing_agent_name"] = enriched["listing_agent_name"]
     if enriched.get("listing_agent_phone"):
         update["listing_agent_phone"] = enriched["listing_agent_phone"]
+    if enriched.get("listing_agent_email"):
+        update["listing_agent_email"] = enriched["listing_agent_email"]
+    if enriched.get("listing_agent_url"):
+        update["listing_agent_url"] = enriched["listing_agent_url"]
+    if enriched.get("listing_agent_fulfillment_id"):
+        update["listing_agent_fulfillment_id"] = str(enriched["listing_agent_fulfillment_id"])
+    if enriched.get("listing_agent_rating"):
+        update["listing_agent_rating"] = enriched["listing_agent_rating"]
+    if enriched.get("listing_agent_review_count") is not None:
+        update["listing_agent_review_count"] = enriched["listing_agent_review_count"]
+    if enriched.get("listing_agent_photo_url"):
+        update["listing_agent_photo_url"] = enriched["listing_agent_photo_url"]
+    if enriched.get("agent_listings"):
+        update["agent_listings"] = enriched["agent_listings"]
+        update["agent_listings_source"] = enriched.get("agent_listings_source")
     if enriched.get("broker_name"):
         update["broker_name"] = enriched["broker_name"]
     if enriched.get("description"):
@@ -1364,6 +1812,38 @@ async def tax_history(property_id: str):
         enr = await db.enrichment.find_one({"property_id": property_id}, {"_id": 0})
     if not enr or not enr.get("zpid"):
         return {"property_id": property_id, "tax_history": [], "available": False}
+
+    provider_history = enr.get("provider_tax_history")
+    if isinstance(provider_history, list) and provider_history:
+        history = []
+        for entry in provider_history:
+            if not isinstance(entry, dict):
+                continue
+            year = safe_int(entry.get("year") or entry.get("time"))
+            if not year:
+                continue
+            assessed = safe_int(
+                entry.get("assessed_value")
+                or entry.get("assessedValue")
+                or entry.get("value")
+            )
+            market = safe_int(entry.get("market_value") or entry.get("marketValue"))
+            normalized = {
+                "year": year,
+                "tax": safe_int(entry.get("tax") or entry.get("taxPaid"), 0),
+            }
+            if assessed:
+                normalized["assessment"] = {"total": assessed}
+            if market:
+                normalized["market"] = {"total": market}
+            history.append(normalized)
+        if history:
+            return {
+                "property_id": property_id,
+                "tax_history": history,
+                "available": True,
+                "source": "OpenWeb Ninja Real-Time Zillow Data",
+            }
 
     cached = await db.tax_history.find_one({"property_id": property_id}, {"_id": 0})
     if cached and cached.get("tax_history"):

@@ -1,20 +1,22 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
-    "version": "1.0.0",
+    "name": "InvestorFlip",
+    "slug": "investorflip",
+    "version": "1.0.2",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+    "icon": "./assets/images/investorflip-icon.png",
+    "scheme": "investorflip",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "package": "com.bdenefowler.investorflip",
+      "versionCode": 3,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "foregroundImage": "./assets/images/investorflip-icon.png",
+        "backgroundColor": "#031225"
       },
       "edgeToEdgeEnabled": true
     },
@@ -28,15 +30,22 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
+          "image": "./assets/images/investorflip-icon.png",
+          "imageWidth": 220,
           "resizeMode": "contain",
-          "backgroundColor": "#000"
+          "backgroundColor": "#031225"
         }
       ]
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "c7f7f2c5-4046-4648-90aa-286fcf1a549d"
+      }
+    },
+    "owner": "britacuss-team"
   }
 }

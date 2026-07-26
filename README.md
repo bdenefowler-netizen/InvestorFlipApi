@@ -39,12 +39,69 @@ written to InvestorFlip.
 ## Automatic live-listing sync
 
 The Railway cron command can refresh Fort Worth residential listings before checking
-the tax roll. A successful listing refresh normalizes nested Realtor/NTREIS fields,
+the tax roll. A successful listing refresh normalizes nested provider fields,
 preserves higher-trust county owner/tax facts, and resets each listing's missed-sync
 counter. A listing is marked stale only after two successful provider responses omit
 it; an empty or failed provider response never retires existing listings.
-Set `ENABLE_LIVE_LISTING_CRON=true` only after confirming the RapidAPI plan's quota;
+Set `ENABLE_LIVE_LISTING_CRON=true` only after confirming the provider plan's quota;
 the cron skips listing requests by default so it cannot unexpectedly consume credits.
+
+The preferred direct providers are OpenWeb Ninja's unified Real-Time Real Estate
+Zillow API and dedicated Real-Time Zillow API. Configure these Railway variables:
+
+```text
+OPENWEB_NINJA_REAL_ESTATE_API_KEY=<key for Real-Time Real Estate Data>
+OPENWEB_NINJA_ZILLOW_API_KEY=<key for Real-Time Zillow Data>
+```
+
+Both direct providers use `X-API-Key`; their base URLs and paths are built in. Do not
+set an auth scheme or put either direct API key in `RAPIDAPI_KEY`. `RAPIDAPI_KEY` is
+a separate optional fallback for subscriptions purchased through RapidAPI and for
+the PropertyReach address-suggestion integration. Legacy `OPENWEB_NINJA_API_KEY` and
+`OPENWEB_NINJA_KEY` variables remain supported as fallbacks, but the explicit names
+above prevent two product keys from being mixed up.
+
+CakeMLS is available as an address-based MLS enrichment fallback through RapidAPI.
+It uses the same RapidAPI account key and is opt-in so opening property details does
+not consume CakeMLS credits unexpectedly:
+
+```text
+RAPIDAPI_KEY=<secret copied from RapidAPI.com>
+RAPIDAPI_CAKEMLS_ENABLED=true
+```
+
+The same `RAPIDAPI_KEY` also powers `us-real-estate-listings` for live listings,
+tax history, and `/location-suggest`. Location suggestions are used automatically
+when the PropertyReach suggestion provider is unavailable.
+
+Realtor Search agent-profile enrichment is also opt-in. It only runs when a
+property provider supplies a valid Realtor.com `/realestateagents/` profile URL:
+
+```text
+RAPIDAPI_REALTOR_SEARCH_ENABLED=true
+```
+
+Realty in US agent listings are opt-in and use a listing provider's
+`fulfillmentId` to populate the mobile app's “More listings by this agent” section:
+
+```text
+RAPIDAPI_REALTY_US_ENABLED=true
+```
+
+### Provider route map
+
+| Provider | Method and endpoint | InvestorFlip trigger |
+| --- | --- | --- |
+| OpenWeb Ninja Real-Time Real Estate | `GET /realtime-real-estate-data/zillow/search` | Live sync |
+| OpenWeb Ninja Real-Time Zillow | `GET /realtime-zillow-data/search` | Live-sync fallback |
+| CakeMLS | `POST cakemls.p.rapidapi.com/api/mls/` | Property detail |
+| Realtor Search | `GET realtor-search.p.rapidapi.com/agents/detail-url` | Detail with an agent URL |
+| Realty in US | `GET realty-us.p.rapidapi.com/agents/v2/listings` | Detail with a fulfillment ID |
+| US Real Estate Listings | `GET /for-sale`, `/location-suggest`, `/taxHistory` | Sync, search, and tax |
+| US Real Estate Data 1 | `GET /properties/lookup`, `/properties/{zpid}` | Detail fallback |
+
+`GET /api/live/status` reports the configured/enabled state and route mapping
+without returning any API-key value.
 
 Scores are explicitly preliminary. County appraisals and automated estimates are
 recorded as screening benchmarks, not ARV. Owner equity stays unknown without a

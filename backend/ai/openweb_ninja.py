@@ -19,10 +19,16 @@ from typing import Any, Dict
 import httpx
 
 
-OPENWEB_NINJA_API_KEY = os.environ.get("OPENWEB_NINJA_API_KEY", "").strip()
-OPENWEB_NINJA_BASE_URL = os.environ.get("OPENWEB_NINJA_BASE_URL", "").strip().rstrip("/")
+OPENWEB_NINJA_API_KEY = (
+    os.environ.get("OPENWEB_NINJA_ZILLOW_API_KEY", "").strip()
+    or os.environ.get("OPENWEB_NINJA_API_KEY", "").strip()
+)
+OPENWEB_NINJA_BASE_URL = os.environ.get(
+    "OPENWEB_NINJA_BASE_URL",
+    "https://api.openwebninja.com/realtime-zillow-data",
+).strip().rstrip("/")
 OPENWEB_NINJA_PROPERTY_PATH = os.environ.get(
-    "OPENWEB_NINJA_PROPERTY_PATH", "/property"
+    "OPENWEB_NINJA_PROPERTY_PATH", "/property-details-address"
 ).strip()
 OPENWEB_NINJA_AUTH_HEADER = os.environ.get(
     "OPENWEB_NINJA_AUTH_HEADER", "X-API-Key"
