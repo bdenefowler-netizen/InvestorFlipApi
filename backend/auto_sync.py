@@ -71,14 +71,18 @@ async def sync_source(name: str, import_func, **kwargs):
         return {"source": name, "skipped": True, "last_sync": last.isoformat()}
     
     logger.info(f"🔄 {name} - starting sync")
+    db = PostgresDatabase()
     try:
-        result = await import_func(**kwargs)
+        await db.connect()
+        result = await import_func(db=db, **kwargs)
         await set_last_sync(name)
         logger.info(f"✅ {name} - sync complete")
         return {"source": name, "status": "success", "result": result}
     except Exception as e:
         logger.error(f"❌ {name} - sync failed: {e}")
         return {"source": name, "status": "failed", "error": str(e)}
+    finally:
+        await db.close()
 
 
 async def sync_all_sources():
@@ -101,7 +105,7 @@ async def sync_all_sources():
     results.append(await sync_source("foreclosure_listings", import_foreclosure_listings, city="fort-worth", pages=3))
     
     # Off-market deals
-    results.append(await sync_source("offmarketdeck", import_offmarketdeck, city="fort-worth", pages=2))
+    results.append(await sync_source("offmarketdeck", import_offmarket_deals, city="fort-worth", pages=2))
     
     return results
 
