@@ -53,6 +53,7 @@ from datetime import datetime, timezone
 import httpx
 from importers import feeds as feeds_mod
 from add_all_routes import router as all_router
+from saved_searches_routes import router as saved_searches_router
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -2034,6 +2035,7 @@ async def quill_analyze_property(body: QuillAnalyzeRequest):
 
 # Include router
 app.include_router(all_router)  # FREE data sources (violations, foreclosures, OffMarketDeck, SmartPropLeads, etc.)
+app.include_router(saved_searches_router)
 app.include_router(api_router)
 
 app.add_middleware(

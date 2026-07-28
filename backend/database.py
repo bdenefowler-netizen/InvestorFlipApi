@@ -24,6 +24,7 @@ COLLECTION_KEYS = {
     "ai_analysis": "property_id",
     "enrichment": "property_id",
     "tax_history": "property_id",
+    "saved_searches": "id",
 }
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 

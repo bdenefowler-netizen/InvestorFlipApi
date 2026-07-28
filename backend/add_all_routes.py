@@ -23,6 +23,9 @@ from typing import Dict, Any, List, Optional
 
 router = APIRouter(prefix="/api")
 
+from saved_searches_routes import router as saved_searches_router
+router.include_router(saved_searches_router, prefix="/saved-searches")
+
 
 # ========== Fort Worth Violations (FREE) ==========
 
