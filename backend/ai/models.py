@@ -25,7 +25,9 @@ class QuillAnalyzeRequest(BaseModel):
 
 
 class QuillAnalyzeResponse(BaseModel):
-    analyst: str = "Quill AI"
+    analyst: str = "Quill AI 🐾"
+    deal_sniffer_score: Optional[int] = None
+    chef_verdict: Optional[str] = None
     decision: str  # BUY / PASS / NEGOTIATE
     max_offer: Optional[float] = None
 

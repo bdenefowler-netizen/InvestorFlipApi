@@ -58,7 +58,27 @@ def analyze_property_with_quill(body: QuillAnalyzeRequest) -> QuillAnalyzeRespon
             "No ARV estimate was provided. Comparable sales should be reviewed."
         )
 
+        # 🐾 Chef Deal Sniffer Score
+    deal_sniffer_score = 0
+    if max_offer and listing_price:
+        ratio = listing_price / max_offer
+        if decision == "BUY":
+            deal_sniffer_score = min(100, int(80 + (1 - ratio) * 50))
+        elif decision == "NEGOTIATE":
+            deal_sniffer_score = min(100, int(50 + (1 - ratio) * 30))
+        else:
+            deal_sniffer_score = max(0, int(30 - ratio * 20))
+    
+    chef_verdicts = {
+        "BUY": "I've sniffed this one from corner to corner. Solid ARV, great equity potential. This deal smells like victory! 🏆🐾",
+        "NEGOTIATE": "Hmm... interesting scent. Could be a good deal with some negotiation. Let me sniff around a bit more. 👃🤔",
+        "PASS": "My nose says pass on this one. Something doesn't smell right. Trust the sniffer! 🚫🐾",
+    }
+    
     return QuillAnalyzeResponse(
+        analyst="Quill AI 🐾",
+        deal_sniffer_score=deal_sniffer_score,
+        chef_verdict=chef_verdicts.get(decision, "Sniff sniff... 🐕"),
         decision=decision,
         max_offer=max_offer,
         arv_explanation=arv_explanation,
