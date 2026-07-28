@@ -31,7 +31,7 @@ import { PropertyCard } from "@/src/components/PropertyCard";
 export default function ListingsScreen() {
   const router = useRouter();
   const [filters, setFilters] = useState<FilterDef[]>([]);
-  const [active, setActive] = useState<string>("all");
+  const [active, setActive] = useState<string>("opportunities");
   const [search, setSearch] = useState("");
   const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
   const [suggesting, setSuggesting] = useState(false);
@@ -159,7 +159,7 @@ export default function ListingsScreen() {
         <View style={styles.titleRow}>
           <View>
             <Text style={styles.eyebrow}>TARRANT COUNTY · TX</Text>
-            <Text style={styles.title}>Investor Deals</Text>
+            <Text style={styles.title}>Motivated Deals</Text>
           </View>
           <View testID="result-count" style={styles.countPill}>
             <Text style={[styles.countPillText, tabularNums]}>{totalLabel}</Text>
@@ -257,8 +257,8 @@ export default function ListingsScreen() {
       ) : items.length === 0 ? (
         <View style={styles.center} testID="listings-empty">
           <Ionicons name="home-outline" size={42} color={colors.muted} />
-          <Text style={styles.emptyText}>No properties match your filters.</Text>
-          <Text style={styles.emptySub}>Try broadening your criteria.</Text>
+          <Text style={styles.emptyText}>No target opportunities match.</Text>
+          <Text style={styles.emptySub}>Try another motivated or distressed category.</Text>
         </View>
       ) : (
         <FlatList

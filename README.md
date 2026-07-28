@@ -25,6 +25,14 @@ User-facing APIs hide records marked as demo, seeded sample, or synthetic. They
 remain in PostgreSQL until an operator explicitly removes them, so deploying a
 data-quality change never destroys the old reference data.
 
+The main property feed is intentionally narrower than the provider inventory.
+InvestorFlip only returns houses with explicit evidence for at least one target:
+motivated-seller language, foreclosure/short sale, distressed-condition language,
+REO/bank ownership, county tax delinquency, cash-offer language, investor-special
+language, or an as-is sale. Structured provider flags and county balances outrank
+marketing text. FSBO, absentee, LLC, and out-of-state ownership do not prove seller
+motivation and do not qualify a listing by themselves.
+
 See `memory/PRD.md` for the product and API overview.
 
 ## Automatic Tarrant tax-roll sync
@@ -43,6 +51,9 @@ the tax roll. A successful listing refresh normalizes nested provider fields,
 preserves higher-trust county owner/tax facts, and resets each listing's missed-sync
 counter. A listing is marked stale only after two successful provider responses omit
 it; an empty or failed provider response never retires existing listings.
+Each run takes the first usable OpenWeb listing source and the first usable RapidAPI
+listing source, then merges and deduplicates their results. This keeps both provider
+families active without calling every fallback endpoint after a successful response.
 Set `ENABLE_LIVE_LISTING_CRON=true` only after confirming the provider plan's quota;
 the cron skips listing requests by default so it cannot unexpectedly consume credits.
 
@@ -92,8 +103,8 @@ RAPIDAPI_REALTY_US_ENABLED=true
 
 | Provider | Method and endpoint | InvestorFlip trigger |
 | --- | --- | --- |
-| OpenWeb Ninja Real-Time Real Estate | `GET /realtime-real-estate-data/zillow/search` | Live sync |
-| OpenWeb Ninja Real-Time Zillow | `GET /realtime-zillow-data/search` | Live-sync fallback |
+| OpenWeb Ninja Real-Time Real Estate | `GET /realtime-real-estate-data/zillow/search` | Preferred live sync and detail |
+| OpenWeb Ninja Real-Time Zillow | `GET /realtime-zillow-data/search` | Live-sync and detail fallback |
 | CakeMLS | `POST cakemls.p.rapidapi.com/api/mls/` | Property detail |
 | Realtor Search | `GET realtor-search.p.rapidapi.com/agents/detail-url` | Detail with an agent URL |
 | Realty in US | `GET realty-us.p.rapidapi.com/agents/v2/listings` | Detail with a fulfillment ID |

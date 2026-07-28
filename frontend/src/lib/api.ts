@@ -82,6 +82,10 @@ export type Property = {
   listing_date?: string | null;
   hoa_fee?: number | null;
   listing_tags?: string[];
+  is_target_opportunity?: boolean;
+  opportunity_signal_keys?: string[];
+  opportunity_signals?: string[];
+  opportunity_evidence?: string[];
   raw_source_excerpt?: unknown;
 };
 

@@ -25,10 +25,12 @@ from ai.quill import analyze_property_with_quill
 from ai.scout import scout_analyze_property
 from database import PostgresDatabase
 from investor_logic import (
+    classify_opportunity,
     classify_owner,
     compute_scores,
     derive_owner_signals,
     is_synthetic_property,
+    is_target_opportunity,
     merge_live_refresh,
 )
 from listing_normalization import (
@@ -325,31 +327,24 @@ def generate_seed_properties(n: int = 36) -> List[Dict[str, Any]]:
 
 # ---------- Filter Definitions ----------
 INVESTOR_FILTERS = [
-    {"key": "all", "label": "All"},
-    {"key": "live", "label": "Live Listings"},
-    {"key": "reo", "label": "REO"},
+    {"key": "opportunities", "label": "All Targets"},
+    {"key": "motivated", "label": "Motivated Seller"},
     {"key": "foreclosure", "label": "Foreclosure"},
+    {"key": "distressed", "label": "Distressed"},
+    {"key": "reo", "label": "REO"},
+    {"key": "tax_lien", "label": "Tax Lien"},
+    {"key": "cash_offer", "label": "Cash Offer"},
+    {"key": "investor_special", "label": "Investor Special"},
     {"key": "as_is", "label": "As-Is"},
-    {"key": "investor", "label": "Investor"},
-    {"key": "cash_house", "label": "Cash House"},
-    {"key": "high_equity", "label": "High Equity"},
-    {"key": "cash_buyer", "label": "Cash Buyer"},
-    {"key": "investor_owned", "label": "Investor-Owned"},
-    {"key": "llc", "label": "LLC"},
-    {"key": "law_firm", "label": "Law Firm"},
-    {"key": "tax_delinquent", "label": "Tax Delinquent"},
-    {"key": "absentee_owner", "label": "Absentee Owner"},
-    {"key": "out_of_state", "label": "Out-of-State Owner"},
-    {"key": "vacant", "label": "Vacant"},
-    {"key": "corporate", "label": "Corporate Owner"},
-    {"key": "trust", "label": "Trust-Owned"},
-    {"key": "bank_owned", "label": "Bank-Owned"},
 ]
 
 
 def apply_filter(filter_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
     f = filter_key.lower()
-    if f in ("all", ""):
+    if f in (
+        "all", "", "opportunities", "motivated", "distressed", "tax_lien",
+        "cash_offer", "investor_special", "foreclosure", "reo", "as_is",
+    ):
         return query
     if f == "live":
         query["is_live_listing"] = True
@@ -394,18 +389,38 @@ def is_user_visible_property(property_record: Dict[str, Any]) -> bool:
     return not is_synthetic_property(property_record) and is_allowed_flip_house(property_record)
 
 
+def decorate_opportunity(property_record: Dict[str, Any]) -> Dict[str, Any]:
+    decorated = hydrate_listing_record(property_record)
+    decorated.update(classify_opportunity(decorated))
+    return decorated
+
+
 def matches_investor_filter(property_record: Dict[str, Any], filter_key: str) -> bool:
+    opportunity = classify_opportunity(property_record)
+    if not opportunity["is_target_opportunity"]:
+        return False
+
     key = filter_key.lower()
-    if key in ("all", ""):
+    if key in ("all", "", "opportunities"):
         return True
     if key == "live":
         return property_record.get("is_live_listing") is True
-    if key in {"reo", "foreclosure", "as_is", "investor", "cash_house"}:
-        expected = {
-            "reo": "REO", "foreclosure": "Foreclosure", "as_is": "As-Is",
-            "investor": "Investor", "cash_house": "Cash House",
-        }[key]
-        return property_record.get("listing_type") == expected
+    signal_key = {
+        "motivated": "motivated_seller",
+        "motivated_seller": "motivated_seller",
+        "foreclosure": "foreclosure",
+        "distressed": "distressed",
+        "reo": "reo",
+        "tax_lien": "tax_lien",
+        "tax_delinquent": "tax_lien",
+        "cash_offer": "cash_offer",
+        "cash_house": "cash_offer",
+        "investor": "investor_special",
+        "investor_special": "investor_special",
+        "as_is": "as_is",
+    }.get(key)
+    if signal_key:
+        return signal_key in opportunity["opportunity_signal_keys"]
     if key in {"high_equity", "cash_buyer", "investor_owned", "tax_delinquent", "vacant", "absentee_owner"}:
         return property_record.get(key) is True
     if key == "out_of_state":
@@ -845,18 +860,20 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
         prop.get("state") or "TX",
     ))
     prop.update(compute_scores(prop))
+    prop.update(classify_opportunity(prop))
     return prop
 
 
 async def fetch_live_fort_worth_residential_listings(limit: int = 50) -> List[Dict[str, Any]]:
-    """Try multiple RapidAPI listing endpoints and normalize live Fort Worth residential listings.
+    """Pull one usable OpenWeb source and one usable RapidAPI source.
 
-    The endpoint names vary between RapidAPI providers/plans, so this function tries
-    several common patterns and uses the first successful responses.
+    Each provider family stops after its first successful response. This keeps
+    request usage predictable while preventing a healthy OpenWeb response from
+    bypassing RapidAPI's complementary listing inventory.
     """
-    attempts = []
+    openweb_attempts = []
     if OPENWEB_NINJA_REAL_ESTATE_API_KEY:
-        attempts.append({
+        openweb_attempts.append({
             "provider": "openweb",
             "api_key": OPENWEB_NINJA_REAL_ESTATE_API_KEY,
             "base_url": OPENWEB_NINJA_REAL_ESTATE_BASE_URL,
@@ -868,7 +885,7 @@ async def fetch_live_fort_worth_residential_listings(limit: int = 50) -> List[Di
             "source": "OpenWeb Ninja Real-Time Real Estate Data /zillow/search",
         })
     if OPENWEB_NINJA_ZILLOW_API_KEY:
-        attempts.append({
+        openweb_attempts.append({
             "provider": "openweb",
             "api_key": OPENWEB_NINJA_ZILLOW_API_KEY,
             "base_url": OPENWEB_NINJA_ZILLOW_BASE_URL,
@@ -879,7 +896,14 @@ async def fetch_live_fort_worth_residential_listings(limit: int = 50) -> List[Di
             },
             "source": "OpenWeb Ninja Real-Time Zillow Data /search",
         })
-    attempts.extend([
+    rapidapi_attempts = [
+        {
+            "provider": "rapidapi",
+            "host": HOST_LISTINGS,
+            "path": "/for-sale",
+            "params": {"location": "Fort Worth, TX", "property_type": "single_family", "limit": limit},
+            "source": "RapidAPI us-real-estate-listings /for-sale",
+        },
         {
             "provider": "rapidapi",
             "host": HOST_REALTIME,
@@ -908,39 +932,34 @@ async def fetch_live_fort_worth_residential_listings(limit: int = 50) -> List[Di
             "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /properties/list",
         },
-        {
-            "provider": "rapidapi",
-            "host": HOST_LISTINGS,
-            "path": "/for-sale",
-            "params": {"location": "Fort Worth, TX", "property_type": "single_family", "limit": limit},
-            "source": "RapidAPI us-real-estate-listings /for-sale",
-        },
-    ])
+    ]
 
     normalized: List[Dict[str, Any]] = []
     errors: List[str] = []
 
-    for attempt in attempts:
-        try:
-            if attempt["provider"] == "openweb":
-                raw = await _openweb_get(
-                    attempt["path"],
-                    attempt["params"],
-                    api_key=attempt["api_key"],
-                    base_url=attempt["base_url"],
-                )
-            else:
-                raw = await _rapid_get(attempt["host"], attempt["path"], attempt["params"])
-            items = _deep_find_items(raw)
-            for item in items:
-                prop = normalize_live_listing(item, attempt["source"])
-                if prop:
-                    normalized.append(prop)
-            if normalized:
-                break
-        except Exception as e:
-            errors.append(f"{attempt['source']}: {str(e)[:200]}")
-            logger.info("Live listing attempt failed: %s", errors[-1])
+    for attempt_group in (openweb_attempts, rapidapi_attempts):
+        for attempt in attempt_group:
+            try:
+                if attempt["provider"] == "openweb":
+                    raw = await _openweb_get(
+                        attempt["path"],
+                        attempt["params"],
+                        api_key=attempt["api_key"],
+                        base_url=attempt["base_url"],
+                    )
+                else:
+                    raw = await _rapid_get(attempt["host"], attempt["path"], attempt["params"])
+                group_listings = []
+                for item in _deep_find_items(raw):
+                    prop = normalize_live_listing(item, attempt["source"])
+                    if prop:
+                        group_listings.append(prop)
+                if group_listings:
+                    normalized.extend(group_listings)
+                    break
+            except Exception as e:
+                errors.append(f"{attempt['source']}: {str(e)[:200]}")
+                logger.info("Live listing attempt failed: %s", errors[-1])
 
     # Deduplicate by address / id
     out = []
@@ -955,7 +974,7 @@ async def fetch_live_fort_worth_residential_listings(limit: int = 50) -> List[Di
     if not out and errors:
         logger.warning("No live listings fetched. Attempts: %s", errors)
 
-    return out[:limit]
+    return out[: limit * 2]
 
 
 async def sync_live_listings_to_database(
@@ -1017,6 +1036,11 @@ async def sync_live_listings_to_database(
         "source": "live Fort Worth residential listings",
         "status": "success" if listings else "empty",
         "count": upserted,
+        "providers_used": sorted({
+            str(property_record.get("data_source"))
+            for property_record in listings
+            if property_record.get("data_source")
+        }),
         "missed": missed,
         "retired": retired,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1024,6 +1048,11 @@ async def sync_live_listings_to_database(
     return {
         "ok": bool(listings),
         "upserted": upserted,
+        "providers_used": sorted({
+            str(property_record.get("data_source"))
+            for property_record in listings
+            if property_record.get("data_source")
+        }),
         "missed": missed,
         "retired": retired,
         "items": listings,
@@ -1055,7 +1084,11 @@ async def get_filters():
     out = []
     raw_total = await db.properties.count_documents({})
     all_docs = await db.properties.find({}, {"_id": 0}).to_list(length=5000)
-    visible = [p for p in all_docs if is_user_visible_property(p)]
+    visible = [
+        decorate_opportunity(p)
+        for p in all_docs
+        if is_user_visible_property(p)
+    ]
 
     for f in INVESTOR_FILTERS:
         count = sum(matches_investor_filter(p, f["key"]) for p in visible)
@@ -1065,7 +1098,10 @@ async def get_filters():
         "filters": out,
         "raw_total_before_flip_filter": raw_total,
         "synthetic_records_hidden": sum(is_synthetic_property(p) for p in all_docs),
-        "rule": "InvestorFlip V1 only shows live/verified single-family houses and residential multi-family houses.",
+        "rule": (
+            "InvestorFlip only shows verified houses with explicit motivated, distressed, "
+            "foreclosure/REO, tax-lien, cash-offer, investor-special, or as-is evidence."
+        ),
     }
 
 
@@ -1081,16 +1117,20 @@ async def live_fort_worth_listings(limit: int = Query(50, ge=1, le=100)):
         {"_id": 0},
     ).sort("updated_at", -1).limit(limit * 3).to_list(length=limit * 3)
 
-    items = [
-        hydrate_listing_record(p)
-        for p in docs
-        if is_fort_worth_property(p) and is_user_visible_property(p)
-    ][:limit]
+    items = []
+    for property_record in docs:
+        if not is_fort_worth_property(property_record) or not is_user_visible_property(property_record):
+            continue
+        decorated = decorate_opportunity(property_record)
+        if is_target_opportunity(decorated):
+            items.append(decorated)
+        if len(items) >= limit:
+            break
 
     return {
         "count": len(items),
         "items": items,
-        "rule": "Live Fort Worth residential for-sale listings only.",
+        "rule": "Live Fort Worth target opportunities with explicit evidence only.",
     }
 
 
@@ -1170,7 +1210,7 @@ async def live_status():
 
 @api_router.get("/properties")
 async def list_properties(
-    filter: str = Query("live"),
+    filter: str = Query("opportunities"),
     search: Optional[str] = Query(None),
     limit: int = Query(60, ge=1, le=200),
 ):
@@ -1188,16 +1228,20 @@ async def list_properties(
 
     cursor = db.properties.find(q, {"_id": 0}).sort("updated_at", -1).limit(limit * 10)
     raw_items = await cursor.to_list(length=limit * 10)
-    items = [
-        hydrate_listing_record(p)
+    decorated = [
+        decorate_opportunity(p)
         for p in raw_items
         if is_user_visible_property(p)
-    ][:limit]
+    ]
+    items = [p for p in decorated if matches_investor_filter(p, filter)][:limit]
 
     return {
         "count": len(items),
         "items": items,
-        "rule": "InvestorFlip V1 prioritizes live single-family and residential multi-family listings.",
+        "rule": (
+            "Only motivated/distressed, foreclosure/REO, tax-lien, cash-offer, "
+            "investor-special, and as-is opportunities are returned."
+        ),
     }
 
 
@@ -1257,7 +1301,7 @@ async def get_property(property_id: str):
         raise HTTPException(404, "Property not found")
     if not is_user_visible_property(doc):
         raise HTTPException(404, "Property not available in verified search results")
-    return hydrate_listing_record(doc)
+    return decorate_opportunity(doc)
 
 
 @api_router.post("/properties/{property_id}/quill-analysis", response_model=QuillAnalyzeResponse)
@@ -1389,9 +1433,9 @@ async def list_saved():
         return {"count": 0, "items": []}
     props_raw = await db.properties.find({"id": {"$in": ids}}, {"_id": 0}).to_list(length=500)
     props = [
-        hydrate_listing_record(p)
+        decorate_opportunity(p)
         for p in props_raw
-        if is_user_visible_property(p)
+        if is_user_visible_property(p) and is_target_opportunity(decorate_opportunity(p))
     ]
     return {"count": len(props), "items": props}
 
@@ -1522,7 +1566,7 @@ async def propstream_merge(
 
 @api_router.get("/export.csv")
 async def export_csv(
-    filter: str = Query("live"),
+    filter: str = Query("opportunities"),
     search: Optional[str] = Query(None),
     limit: int = Query(10000, ge=1, le=50000),
 ):
@@ -1532,7 +1576,12 @@ async def export_csv(
         rg = {"$regex": re.escape(search), "$options": "i"}
         q["$or"] = [{"situs_address": rg}, {"city": rg}, {"zip": rg}, {"owner_name": rg}]
     docs_raw = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
-    docs = [p for p in docs_raw if is_user_visible_property(p)]
+    docs = [
+        decorate_opportunity(p)
+        for p in docs_raw
+        if is_user_visible_property(p)
+        and matches_investor_filter(decorate_opportunity(p), filter)
+    ]
     csv_text = feeds_mod.docs_to_csv(docs)
     fname = f"investorflip_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
     return Response(
@@ -1544,7 +1593,7 @@ async def export_csv(
 
 @api_router.get("/export.xlsx")
 async def export_xlsx(
-    filter: str = Query("live"),
+    filter: str = Query("opportunities"),
     search: Optional[str] = Query(None),
     limit: int = Query(10000, ge=1, le=50000),
 ):
@@ -1554,7 +1603,12 @@ async def export_xlsx(
         rg = {"$regex": re.escape(search), "$options": "i"}
         q["$or"] = [{"situs_address": rg}, {"city": rg}, {"zip": rg}, {"owner_name": rg}]
     docs_raw = await db.properties.find(q, {"_id": 0}).limit(limit).to_list(length=limit)
-    docs = [p for p in docs_raw if is_user_visible_property(p)]
+    docs = [
+        decorate_opportunity(p)
+        for p in docs_raw
+        if is_user_visible_property(p)
+        and matches_investor_filter(decorate_opportunity(p), filter)
+    ]
     blob = feeds_mod.docs_to_xlsx_bytes(docs)
     fname = f"investorflip_{filter}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.xlsx"
     return Response(

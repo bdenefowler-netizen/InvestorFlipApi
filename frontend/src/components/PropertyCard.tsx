@@ -14,10 +14,16 @@ export function fmtMoney(n: number): string {
 
 const LISTING_TYPE_COLORS: Record<string, string> = {
   REO: "#A3413B",
+  "REO / Bank-Owned": "#A3413B",
   Foreclosure: "#7A2A24",
   "As-Is": "#4A4A4A",
   Investor: "#2B3831",
+  "Investor Special": "#2B3831",
   "Cash House": "#355C44",
+  "Cash Offer": "#355C44",
+  "Motivated Seller": "#75521D",
+  "Distressed Property": "#7A2A24",
+  "Tax Lien / Delinquent": "#7A2A24",
 };
 
 export function PropertyCard({
@@ -36,7 +42,9 @@ export function PropertyCard({
   const p = property;
   const photo = propertyImageUrl(p);
   const spread = p.value_spread;
-  const typeColor = LISTING_TYPE_COLORS[p.listing_type] || colors.brandPrimary;
+  const signals = p.opportunity_signals || [];
+  const primarySignal = signals[0] || p.listing_type;
+  const typeColor = LISTING_TYPE_COLORS[primarySignal] || colors.brandPrimary;
   return (
     <Pressable testID={testID} onPress={onPress} style={styles.card}>
       <View style={styles.imageWrap}>
@@ -47,7 +55,7 @@ export function PropertyCard({
           pointerEvents="none"
         />
         <View style={[styles.listingPill, { backgroundColor: typeColor }]}>
-          <Text style={styles.listingPillText}>{p.listing_type.toUpperCase()}</Text>
+          <Text style={styles.listingPillText}>{primarySignal.toUpperCase()}</Text>
         </View>
         <Pressable
           testID={`${testID}-save`}
@@ -76,6 +84,11 @@ export function PropertyCard({
           </Text>
         </View>
         <View style={styles.badgeRow}>
+          {signals.slice(0, 3).map((signal) => (
+            <View key={signal} style={[styles.miniBadge, styles.opportunityBadge]}>
+              <Text style={[styles.miniBadgeText, styles.opportunityBadgeText]}>{signal.toUpperCase()}</Text>
+            </View>
+          ))}
           <OwnerBadge type={p.owner_type} compact />
           {p.out_of_state_owner ? (
             <View style={[styles.miniBadge, { backgroundColor: colors.surfaceTertiary }]}>
@@ -169,6 +182,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
   },
   miniBadgeText: { fontSize: 10, fontWeight: "700", color: colors.onSurfaceTertiary, letterSpacing: 0.3 },
+  opportunityBadge: { backgroundColor: "#E7DDD0" },
+  opportunityBadgeText: { color: "#5C3C17" },
   statsRow: {
     marginTop: spacing.md,
     flexDirection: "row",

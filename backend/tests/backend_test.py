@@ -28,16 +28,19 @@ def test_filters_available(s):
     r = s.get(f"{API}/filters")
     assert r.status_code == 200
     filters = r.json()["filters"]
-    assert len(filters) >= 18
+    assert len(filters) >= 8
     keys = [f["key"] for f in filters]
-    for k in ["all", "reo", "law_firm", "out_of_state", "bank_owned", "trust", "high_equity"]:
+    for k in [
+        "opportunities", "motivated", "foreclosure", "distressed", "reo",
+        "tax_lien", "cash_offer", "investor_special", "as_is",
+    ]:
         assert k in keys
-    assert next(f for f in filters if f["key"] == "all")["count"] >= 0
+    assert next(f for f in filters if f["key"] == "opportunities")["count"] >= 0
 
 
 # Properties listing
 def test_properties_all(s):
-    r = s.get(f"{API}/properties", params={"filter": "all"})
+    r = s.get(f"{API}/properties", params={"filter": "opportunities"})
     assert r.status_code == 200
     data = r.json()
     assert data["count"] > 0
