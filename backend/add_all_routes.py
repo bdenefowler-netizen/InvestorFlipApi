@@ -24,7 +24,24 @@ from typing import Dict, Any, List, Optional
 router = APIRouter(prefix="/api")
 
 from saved_searches_routes import router as saved_searches_router
+from bulk_import import router as bulk_import_router
 router.include_router(saved_searches_router, prefix="/saved-searches")
+router.include_router(bulk_import_router)
+
+# ========== Mortgage & Deed Lookup (FREE) ==========
+
+@router.get("/mortgage-lookup")
+async def mortgage_lookup(address: str):
+    """Free mortgage/equity estimate using TAD deed records + amortization."""
+    from mortgage_lookup import full_mortgage_report
+    return await full_mortgage_report(address)
+
+
+@router.post("/mortgage-lookup")
+async def mortgage_lookup_post(address: str = ""):
+    """Free mortgage/equity estimate (POST version)."""
+    from mortgage_lookup import full_mortgage_report
+    return await full_mortgage_report(address)
 
 
 # ========== Fort Worth Violations (FREE) ==========
