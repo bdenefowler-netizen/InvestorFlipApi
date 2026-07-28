@@ -54,6 +54,7 @@ import httpx
 from importers import feeds as feeds_mod
 from add_all_routes import router as all_router
 from saved_searches_routes import router as saved_searches_router
+from auto_sync import start_background_sync
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -2034,6 +2035,8 @@ async def quill_analyze_property(body: QuillAnalyzeRequest):
 
 
 # Include router
+start_background_sync(app)
+
 app.include_router(all_router)  # FREE data sources (violations, foreclosures, OffMarketDeck, SmartPropLeads, etc.)
 app.include_router(saved_searches_router)
 app.include_router(api_router)
