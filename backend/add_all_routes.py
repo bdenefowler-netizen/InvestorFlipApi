@@ -288,7 +288,7 @@ async def get_distressed_properties(filter_type: str = "all", limit: int = 100):
         # Exclude demo/synthetic records
         query["is_synthetic"] = {"$ne": True}
         
-        properties = await db.properties.find(query).sort("distress_score", -1).limit(limit)
+        properties = await db.properties.find(query).sort([("investment_score", -1), ("distress_score", -1)]).limit(limit)
         
         return {
             "count": len(properties),
@@ -399,7 +399,7 @@ async def data_sources_status():
     # Check each source
     checks = [
         ("fort_worth_violations", "https://mapit.fortworthtexas.gov/ags/rest/services/CIVIC/Code_Violations_Experience_Builder/MapServer/4/query?where=1=1&outFields=Address&resultRecordCount=1&f=json"),
-        ("tad", "https://services8.arcgis.com/5S5T6XdxjqI5BK2Y/arcgis/rest/services/TAD_Parcels_1/FeatureServer/0/query?where=1=1&outFields=TAXPIN&resultRecordCount=1&f=json"),
+        ("tad", "https://mapit.tarrantcounty.com/arcgis/rest/services/Dynamic/TADParcels/FeatureServer/0/query?where=1%3D1https://services8.arcgis.com/5S5T6XdxjqI5BK2Y/arcgis/rest/services/TAD_Parcels_1/FeatureServer/0/query?where=1=1&outFields=TAXPIN&resultRecordCount=1&f=jsonoutFields=TAXPINhttps://services8.arcgis.com/5S5T6XdxjqI5BK2Y/arcgis/rest/services/TAD_Parcels_1/FeatureServer/0/query?where=1=1&outFields=TAXPIN&resultRecordCount=1&f=jsonresultRecordCount=1https://services8.arcgis.com/5S5T6XdxjqI5BK2Y/arcgis/rest/services/TAD_Parcels_1/FeatureServer/0/query?where=1=1&outFields=TAXPIN&resultRecordCount=1&f=jsonf=json"),
         ("foreclosure_listings", "https://www.foreclosurelistingsusa.com/fort-worth-tx/"),
         ("offmarketdeck", "https://offmarketdeck.com/texas/fort-worth"),
         ("new_western", "https://marketplace.newwestern.com/"),
@@ -417,3 +417,227 @@ async def data_sources_status():
             pass
     
     return status
+
+
+# ========== Quill AI Analysis ==========
+
+@router.post("/quill/analyze")
+async def quill_analyze(
+    address: str,
+    listing_price: Optional[float] = None,
+    beds: Optional[int] = None,
+    baths: Optional[float] = None,
+    sqft: Optional[int] = None,
+    arv_estimate: Optional[float] = None,
+    repair_estimate: Optional[float] = None,
+    rent_estimate: Optional[float] = None,
+):
+    """Analyze a property with Quill AI. Returns BUY/PASS/NEGOTIATE.
+
+    Provide as much data as you have. Quill makes the best analysis possible.
+    """
+    from ai.models import QuillAnalyzeRequest
+    from ai.quill import analyze_property_with_quill
+
+    request = QuillAnalyzeRequest(
+        address=address,
+        listing_price=listing_price,
+        beds=beds,
+        baths=baths,
+        sqft=sqft,
+        arv_estimate=arv_estimate,
+        repair_estimate=repair_estimate,
+        rent_estimate=rent_estimate,
+    )
+    return analyze_property_with_quill(request)
+
+
+@router.post("/quill/analyze-property/{property_id}")
+async def quill_analyze_property_id(property_id: str):
+    """Analyze a property from the database by its ID.
+
+    Uses Serenity to enrich the property data first, then Quill analyzes it.
+    """
+    from database import PostgresDatabase
+    from ai.serenity import build_quill_request_from_property
+    from ai.quill import analyze_property_with_quill
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        doc = await db.properties.find_one({"id": property_id})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Property not found")
+
+        request = build_quill_request_from_property(doc)
+        return analyze_property_with_quill(request)
+    finally:
+        await db.close()
+
+
+@router.get("/quill/status")
+async def quill_status():
+    """Get Quill AI status and version information."""
+    from ai.serenity import serenity_status
+
+    return {
+        "name": "Quill AI",
+        "version": "1.0",
+        "role": "Senior Real Estate Investment Analyst",
+        "serenity": serenity_status(),
+        "description": (
+            "Quill analyzes properties and returns BUY / PASS / NEGOTIATE "
+            "decisions with max offer calculations, risk flags, and offer letters."
+        ),
+    }
+
+
+# ========== Quick Analysis (minimal input) ==========
+
+@router.post("/analyze/quick")
+async def quick_analyze(
+    address: str,
+    price: float,
+    arv: float,
+    repairs: float = 0,
+    rent: float = 0,
+):
+    """Quick one-shot deal analyzer — just the numbers."""
+    from ai.calculations import calculate_max_offer, decide_buy_pass_negotiate
+
+    max_offer = calculate_max_offer(arv, repairs)
+    decision = decide_buy_pass_negotiate(price, max_offer)
+    profit = arv - price - repairs
+
+    return {
+        "address": address,
+        "decision": decision,
+        "listing_price": price,
+        "arv": arv,
+        "repairs": repairs,
+        "max_offer": max_offer,
+        "estimated_profit": profit,
+        "roi_pct": round((profit / (price + repairs)) * 100, 1) if (price + repairs) > 0 else 0,
+    }
+
+
+# ========== Apify-Powered Imports (replaces broken scrapers) ==========
+
+@router.post("/import/apify/investorlift")
+async def import_from_investorlift(limit: int = 500, city: str = ""):
+    """Import wholesale deals from InvestorLift via Apify.
+    Replaces: OffMarketDeck scraper (broken)
+    Data includes: price, ARV, beds/baths/sqft, wholesaler contacts
+    """
+    from database import PostgresDatabase
+    from importers.apify_sources import import_investorlift
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        result = await import_investorlift(db, limit=limit, city=city or None)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await db.close()
+
+
+@router.post("/import/apify/motivated-sellers")
+async def import_from_motivated_sellers(limit: int = 500, min_score: int = 0):
+    """Import motivated seller leads from Apify.
+    Replaces: SmartPropLeads scraper (broken)
+    Data includes: owner name, phone, email, motivation score, FSBO listings
+    """
+    from database import PostgresDatabase
+    from importers.apify_sources import import_motivated_sellers
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        result = await import_motivated_sellers(db, limit=limit, min_score=min_score)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await db.close()
+
+
+@router.post("/import/apify/skip-trace")
+async def import_from_skip_trace(limit: int = 100):
+    """Import skip trace data from Apify.
+    Replaces: free_skip_trace.py (limited)
+    Data includes: phone numbers, emails, current addresses
+    """
+    from database import PostgresDatabase
+    from importers.apify_sources import import_skip_trace_apify
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        result = await import_skip_trace_apify(db, limit=limit)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await db.close()
+
+
+@router.post("/import/apify/run-aggregator")
+async def run_real_estate_aggregator(location: str = "Fort Worth, TX"):
+    """Run the Real Estate Aggregator actor. Scrapes Zillow + Realtor for Fort Worth.
+    Replaces: All sites that were blocked (Zillow 403, Realtor 429, Redfin 403)
+    """
+    from importers.apify_sources import run_real_estate_aggregator
+
+    result = await run_real_estate_aggregator(location=location)
+    return result
+
+
+@router.get("/apify/status")
+async def get_apify_status():
+    """Check status of all Apify actors and data sources."""
+    from importers.apify_sources import apify_status
+
+    return await apify_status()
+
+
+# ========== Import All (Apify replacement version) ==========
+
+@router.post("/import/all-with-apify")
+async def import_all_with_apify():
+    """Import from all sources, using Apify for broken scrapers."""
+    from database import PostgresDatabase
+    from importers.fort_worth_violations import import_fort_worth_violations
+    from importers.foreclosure_finder import import_foreclosures
+    from importers.apify_sources import import_investorlift, import_motivated_sellers, import_skip_trace_apify
+
+    db = PostgresDatabase()
+    results = {}
+
+    try:
+        await db.connect()
+
+        # Working sources
+        for name, fn in [
+            ("fort_worth_violations", import_fort_worth_violations),
+            ("foreclosures", import_foreclosures),
+        ]:
+            try:
+                results[name] = await fn(db)
+            except Exception as e:
+                results[name] = {"error": str(e)}
+
+        # Apify sources (replaces broken scrapers)
+        for name, fn in [
+            ("investorlift_wholesale", import_investorlift),
+            ("motivated_seller_leads", import_motivated_sellers),
+        ]:
+            try:
+                results[name] = await fn(db)
+            except Exception as e:
+                results[name] = {"error": str(e)}
+
+        return {"status": "complete", "results": results}
+    finally:
+        await db.close()
