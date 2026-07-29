@@ -18,8 +18,12 @@ Include this in server.py:
     app.include_router(all_router)
 """
 
-from fastapi import APIRouter, HTTPException
+import json
+import os
+from fastapi import APIRouter, HTTPException, Body
 from typing import Dict, Any, List, Optional
+
+import httpx
 
 router = APIRouter(prefix="/api")
 
@@ -43,6 +47,263 @@ async def mortgage_lookup_post(address: str = ""):
     from mortgage_lookup import full_mortgage_report
     return await full_mortgage_report(address)
 
+
+
+# ========== Apify Scraper Integration ==========
+
+@router.post("/import/apify")
+async def import_from_apify(
+    actor_id: str = Body(..., description="Apify Actor ID (e.g. 'nF7qJ5wQdQx9bY3uL' for Zillow)"),
+    run_input: Dict[str, Any] = Body(default={}, description="Input payload for the Apify actor"),
+    wait_for_finish: int = Body(default=120, description="Max seconds to wait for run to complete"),
+):
+    """Run an Apify scraper and pipe results into InvestorFlip properties."""
+    api_key = os.environ.get("APIFY_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(400, "APIFY_API_KEY not configured — add it to Railway env vars")
+    
+    # Start the Apify actor run
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        start_resp = await client.post(
+            f"https://api.apify.com/v2/acts/{actor_id}/runs",
+            params={"token": api_key},
+            json={"runInput": run_input},
+        )
+        if start_resp.status_code not in (200, 201):
+            raise HTTPException(502, f"Apify start failed: {start_resp.status_code} {start_resp.text[:300]}")
+        
+        run_data = start_resp.json().get("data", {})
+        run_id = run_data.get("id")
+        if not run_id:
+            raise HTTPException(502, "Apify returned no run ID")
+    
+    # Poll until finished or timeout
+    import asyncio
+    poll_interval = 5
+    elapsed = 0
+    while elapsed < wait_for_finish:
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+        
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            status_resp = await client.get(
+                f"https://api.apify.com/v2/actor-runs/{run_id}",
+                params={"token": api_key},
+            )
+            if status_resp.status_code != 200:
+                continue
+            
+            status_data = status_resp.json().get("data", {})
+            run_status = status_data.get("status")
+            
+            if run_status == "SUCCEEDED":
+                # Fetch results from default dataset
+                dataset_id = status_data.get("defaultDatasetId")
+                if not dataset_id:
+                    return {"status": "finished", "records": 0, "error": "No dataset ID"}
+                
+                dataset_resp = await client.get(
+                    f"https://api.apify.com/v2/datasets/{dataset_id}/items",
+                    params={"token": api_key, "format": "json", "limit": 5000},
+                )
+                if dataset_resp.status_code != 200:
+                    return {"status": "finished", "records": 0, "error": "Failed to fetch dataset"}
+                
+                records = dataset_resp.json()
+                
+                # Import records into properties database
+                from backend.database import get_database
+                db = await get_database()
+                
+                imported = 0
+                for record in records:
+                    try:
+                        # Normalize address
+                        addr_parts = []
+                        for addr_key in ["address", "streetAddress", "street", "fullAddress", "formattedAddress"]:
+                            val = record.get(addr_key, "")
+                            if val:
+                                addr_parts.append(str(val).strip())
+                                break
+                        
+                        city = record.get("city", record.get("addressCity", "Fort Worth"))
+                        state = record.get("state", record.get("addressState", "TX"))
+                        zip_code = str(record.get("zip", record.get("addressZip", record.get("zipCode", ""))))
+                        
+                        full_address = f"{', '.join(addr_parts)}, {city}, {state} {zip_code}"
+                        if not any(addr_parts):
+                            full_address = record.get("situs_address", "")
+                        if not full_address:
+                            continue
+                        
+                        # Build property object
+                        prop = {
+                            "situs_address": full_address,
+                            "city": city,
+                            "state": state,
+                            "zip": zip_code[:5],
+                            "county": "Tarrant",
+                            "price": record.get("price", record.get("listingPrice", 0)),
+                            "beds": record.get("beds", record.get("bedrooms", record.get("bathrooms", None))),
+                            "baths": record.get("baths", record.get("bathrooms", None)),
+                            "sqft": record.get("sqft", record.get("squareFootage", record.get("livingArea", None))),
+                            "year_built": record.get("yearBuilt", record.get("year_built", None)),
+                            "lot_size_sqft": record.get("lotSize", record.get("lotSizeSqFt", None)),
+                            "property_type": record.get("propertyType", record.get("homeType", "")),
+                            "latitude": record.get("latitude", record.get("lat", None)),
+                            "longitude": record.get("longitude", record.get("lng", None)),
+                            "owner_name": record.get("ownerName", record.get("owner_name", "")),
+                            "listing_status": record.get("status", record.get("listingStatus", "Active")),
+                            "listing_type": record.get("listingType", ""),
+                            "data_source": f"Apify/{actor_id}",
+                            "source_platform": "Apify",
+                            "apify_actor": actor_id,
+                            "apify_run_id": run_id,
+                            "created_at": None,
+                            "updated_at": None,
+                        }
+                        
+                        # Try case-insensitive match first
+                        import re
+                        existing = await db.properties.find_one({
+                            "situs_address": {"$regex": f"^{re.escape(full_address)}$", "$options": "i"}
+                        })
+                        
+                        if existing:
+                            update_fields = {k: v for k, v in prop.items() if v and v != 0 and k not in ("situs_address", "created_at")}
+                            update_fields["data_source"] = existing.get("data_source", "") + f" + Apify/{actor_id}"
+                            await db.properties.update_one({"id": existing["id"]}, {"$set": update_fields})
+                        else:
+                            from datetime import datetime, timezone
+                            from uuid import uuid4
+                            prop["id"] = f"apify-{uuid4().hex[:12]}"
+                            prop["created_at"] = datetime.now(timezone.utc).isoformat()
+                            prop["updated_at"] = prop["created_at"]
+                            await db.properties.insert_one(prop)
+                        
+                        imported += 1
+                    except Exception:
+                        continue
+                
+                return {
+                    "status": "succeeded",
+                    "actor_id": actor_id,
+                    "run_id": run_id,
+                    "records_fetched": len(records),
+                    "records_imported": imported,
+                }
+            
+            elif run_status in ("FAILED", "TIMED-OUT", "ABORTED"):
+                return {"status": run_status.lower(), "error": status_data.get("statusMessage", "Unknown")}
+    
+    return {"status": "timeout", "message": f"Run still pending after {wait_for_finish}s — check Apify console"}
+
+
+# ========== Generic Scraper Import Endpoint ==========
+
+@router.post("/import/scraper")
+async def import_from_scraper(
+    properties: List[Dict[str, Any]] = Body(..., description="Array of property objects to import"),
+    source_name: str = Body(default="custom_scraper", description="Name of the data source"),
+):
+    """Generic endpoint to import scraped property data from any source."""
+    from backend.database import get_database
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    import re
+    
+    db = await get_database()
+    imported = 0
+    updated = 0
+    errors = 0
+    
+    for prop in properties:
+        try:
+            # Normalize address
+            address = prop.get("situs_address", prop.get("address", prop.get("full_address", "")))
+            if not address:
+                # Try building from components
+                parts = []
+                for k in ["street", "streetAddress", "addressLine1"]:
+                    if prop.get(k):
+                        parts.append(str(prop[k]))
+                city = prop.get("city", "Fort Worth")
+                state = prop.get("state", "TX")
+                zip_str = str(prop.get("zip", prop.get("zip_code", prop.get("zipCode", ""))))
+                address = f"{', '.join(parts)}, {city}, {state} {zip_str}"
+            
+            if not address:
+                errors += 1
+                continue
+            
+            # Normalize into standard schema
+            normalized = {
+                "situs_address": address,
+                "city": prop.get("city", "Fort Worth"),
+                "state": prop.get("state", "TX"),
+                "zip": str(prop.get("zip", prop.get("zip_code", prop.get("zipCode", ""))))[:5],
+                "county": prop.get("county", prop.get("county_name", "Tarrant")),
+                "price": prop.get("price", prop.get("list_price", prop.get("listingPrice", 0))),
+                "beds": prop.get("beds", prop.get("bedrooms", None)),
+                "baths": prop.get("baths", prop.get("bathrooms", None)),
+                "sqft": prop.get("sqft", prop.get("square_footage", prop.get("livingArea", None))),
+                "year_built": prop.get("year_built", prop.get("yearBuilt", None)),
+                "lot_size_sqft": prop.get("lot_size_sqft", prop.get("lotSize", prop.get("lotSizeSqFt", None))),
+                "property_type": prop.get("property_type", prop.get("homeType", prop.get("type", ""))),
+                "latitude": prop.get("latitude", prop.get("lat", None)),
+                "longitude": prop.get("longitude", prop.get("lng", prop.get("lon", None))),
+                "owner_name": prop.get("owner_name", prop.get("ownerName", "")),
+                "owner_mailing_address": prop.get("owner_mailing_address", prop.get("mailingAddress", "")),
+                "owner_type": prop.get("owner_type", ""),
+                "out_of_state_owner": prop.get("out_of_state_owner", False),
+                "absentee_owner": prop.get("absentee_owner", False),
+                "assessed_value": prop.get("assessed_value", prop.get("assessedValue", None)),
+                "market_value": prop.get("market_value", prop.get("marketValue", None)),
+                "listing_status": prop.get("listing_status", prop.get("status", prop.get("listingStatus", "Active"))),
+                "listing_type": prop.get("listing_type", prop.get("listingType", "For Sale")),
+                "data_source": f"Custom/{source_name}",
+                "source_platform": prop.get("source_platform", source_name),
+                "vacant": prop.get("vacant", prop.get("is_vacant", False)),
+                "tax_delinquent": prop.get("tax_delinquent", False),
+                "high_equity": prop.get("high_equity", False),
+                "investor_owned": prop.get("investor_owned", False),
+                "distress_score": prop.get("distress_score", 0),
+                "violation_count": prop.get("violation_count", 0),
+                "open_violation_count": prop.get("open_violation_count", 0),
+                "extra_data": prop.get("extra_data", prop.get("extraData", {})),
+            }
+            
+            # Try case-insensitive match
+            existing = await db.properties.find_one({
+                "situs_address": {"$regex": f"^{re.escape(address)}$", "$options": "i"}
+            })
+            
+            if existing:
+                update_fields = {}
+                for k, v in normalized.items():
+                    if v and v != 0 and k not in ("situs_address",):
+                        update_fields[k] = v
+                update_fields["data_source"] = existing.get("data_source", "") + f" + {source_name}"
+                await db.properties.update_one({"id": existing["id"]}, {"$set": update_fields})
+                updated += 1
+            else:
+                normalized["id"] = f"scraper-{uuid4().hex[:12]}"
+                normalized["created_at"] = datetime.now(timezone.utc).isoformat()
+                normalized["updated_at"] = normalized["created_at"]
+                await db.properties.insert_one(normalized)
+                imported += 1
+                
+        except Exception:
+            errors += 1
+    
+    return {
+        "status": "ok",
+        "source": source_name,
+        "imported": imported,
+        "updated": updated,
+        "errors": errors,
+        "total": len(properties),
+    }
 
 # ========== Fort Worth Violations (FREE) ==========
 

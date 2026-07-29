@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -277,7 +278,7 @@ async def import_tad_properties(
                 skipped += 1
                 continue
 
-            existing = await db.properties.find_one({"situs_address": address})
+            existing = await db.properties.find_one({"situs_address": {"$regex": f"^" + re.escape(address) + "$", "$options": "i"}})
 
             if existing:
                 update_fields = {}
