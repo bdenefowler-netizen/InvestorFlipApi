@@ -44,6 +44,7 @@ async def run_all(limit: int = 2000) -> dict:
         ("fort_worth_violations", "importers.fort_worth_violations", "import_fort_worth_violations", (db, limit)),
         ("foreclosures", "importers.foreclosure_finder", "import_foreclosures", (db,)),
         ("tad", "importers.tad_scraper", "import_tad_properties", (db, 300)),  # 300 = more reliable
+        ("apify", None, None, None),  # handled separately below
     ]
 
     for name, module_path, func_name, args in sources:
@@ -61,6 +62,22 @@ async def run_all(limit: int = 2000) -> dict:
             logger.error("%s failed: %s", name, traceback.format_exc())
             results["sources"][name] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
+    # ── Apify Import ──
+    logger.info("Importing Apify actor runs...")
+    try:
+        from importers.apify_import import import_apify_runs
+        apify_result = await import_apify_runs(db, lookback_days=7)
+        results["sources"]["apify"] = {
+            "ok": "error" not in apify_result,
+            **apify_result,
+        }
+        logger.info("Apify → %d records imported from %d runs",
+                     apify_result.get("records_imported", 0),
+                     apify_result.get("runs_imported", 0))
+    except Exception as e:
+        logger.error("Apify failed: %s", traceback.format_exc())
+        results["sources"]["apify"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    
     # ── Summary ──
     results["finished_at"] = datetime.now(timezone.utc).isoformat()
     ok_count = sum(1 for s in results["sources"].values() if s.get("ok"))
