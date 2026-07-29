@@ -1,7 +1,7 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "cd backend && python run_all_imports.py --limit 2000",
+    "startCommand": "cd backend && python importers/daily_cron.py --limit 2000",
     "cronSchedule": "0 11 * * *",
     "restartPolicyType": "NEVER"
   }
