@@ -9,17 +9,8 @@ InvestorFlip uses PostgreSQL through `DATABASE_URL`. Flexible feed and property
 records are stored as indexed JSONB in `properties`, `tax_roll`, `live_sync_log`,
 `saved`, `ai_analysis`, `enrichment`, and `tax_history` tables.
 
-To copy the existing Atlas database without changing or deleting its source data:
-
-```bash
-cd backend
-pip install -r requirements-migration.txt
-MONGO_URL='mongodb+srv://...' DB_NAME='tarrantrei' DATABASE_URL='postgresql://...' \
-  python migrate_mongo_to_postgres.py
-```
-
-After verifying PostgreSQL counts and API behavior, remove `MONGO_URL` and `DB_NAME`
-from the deployed application. The normal runtime requires only `DATABASE_URL`.
+The migration from MongoDB Atlas to PostgreSQL is complete. The normal runtime
+requires only `DATABASE_URL` — no MongoDB configuration is needed.
 
 User-facing APIs hide records marked as demo, seeded sample, or synthetic. They
 remain in PostgreSQL until an operator explicitly removes them, so deploying a

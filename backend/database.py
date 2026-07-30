@@ -87,6 +87,19 @@ def _compile_query(query: Mapping[str, Any], params: List[Any]) -> str:
                 params.append(str(operand))
                 regex_op = "~*" if "i" in str(value.get("$options", "")) else "~"
                 field_clauses.append(f"COALESCE({expr}, '') {regex_op} ${len(params)}")
+            elif operator in ("$gt", "$lt", "$gte", "$lte"):
+                op_map = {"$gt": ">", "$lt": "<", "$gte": ">=", "$lte": "<="}
+                sql_op = op_map[operator]
+                params.append(operand)
+                field_clauses.append(
+                    f'CAST(COALESCE((data #>> '{{{field}}}')::numeric, 0) AS numeric) {sql_op} ${len(params)}::numeric'
+                )
+            elif operator == "$exists":
+                params.append({field: operand})
+                if operand:
+                    field_clauses.append(f"data @> ${len(params)}::jsonb")
+                else:
+                    field_clauses.append(f"NOT (data @> ${len(params)}::jsonb)")
             else:
                 raise ValueError(f"Unsupported query operator: {operator}")
         clauses.append(f"({' AND '.join(field_clauses)})" if field_clauses else "TRUE")

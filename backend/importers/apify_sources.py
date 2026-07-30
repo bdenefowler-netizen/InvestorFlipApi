@@ -194,7 +194,7 @@ def _parse_investorlift(item: Dict[str, Any]) -> Dict[str, Any]:
     status = item.get("status", "available")
 
     return {
-        "id": f"il-{item.get('id', hash(full_address) & 0xFFFFFFFF:08x)}",
+        "id": f"il-{item.get('id', format(hash(full_address) & 0xFFFFFFFF, '08x'))}",
         "situs_address": full_address,
         "city": city,
         "state": state,
@@ -325,7 +325,7 @@ def _parse_motivated_seller(item: Dict[str, Any]) -> Dict[str, Any]:
     email = item.get("email")
 
     return {
-        "id": f"fsbo-{item.get('listingId', hash(full_address) & 0xFFFFFFFF:08x)}",
+        "id": f"fsbo-{item.get('listingId', format(hash(full_address) & 0xFFFFFFFF, '08x'))}",
         "situs_address": full_address,
         "city": city,
         "state": state,

@@ -569,12 +569,19 @@ async def get_distressed_properties(filter_type: str = "all", limit: int = 100):
         # Exclude demo/synthetic records
         query["is_synthetic"] = {"$ne": True}
         
-        properties = await db.properties.find(query).sort([("investment_score", -1), ("distress_score", -1)]).limit(limit)
+        properties = await db.properties.find(query).sort("distress_score", -1).limit(limit).to_list()
         
         return {
             "count": len(properties),
             "filter": filter_type,
             "items": properties,
+        }
+    except Exception as e:
+        return {
+            "count": 0,
+            "filter": filter_type,
+            "items": [],
+            "error": str(e),
         }
     finally:
         await db.close()
