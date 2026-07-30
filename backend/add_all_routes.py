@@ -828,6 +828,7 @@ async def import_from_investorlift(limit: int = 500, city: str = ""):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
+        await db.close()
 
 @router.post("/import/investorlift")
 async def import_investorlift_free(limit: int = 50, state: str = "TX", city: str = ""):
