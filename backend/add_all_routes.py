@@ -828,6 +828,32 @@ async def import_from_investorlift(limit: int = 500, city: str = ""):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
+
+@router.post("/import/investorlift")
+async def import_investorlift_free(limit: int = 50, state: str = "TX", city: str = ""):
+    """Import wholesale deals from InvestorLift for FREE (no Apify).
+    
+    Scrapes server-side rendered deal data directly from investorlift.com.
+    Data includes: price, ARV, beds/baths/sqft, gross margin, score.
+    """
+    from database import PostgresDatabase
+    from importers.investorlift_scraper import import_investorlift
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        result = await import_investorlift(
+            db,
+            max_deals=limit,
+            target_states=[state.upper()] if state else None,
+            target_city=city or None,
+        )
+        return result
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await db.close()
         await db.close()
 
 
