@@ -92,7 +92,7 @@ def _compile_query(query: Mapping[str, Any], params: List[Any]) -> str:
                 sql_op = op_map[operator]
                 params.append(operand)
                 field_clauses.append(
-                    f'CAST(COALESCE((data #>> '{{{field}}}')::numeric, 0) AS numeric) {sql_op} ${len(params)}::numeric'
+                    f"CAST(COALESCE((data #>> '{{{field}}}')::numeric, 0) AS numeric) {sql_op} ${len(params)}::numeric"
                 )
             elif operator == "$exists":
                 params.append({field: operand})
