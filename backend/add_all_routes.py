@@ -956,3 +956,56 @@ async def import_all_with_apify():
         return {"status": "complete", "results": results}
     finally:
         await db.close()
+
+
+# ========== Quill Analysis Routes ==========
+
+@router.get("/quill/analyze/{property_id}")
+async def quill_analyze(property_id: str, check_flood: bool = True):
+    """Analyze a property with Quill — ARV, mortgage estimate, deal type, P&L.
+
+    Returns the full deal breakdown + Quill's plain-English take.
+    """
+    from database import PostgresDatabase
+    from importers.quill_analyzer import analyze_property
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        prop = await db.properties.find_one({"id": property_id})
+        if not prop:
+            prop = await db.properties.find_one({"situs_address": property_id})
+        if not prop:
+            raise HTTPException(status_code=404, detail=f"Property not found: {property_id}")
+        
+        # Merge nested fields
+        if isinstance(prop.get("data"), dict):
+            prop.update(prop["data"])
+        
+        result = await analyze_property(prop, check_flood=check_flood)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await db.close()
+
+
+@router.post("/quill/analyze")
+async def quill_analyze_custom(payload: dict):
+    """Analyze a custom property payload with Quill (no DB lookup needed)."""
+    from importers.quill_analyzer import analyze_property
+
+    result = await analyze_property(payload, check_flood=bool(payload.get("latitude")))
+    return result
+
+
+@router.get("/quill/hello")
+async def quill_hello():
+    """Quill's greeting endpoint."""
+    return {
+        "greeting": "Hey bud, what adventure are we gonna get in today?",
+        "tagline": "What kind of deal can we find today?",
+        "status": "ready",
+    }
