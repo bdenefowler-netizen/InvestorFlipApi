@@ -1009,3 +1009,36 @@ async def quill_hello():
         "tagline": "What kind of deal can we find today?",
         "status": "ready",
     }
+
+
+@router.post("/quill/offer-letter")
+async def quill_offer_letter(payload: dict):
+    """Generate an offer letter for a property."""
+    from importers.quill_analyzer import (
+        analyze_property, generate_offer_letter,
+    )
+
+    analysis = await analyze_property(payload, check_flood=False)
+    letter = generate_offer_letter(
+        analysis,
+        buyer_name=payload.get("buyer_name", "[Buyer Name]"),
+        offer_price=payload.get("offer_price"),
+        earnest_money=payload.get("earnest_money", 1000),
+        closing_days=payload.get("closing_days", 30),
+        financing=payload.get("financing", "Cash"),
+    )
+    return {"letter": letter, "analysis": analysis}
+
+
+@router.post("/quill/negotiate")
+async def quill_negotiate(payload: dict):
+    """Get negotiation advice for a deal."""
+    from importers.quill_analyzer import (
+        analyze_property, negotiation_advice,
+    )
+
+    analysis = await analyze_property(payload, check_flood=False)
+    return {
+        "advice": negotiation_advice(analysis),
+        "take": analysis["take"],
+    }

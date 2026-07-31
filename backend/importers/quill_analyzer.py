@@ -55,6 +55,139 @@ FLOOD_SOURCES = [
     "https://maps.tarrantcounty.com/arcgis/rest/services/Flood/MapServer/identify",
 ]
 
+
+
+# ---------- Value Cross-Check (ARV Validation) ----------
+
+def cross_check_value(property_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Cross-check ALL value signals for a property and produce a
+    validated ARV with confidence score.
+
+    Sources used (when available):
+      1. county appraised value  (TAD — most objective, sales-based)
+      2. feed/market estimate    (Zillow/Realtor-style automated estimate)
+      3. tax roll market value   (county tax roll)
+      4. wholesaler ARV claim    (InvestorLift / New Western — most biased!)
+      5. current ask price       (what the seller wants)
+
+    Logic:
+      - County appraised is the anchor (assessor uses actual sales).
+      - Market estimate within +/-15% of county = agreement (HIGH confidence).
+      - Wholesaler ARV claim > county by 25%+ = inflated flag.
+      - Realistic ARV = weighted median of agreeing sources.
+    """
+    sources = {}
+
+    county = property_data.get("appraised_value") or property_data.get("assessed_value")
+    if county:
+        sources["county_appraised"] = float(county)
+
+    feed_mv = property_data.get("market_value")
+    if feed_mv:
+        sources["market_estimate"] = float(feed_mv)
+
+    taxroll = property_data.get("tax_roll_market_value")
+    if taxroll:
+        sources["tax_roll"] = float(taxroll)
+
+    arv_claim = property_data.get("arv_estimate")
+    if arv_claim:
+        sources["wholesaler_arv"] = float(arv_claim)
+
+    if not sources:
+        return {
+            "available_sources": 0,
+            "validated_arv": None,
+            "confidence": "none",
+            "flags": ["No independent value data — get comps before offering"],
+        }
+
+    values = list(sources.values())
+    anchor = sources.get("county_appraised")
+
+    # Agreement check: how close are non-county sources to county?
+    disagreements = []
+    if anchor and len(values) > 1:
+        for name, val in sources.items():
+            if name == "county_appraised":
+                continue
+            pct_diff = (val - anchor) / anchor * 100
+            if abs(pct_diff) > 25:
+                disagreements.append({
+                    "source": name,
+                    "value": int(val),
+                    "vs_county_pct": round(pct_diff, 1),
+                    "verdict": "inflated" if pct_diff > 0 else "undervalued",
+                })
+
+    # Validated ARV: prefer county, sanity-checked against agreeing sources
+    if anchor:
+        agreeing = [v for v in values if abs((v - anchor) / anchor * 100) <= 25]
+        if agreeing:
+            validated = sum(agreeing) / len(agreeing)  # mean of agreeing cluster
+        else:
+            validated = anchor  # county alone
+    else:
+        # No county data — median of what we have
+        sorted_vals = sorted(values)
+        mid = len(sorted_vals) // 2
+        validated = sorted_vals[mid] if len(sorted_vals) % 2 else (sorted_vals[mid-1] + sorted_vals[mid]) / 2
+
+    # Confidence score
+    if len(sources) >= 3 and not disagreements:
+        confidence = "high"
+    elif len(sources) >= 2 and len(disagreements) <= 1:
+        confidence = "medium"
+    elif anchor and disagreements:
+        confidence = "low"
+    else:
+        confidence = "low"
+
+    flags = []
+    for d in disagreements:
+        flags.append(
+            f"⚠️ {d['source']} says ${d['value']:,} — {d['verdict']} vs county ({d['vs_county_pct']:+.0f}%)"
+        )
+    if not anchor:
+        flags.append("ℹ️ No county appraisal — using available estimates")
+
+    return {
+        "available_sources": len(sources),
+        "sources": {k: int(v) for k, v in sources.items()},
+        "validated_arv": int(round(validated / 100) * 100),
+        "confidence": confidence,
+        "flags": flags,
+        "disagreements": disagreements,
+    }
+
+
+def quill_value_take(crosscheck: Dict[str, Any]) -> str:
+    """Quill's plain-English take on the value cross-check."""
+    if crosscheck["available_sources"] == 0:
+        return "No independent value data on this one, bud. Get real comps before you offer a dime."
+
+    arv = crosscheck.get("validated_arv")
+    conf = crosscheck.get("confidence")
+    flags = crosscheck.get("flags", [])
+
+    if conf == "high":
+        return (
+            f"Numbers check out, bud. Multiple sources agree around ${arv:,} — "
+            "that ARV is real. 🔒"
+        )
+    if flags and conf != "high":
+        worst = flags[0]
+        return (
+            f"Hold up, bud. {worst}. "
+            f"Realistic ARV is closer to ${arv:,} — don't pay for a dream number. 🚨"
+        )
+    if conf == "medium":
+        return (
+            f"Mostly agrees — validated ARV lands around ${arv:,}. "
+            "One source is off, but the cluster holds. 👍"
+        )
+    return f"Best estimate: ${arv:,} ARV. Get comps to tighten it up."
+
 # ---------- Core Analysis ----------
 
 def estimate_repairs(
@@ -70,7 +203,7 @@ def estimate_repairs(
     
     violation_count = int(property_data.get("violation_count") or 0)
     distress_score = property_data.get("distress_score") or 0
-    year_built = property_data.get("year_built") or 1950
+    year_built = property_data.get("year_built")
     
     # Determine rehab level
     if condition in ("light_rehab", "light rehab"):
@@ -82,12 +215,17 @@ def estimate_repairs(
     elif condition in ("full", "rehab", "reconstruction"):
         level = "full"
     else:
-        # Infer from signals
-        age = datetime.now().year - int(year_built or 1950)
+        # Infer from signals (only if we have a real year_built)
+        if year_built:
+            age = datetime.now().year - int(year_built)
+        else:
+            age = 0
         if violation_count >= 5 or distress_score >= 80 or age > 70:
             level = "heavy"
         elif violation_count >= 2 or distress_score >= 50 or age > 45:
             level = "moderate"
+        elif age > 60:
+            level = "moderate"  # older home without other signals
         else:
             level = "light"
     
@@ -319,14 +457,20 @@ def build_analysis(property_data: Dict[str, Any]) -> Dict[str, Any]:
     
     repairs = estimate_repairs(property_data)
     mortgage = estimate_mortgage(property_data)
-    deal = determine_deal_type(float(price or 0), float(arv or 0), repairs)
     
-    # P&L
+    # Value cross-check — validate ARV against all sources
+    crosscheck = cross_check_value(property_data)
+    validated_arv = crosscheck.get("validated_arv") or float(arv or 0)
+    
+    deal = determine_deal_type(float(price or 0), float(validated_arv or 0), repairs)
+    
+    # P&L (use validated ARV)
+    eff_arv = float(validated_arv or 0)
     closing_costs = float(price or 0) * DEFAULT_CLOSING_PCT
     carry_costs = DEFAULT_CARRY_MONTHS * DEFAULT_CARRY_MONTHLY
     total_investment = float(price or 0) + repairs["total"] + closing_costs + carry_costs
-    commission = float(arv or 0) * DEFAULT_COMMISSION_PCT
-    net_profit = float(arv or 0) - total_investment - commission
+    commission = eff_arv * DEFAULT_COMMISSION_PCT
+    net_profit = eff_arv - total_investment - commission
     roi = (net_profit / total_investment * 100) if total_investment else 0
     
     return {
@@ -343,13 +487,16 @@ def build_analysis(property_data: Dict[str, Any]) -> Dict[str, Any]:
         "numbers": {
             "price": int(float(price or 0)),
             "arv": int(float(arv or 0)),
-            "spread": int(float(arv or 0) - float(price or 0)),
+            "validated_arv": int(float(validated_arv or 0)),
+            "spread": int(float(validated_arv or 0) - float(price or 0)),
             "repairs": repairs,
             "mortgage": mortgage,
             "deal_type": deal["type"],
             "deal_confidence": deal["confidence"],
             "deal_reason": deal["reason"],
         },
+        "value_check": crosscheck,
+        "value_take": quill_value_take(crosscheck),
         "pnl": {
             "purchase_price": int(float(price or 0)),
             "estimated_repairs": repairs["total"],
@@ -490,3 +637,93 @@ if __name__ == "__main__":
         print(json.dumps(result, indent=2, default=str))
     
     asyncio.run(main())
+
+
+# ---------- Offer Letter Generator ----------
+
+def generate_offer_letter(
+    analysis: Dict[str, Any],
+    buyer_name: str = "[Buyer Name]",
+    offer_price: Optional[int] = None,
+    earnest_money: int = 1000,
+    closing_days: int = 30,
+    financing: str = "Cash",
+) -> str:
+    """Generate a professional offer letter for a property."""
+    n = analysis["numbers"]
+    p = analysis["pnl"]
+    prop = analysis["property"]
+    address = prop.get("address") or "the property"
+    city = prop.get("city") or ""
+    state = prop.get("state") or ""
+    
+    if offer_price is None:
+        # Default: start at 70% of ARV minus repairs (classic flip formula)
+        offer_price = int(max(0, (n["arv"] * 0.70) - n["repairs"]["total"]))
+    
+    return f"""RE: Offer to Purchase — {address}, {city} {state}
+
+Dear Property Owner,
+
+I am writing to present my offer to purchase the property located at {address}, {city}, {state}. I understand the property needs some attention, and I am prepared to handle the repairs and improvements necessary to bring it back to its full potential.
+
+My offer terms are as follows:
+
+  • Purchase Price:  ${offer_price:,} (cash)
+  • Earnest Money:   ${earnest_money:,}
+  • Closing:         {closing_days} days from mutual acceptance
+  • Financing:       {financing}
+  • Inspection:      For informational purposes only
+
+My goal is a quick, smooth closing with no contingencies to slow us down. I have funds available and am ready to move as soon as you are ready.
+
+Why my offer works for you:
+  • No realtor commissions taken from your side
+  • No repairs required from you — I take it as-is
+  • Fast closing — cash in hand, no lender delays
+  • No cleaning, staging, or showings to manage
+
+I would love the opportunity to make this easy for you. Please call me anytime to discuss.
+
+Sincerely,
+{buyer_name}
+
+P.S. — Every situation is different. If my number doesn't work for you, let's talk — I'm flexible and I want this to work for both of us."""
+
+
+def negotiation_advice(analysis: Dict[str, Any]) -> str:
+    """Quill's negotiation advice for a deal."""
+    n = analysis["numbers"]
+    p = analysis["pnl"]
+    deal_type = n["deal_type"].replace("_", " ").title()
+    spread = n["spread"]
+    dom = analysis["property"].get("days_on_market")
+    mortgage = n["mortgage"]
+    
+    # Determine leverage points
+    advice = []
+    
+    # Days on market = leverage
+    if dom and int(dom) > 90:
+        advice.append(f"⏳ {dom} days on market — that's your leverage. Sellers get tired.")
+    elif dom and int(dom) > 30:
+        advice.append(f"⏳ {dom} days on market — some room to negotiate.")
+    
+    # Mortgage balance knowledge = leverage
+    if mortgage.get("estimated_balance"):
+        bal = mortgage["estimated_balance"]
+        advice.append(
+            f"🏦 They likely owe ~${bal:,}. If the spread covers their payoff + your margin, "
+            "you're in the driver's seat."
+        )
+    
+    # Deal-specific
+    if deal_type == "Wholesale":
+        advice.append("📋 This smells like a wholesale — negotiate the assignment fee, not the whole spread.")
+    elif deal_type == "Fix And Flip":
+        advice.append("🛠️ Flip math: hold firm on your max — repairs always run over. Add 10% buffer.")
+    
+    # Generic closer
+    advice.append("🤝 Start low, be kind, close fast. Cash talks.")
+    
+    return "\n".join(advice)
