@@ -28,26 +28,29 @@ try:
     from curl_cffi import requests as http_client
     HAS_CURL_CFFI = True
 except ImportError:
-    import requests as http_client
+    import httpx as http_client
     HAS_CURL_CFFI = False
 
 BASE_URL = "https://investorlift.com"
 MARKETPLACE_URL = f"{BASE_URL}/marketplace"
 
 
-def _fetch_page(url: str, timeout: int = 20) -> Optional[str]:
+async def _fetch_page(url: str, timeout: int = 20) -> Optional[str]:
     """Fetch a page with anti-bot measures."""
-    kwargs = {"timeout": timeout}
-    if HAS_CURL_CFFI:
-        kwargs["impersonate"] = "chrome124"
-    
     try:
-        r = http_client.get(url, **kwargs)
-        if r.status_code == 200:
-            return r.text
+        if HAS_CURL_CFFI:
+            r = http_client.get(url, impersonate="chrome124", timeout=timeout)
+            if r.status_code == 200:
+                return r.text
         else:
-            logger.warning(f"HTTP {r.status_code} for {url}")
-            return None
+            # httpx fallback
+            async with http_client.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+                if r.status_code == 200:
+                    return r.text
+        
+        logger.warning(f"HTTP {r.status_code if hasattr(r,'status_code') else '?'} for {url}")
+        return None
     except Exception as e:
         logger.error(f"Failed to fetch {url}: {e}")
         return None
@@ -129,9 +132,9 @@ def _decode_nuxt_payload(html: str) -> Optional[List[Dict[str, Any]]]:
     return deals
 
 
-def scrape_marketplace() -> List[Dict[str, Any]]:
+async def scrape_marketplace() -> List[Dict[str, Any]]:
     """Scrape all deals from the InvestorLift marketplace."""
-    html = _fetch_page(MARKETPLACE_URL)
+    html = await _fetch_page(MARKETPLACE_URL)
     if not html:
         return []
     
@@ -162,14 +165,14 @@ def scrape_marketplace() -> List[Dict[str, Any]]:
     return deals
 
 
-def scrape_deal_detail(deal_id: int) -> Optional[Dict[str, Any]]:
+async def scrape_deal_detail(deal_id: int) -> Optional[Dict[str, Any]]:
     """Scrape a single deal detail page for full financials.
     
     Returns deal data including repair estimates, occupancy, 
     wholesaler info, and property details.
     """
     url = f"{BASE_URL}/marketplace/deal/{deal_id}"
-    html = _fetch_page(url)
+    html = await _fetch_page(url)
     if not html:
         return None
     
@@ -263,52 +266,7 @@ def to_property_record(deal: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-if __name__ == "__main__":
-    # CLI test
-    logging.basicConfig(level=logging.INFO)
-    
-    print("=" * 60)
-    print("InvestorLift FREE Scraper — Test Run")
-    print("=" * 60)
-    
-    deals = scrape_marketplace()
-    print(f"\nTotal deals on marketplace: {len(deals)}")
-    
-    # Show Texas deals
-    tx_deals = filter_by_state(deals, ["TX"])
-    print(f"Texas deals: {len(tx_deals)}")
-    
-    for d in (tx_deals if tx_deals else deals[:5]):
-        city = d.get("city", "?")
-        state = d.get("state_code", "?")
-        price = d.get("price", "?")
-        arv = d.get("arv_estimate", "?")
-        beds = d.get("bedrooms", "?")
-        baths = d.get("bathrooms", "?")
-        sqft = d.get("sq_footage", "?")
-        margin = d.get("gross_margin", "?")
-        score = d.get("score", "?")
-        
-        print(f"\n  📍 {city}, {state}")
-        print(f"     Price: ${price:,}" if isinstance(price, int) else f"     Price: {price}")
-        print(f"     ARV: ${arv:,}" if isinstance(arv, int) else f"     ARV: {arv}")
-        print(f"     {beds}bd/{baths}ba · {sqft}sqft")
-        print(f"     Margin: {margin}% · Score: {score}")
-    
-    # Try detail page for first deal
-    if deals:
-        d_id = deals[0].get("id")
-        if d_id:
-            print(f"\n--- Fetching deal {d_id} detail ---")
-            detail = scrape_deal_detail(d_id)
-            if detail:
-                print(f"  Repair: ${detail.get('repair_estimate_min')} - ${detail.get('repair_estimate_max')}")
-                print(f"  Condition: {detail.get('condition')}")
-                print(f"  Occupancy: {detail.get('occupancy')}")
-                print(f"  Wholesaler: {detail.get('account', {}).get('title', 'N/A')}")
 
-
-# ========== API Routes Integration ==========
 
 async def import_investorlift(
     db,
@@ -331,7 +289,7 @@ async def import_investorlift(
     """
     from datetime import datetime, timezone
     
-    deals = scrape_marketplace()
+    deals = await scrape_marketplace()
     if not deals:
         return {"fetched": 0, "inserted": 0, "matched": 0, "error": "No deals scraped"}
     
@@ -399,33 +357,35 @@ def _merge_source(current: str, new: str) -> str:
 # ========== Standalone CLI ==========
 
 if __name__ == "__main__":
+    import asyncio
     import sys
-    from pprint import pprint
     
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    
-    deals = scrape_marketplace()
-    print(f"\n📊 Total deals: {len(deals)}")
-    
-    # State filter
-    if len(sys.argv) > 1:
-        state_filter = sys.argv[1].upper()
-        deals = filter_by_state(deals, [state_filter])
-        print(f"   Filtered to {state_filter}: {len(deals)}")
-    
-    for d in deals[:20]:
-        title = (d.get("clean_title") or d.get("title", ""))[:50]
-        price = d.get("price", "?")
-        arv = d.get("arv_estimate", "?")
-        margin = d.get("gross_margin", "?")
-        score = d.get("score", "?")
-        beds = d.get("bedrooms", "?")
-        baths = d.get("bathrooms", "?")
+    async def main():
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
         
-        if isinstance(price, int):
-            spread = (arv - price) if isinstance(arv, int) else 0
-            print(f"\n  💰 ${price:,} → ${arv:,} (${spread:,} spread)")
-        else:
-            print(f"\n  💰 ${price} → ${arv}")
-        print(f"     {d.get('city')}, {d.get('state_code')} | {beds}bd/{baths}ba | Score: {score} | Margin: {margin}")
-        print(f"     {title}")
+        deals = await scrape_marketplace()
+        print(f"\n📊 Total deals: {len(deals)}")
+        
+        # State filter
+        if len(sys.argv) > 1:
+            state_filter = sys.argv[1].upper()
+            deals = filter_by_state(deals, [state_filter])
+            print(f"   Filtered to {state_filter}: {len(deals)}")
+        
+        for d in deals[:20]:
+            title = (d.get("clean_title") or d.get("title", ""))[:50]
+            price = d.get("price", "?")
+            arv = d.get("arv_estimate", "?")
+            score = d.get("score", "?")
+            beds = d.get("bedrooms", "?")
+            baths = d.get("bathrooms", "?")
+            
+            if isinstance(price, int) and isinstance(arv, int):
+                spread = arv - price
+                print(f"\n  💰 ${price:,} → ${arv:,} (${spread:,} spread)")
+            else:
+                print(f"\n  💰 ${price} → ${arv}")
+            print(f"     {d.get('city')}, {d.get('state_code')} | {beds}bd/{baths}ba | Score: {score}")
+            print(f"     {title}")
+    
+    asyncio.run(main())
