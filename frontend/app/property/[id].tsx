@@ -642,27 +642,34 @@ export default function PropertyDetail() {
   );
 }
 
-const VERDICT_COLORS: Record<string, string> = {
-  FLIP: "#355C44",
-  WHOLESALE: "#2B5A7A",
-  SKIP: "#A3413B",
-};
-
 function VerdictBanner({ quill }: { quill: QuillAnalysis }) {
-  const bg = VERDICT_COLORS[quill.verdict] || colors.brandPrimary;
+  const dealType = quill.numbers?.deal_type || "deal";
+  const confidence = quill.value_check?.confidence || "low";
+  const bg =
+    dealType === "flip" ? "#355C44"
+    : dealType === "wholesale" ? "#2B5A7A"
+    : confidence === "high" ? "#355C44"
+    : "#A3413B";
+  const title =
+    dealType === "flip" ? "FLIP IT 🔨"
+    : dealType === "wholesale" ? "WHOLESALE 💼"
+    : confidence === "high" ? "SOLID DEAL ✅"
+    : "CAUTION ⚠️";
   return (
     <View style={{ backgroundColor: bg, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.md }}>
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-        <Text style={{ color: "#fff", fontSize: 20, fontWeight: "900", letterSpacing: 0.5 }}>
-          {quill.verdict === "FLIP" ? "FLIP IT 🔨" : quill.verdict === "WHOLESALE" ? "WHOLESALE 💼" : "SKIP IT 👋"}
-        </Text>
-        <Text style={{ color: "#fff", fontSize: 26, fontWeight: "900", ...tabularNums }}>
-          {quill.deal_score}/100
-        </Text>
+        <Text style={{ color: "#fff", fontSize: 20, fontWeight: "900", letterSpacing: 0.5 }}>{title}</Text>
+        {quill.numbers?.deal_confidence != null ? (
+          <Text style={{ color: "#fff", fontSize: 14, fontWeight: "800", ...tabularNums }}>
+            {Math.round(quill.numbers.deal_confidence * 100)}% confident
+          </Text>
+        ) : null}
       </View>
-      <Text style={{ color: "rgba(255,255,255,0.92)", fontSize: 13, marginTop: 6, lineHeight: 19 }}>
-        {quill.verdict_reason}
-      </Text>
+      {quill.numbers?.deal_reason ? (
+        <Text style={{ color: "rgba(255,255,255,0.92)", fontSize: 13, marginTop: 6, lineHeight: 19 }}>
+          {quill.numbers.deal_reason}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -681,18 +688,32 @@ function MoneyRow({ k, v, strong = false }: { k: string; v: string; strong?: boo
 function QuillReport({ quill }: { quill: QuillAnalysis }) {
   const vc = quill.value_check;
   const pnl = quill.pnl;
+  const numbers = quill.numbers;
   const live = quill.live_zillow;
-  const comps = quill.comps?.length ? quill.comps : live?.comps?.length ? live.comps : [];
+  const comps = quill.live_zillow?.comps || [];
   const sourceRows = vc?.sources
     ? Object.entries(vc.sources).map(([k, v]) => ({
         label: k.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()),
         value: typeof v === "number" ? `$${v.toLocaleString()}` : "—",
       }))
     : [];
+  const flagLabels = (quill.flags || []).map((f) => f.label).filter(Boolean) as string[];
+  const riskFlags = [...(vc?.flags || []), ...flagLabels];
+
+  const totalCosts = (pnl?.estimated_repairs || 0) + (pnl?.closing_costs || 0) + (pnl?.carry_costs || 0);
 
   return (
     <View style={{ gap: spacing.md }}>
       <VerdictBanner quill={quill} />
+
+      {/* Deal numbers */}
+      <View>
+        <Text style={styles.subTitle}>THE NUMBERS</Text>
+        <MoneyRow k="Asking price" v={`$${(numbers?.price || 0).toLocaleString()}`} />
+        <MoneyRow k="Repairs (est)" v={`$${(pnl?.estimated_repairs || 0).toLocaleString()}`} />
+        <MoneyRow k="Closing + carry" v={`$${((pnl?.closing_costs || 0) + (pnl?.carry_costs || 0)).toLocaleString()}`} />
+        <MoneyRow k="Total investment" v={`$${(pnl?.total_investment || 0).toLocaleString()}`} strong />
+      </View>
 
       {/* Verified ARV */}
       <View>
@@ -702,7 +723,7 @@ function QuillReport({ quill }: { quill: QuillAnalysis }) {
             {vc?.validated_arv ? `$${vc.validated_arv.toLocaleString()}` : "—"}
           </Text>
           <Text style={{ fontSize: 12, color: colors.muted }}>
-            ({vc?.available_sources || 0} sources agreeing)
+            ({vc?.available_sources || 0} sources)
           </Text>
         </View>
         {sourceRows.length > 0 ? (
@@ -714,25 +735,14 @@ function QuillReport({ quill }: { quill: QuillAnalysis }) {
         ) : null}
       </View>
 
-      {/* P&L */}
-      <View>
-        <Text style={styles.subTitle}>DEAL MATH</Text>
-        <MoneyRow k="Purchase" v={`$${pnl.purchase_price.toLocaleString()}`} />
-        <MoneyRow k="Rehab" v={`$${pnl.rehab_cost.toLocaleString()}`} />
-        <MoneyRow k="Holding + closing" v={`$${(pnl.holding_cost + pnl.closing_cost).toLocaleString()}`} />
-        <MoneyRow k="Total in" v={`$${pnl.total_investment.toLocaleString()}`} />
-        <MoneyRow k="ARV (verified)" v={`$${pnl.arv.toLocaleString()}`} strong />
-        <View style={{ borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.divider, marginTop: 4, paddingTop: 4 }}>
-          <MoneyRow k="Net profit" v={`$${pnl.net_profit.toLocaleString()}`} strong />
-          <MoneyRow k="ROI" v={`${pnl.roi_pct}%`} strong />
-        </View>
-      </View>
-
-      {/* Max offer */}
+      {/* Profit */}
       <View style={{ backgroundColor: "#E3EBE5", borderRadius: radius.sm, padding: spacing.md }}>
-        <Text style={{ fontSize: 11, fontWeight: "800", color: colors.success, letterSpacing: 0.5 }}>QUILL'S MAX OFFER</Text>
+        <Text style={{ fontSize: 11, fontWeight: "800", color: colors.success, letterSpacing: 0.5 }}>POTENTIAL PROFIT</Text>
         <Text style={{ fontSize: 24, fontWeight: "900", color: colors.brandPrimary, marginTop: 2, ...tabularNums }}>
-          ${quill.max_offer.toLocaleString()}
+          ${(pnl?.net_profit || 0).toLocaleString()}
+        </Text>
+        <Text style={{ fontSize: 13, color: colors.success, fontWeight: "700", marginTop: 2 }}>
+          {pnl?.roi_pct != null ? `${pnl.roi_pct}% ROI` : ""}
         </Text>
       </View>
 
@@ -754,10 +764,10 @@ function QuillReport({ quill }: { quill: QuillAnalysis }) {
       ) : null}
 
       {/* Risk flags */}
-      {quill.risk_flags?.length ? (
+      {riskFlags.length > 0 ? (
         <View>
           <Text style={styles.subTitle}>⚠️ WATCH OUT</Text>
-          {quill.risk_flags.map((flag, i) => (
+          {riskFlags.map((flag, i) => (
             <Text key={i} style={{ fontSize: 12, color: colors.error, lineHeight: 18, paddingVertical: 1 }}>
               • {flag}
             </Text>

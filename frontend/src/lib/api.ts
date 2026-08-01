@@ -261,65 +261,93 @@ export async function getAIAnalysis(id: string): Promise<{ property_id: string; 
   return res.json();
 }
 
-export type QuillValueSource = {
-  county_appraised?: number;
-  market_estimate?: number;
-  live_zillow?: number;
-  live_realtor?: number;
-  redfin?: number;
+export type QuillRepairs = {
+  level?: string;
+  per_sqft?: number;
+  estimate?: number;
+  contingency?: number;
+  total?: number;
+  sqft?: number;
+};
+
+export type QuillNumbers = {
+  price: number;
+  arv: number;
+  validated_arv?: number;
+  spread?: number;
+  repairs?: QuillRepairs;
+  deal_type?: string;
+  deal_confidence?: number;
+  deal_reason?: string;
 };
 
 export type QuillValueCheck = {
   available_sources: number;
-  sources: QuillValueSource;
-  anchor: string;
+  sources: Record<string, number>;
   validated_arv: number;
   confidence: "high" | "medium" | "low";
   flags?: string[];
+  disagreements?: unknown[];
 };
 
 export type QuillPnl = {
   purchase_price: number;
-  rehab_cost: number;
-  holding_cost: number;
-  closing_cost: number;
+  estimated_repairs: number;
+  closing_costs: number;
+  carry_costs: number;
   total_investment: number;
   arv: number;
+  commission?: number;
   net_profit: number;
   roi_pct: number;
 };
 
 export type QuillLiveZillow = {
   status: string;
-  zestimate?: number;
-  cotality?: number;
-  redfin_value?: number;
+  zestimate?: number | null;
+  cotality?: number | null;
+  redfin_value?: number | null;
   zillow_url?: string;
   realtor_url?: string;
   redfin_url?: string;
   comps?: Array<{ url: string; title: string; estimated_value: number }>;
 };
 
+export type QuillFlag = {
+  type?: string;
+  label?: string;
+};
+
 export type QuillAnalysis = {
-  property_id: string;
-  property_address: string;
-  verdict: "FLIP" | "WHOLESALE" | "SKIP";
-  verdict_reason: string;
-  deal_score: number;
-  max_offer: number;
-  pnl: QuillPnl;
+  property?: {
+    address?: string;
+    city?: string;
+    state?: string;
+    zip?: string;
+    beds?: number;
+    baths?: number;
+    sqft?: number;
+    year_built?: number;
+  };
+  numbers: QuillNumbers;
   value_check: QuillValueCheck;
-  live_zillow?: QuillLiveZillow;
-  comps?: Array<{ url: string; title: string; estimated_value: number }>;
-  risk_flags: string[];
-  permits?: { additions_found: boolean | null; note: string };
   value_take: string;
+  pnl: QuillPnl;
+  flags?: QuillFlag[];
+  flood?: { in_flood_zone?: boolean | null; zone?: string | null; note?: string };
+  permits?: { additions_found?: boolean | null; permits?: unknown[]; note?: string };
+  live_zillow?: QuillLiveZillow;
   take: string;
   generated_at: string;
 };
 
 export async function getQuillAnalysis(id: string): Promise<QuillAnalysis> {
-  const res = await fetch(`${API}/properties/${id}/analyze`);
+  const res = await fetch(`${API}/quill/analyze/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`Quill analysis failed (${res.status})`);
+  return res.json();
+}
+export async function getQuillAnalysis(id: string): Promise<QuillAnalysis> {
+  const res = await fetch(`${API}/quill/analyze/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error(`Quill analysis failed (${res.status})`);
   return res.json();
 }
