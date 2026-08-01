@@ -2,7 +2,7 @@
   "expo": {
     "name": "InvestorFlip",
     "slug": "investorflip",
-    "version": "1.0.2",
+    "version": "1.0.5",
     "orientation": "portrait",
     "icon": "./assets/images/investorflip-icon.png",
     "scheme": "investorflip",
@@ -13,7 +13,7 @@
     },
     "android": {
       "package": "com.bdenefowler.investorflip",
-      "versionCode": 3,
+      "versionCode": 6,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/investorflip-icon.png",
         "backgroundColor": "#031225"
