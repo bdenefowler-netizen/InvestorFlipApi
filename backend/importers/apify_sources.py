@@ -159,7 +159,7 @@ def _parse_investorlift(item: Dict[str, Any]) -> Dict[str, Any]:
     city = (item.get("city") or "").strip().upper()
     state = (item.get("state") or item.get("state_code") or "TX").upper()
     zip_code = (item.get("zip") or item.get("postalCode") or "").strip()
-    address = item.get("address", item.get("street_address", ""))
+    address = item.get("address", item.get("street_address", item.get("public_address", "")))
 
     # Parse address from title if missing
     if not address and title:
@@ -173,18 +173,17 @@ def _parse_investorlift(item: Dict[str, Any]) -> Dict[str, Any]:
 
     full_address = f"{address}, {city}, {state} {zip_code}".strip(", ")
 
-    price_raw = item.get("price", "0").replace(",", "").replace("$", "")
+    price_raw = str(item.get("price") or "0").replace(",", "").replace("$", "").strip()
     price = int(float(price_raw)) if price_raw.replace(".", "").isdigit() else 0
 
     arv = item.get("arv_estimate")
     if arv is None:
-        arv_raw = item.get("arv", "0").replace(",", "").replace("$", "")
+        arv_raw = str(item.get("arv") or "0").replace(",", "").replace("$", "").strip()
         arv = int(float(arv_raw)) if arv_raw.replace(".", "").isdigit() else None
 
     gross_margin = item.get("gross_margin")
     if gross_margin is None:
-        gm_raw = item.get("estimated_profit", item.get("profit", "0"))
-        gm_raw = str(gm_raw).replace(",", "").replace("$", "")
+        gm_raw = str(item.get("estimated_profit") or item.get("profit") or "0").replace(",", "").replace("$", "").strip()
         gross_margin = int(float(gm_raw)) if gm_raw.replace(".", "").isdigit() else None
 
     beds = int(item["bedrooms"]) if item.get("bedrooms") else None
