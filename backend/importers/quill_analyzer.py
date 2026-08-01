@@ -34,6 +34,13 @@ except ImportError:
     import httpx as http_client
     HAS_CURL_CFFI = False
 
+# Bright Data MCP (real Zillow cross-check) — optional, degrades gracefully
+try:
+    from importers.brightdata_check import cross_check_property as _bd_cross_check
+    HAS_BRIGHTDATA = True
+except Exception:
+    HAS_BRIGHTDATA = False
+
 # ---------- Constants ----------
 
 # Standard cost assumptions (adjustable per deal)
@@ -603,7 +610,35 @@ async def analyze_property(
         "permits": property_data.get("permits") or [],
         "note": "Permit lookup available where county data is reachable",
     }
-    
+
+    # Live Zillow cross-check via Bright Data (free credits)
+    if HAS_BRIGHTDATA and check_flood:
+        try:
+            bd = await _bd_cross_check(property_data)
+            analysis["live_zillow"] = bd
+            if bd.get("zestimate") and bd["status"] == "ok":
+                # Blend the live Zestimate into the value cross-check
+                live = bd["zestimate"]
+                vc = analysis.get("value_check", {})
+                sources = dict(vc.get("sources", {}))
+                sources["live_zillow"] = live
+                vc["sources"] = sources
+                vc["available_sources"] = len(sources)
+                # Recompute validated ARV with live data
+                anchor = sources.get("county_appraised")
+                if anchor:
+                    agreeing = [v for v in sources.values()
+                                if abs((v - anchor) / anchor * 100) <= 25]
+                    vc["validated_arv"] = int(round((sum(agreeing) / len(agreeing)) / 100) * 100) if agreeing else int(round(anchor / 100) * 100)
+                    vc["confidence"] = "high" if len(agreeing) >= 3 else ("medium" if len(agreeing) >= 2 else "low")
+                analysis["value_check"] = vc
+                analysis["value_take"] = quill_value_take(vc)
+        except Exception as e:
+            logger.debug(f"Bright Data check failed: {e}")
+            analysis["live_zillow"] = {"status": "error", "error": str(e)}
+    else:
+        analysis["live_zillow"] = {"status": "skipped"}
+
     analysis["take"] = quill_take(analysis, personality="encouraging")
     analysis["generated_at"] = datetime.now(timezone.utc).isoformat()
     
