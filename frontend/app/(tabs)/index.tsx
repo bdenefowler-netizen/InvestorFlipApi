@@ -25,7 +25,7 @@ import {
   type Property,
 } from "@/src/lib/api";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
-import { FilterChip } from "@/src/components/FilterChip";
+import { FilterDropdown, type FilterOption } from "@/src/components/FilterDropdown";
 import { PropertyCard } from "@/src/components/PropertyCard";
 
 export default function ListingsScreen() {
@@ -222,24 +222,14 @@ export default function ListingsScreen() {
           </View>
         ) : null}
 
-        <ScrollView
-          testID="filter-row"
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.chipRow}
-          style={styles.chipScroll}
-        >
-          {filters.map((f) => (
-            <FilterChip
-              key={f.key}
-              testID={`filter-${f.key}`}
-              label={f.label}
-              count={f.count}
-              active={active === f.key}
-              onPress={() => setActive(f.key)}
-            />
-          ))}
-        </ScrollView>
+        <View style={styles.dropdownWrap}>
+          <FilterDropdown
+            testID="filter-row"
+            options={filters.map((f) => ({ key: f.key, label: f.label, count: f.count }) as FilterOption)}
+            activeKey={active}
+            onSelect={(key) => setActive(key)}
+          />
+        </View>
       </View>
 
       {/* List */}
@@ -349,6 +339,12 @@ const styles = StyleSheet.create({
   suggestionText: { flex: 1 },
   suggestionTitle: { color: colors.onSurface, fontSize: 13, fontWeight: "700" },
   suggestionMeta: { color: colors.muted, fontSize: 11, marginTop: 2 },
+  dropdownWrap: {
+    marginTop: spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   chipScroll: {
     marginTop: spacing.md,
     height: 36,

@@ -1,5 +1,5 @@
 // API client for TarrantREI backend
-const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
+const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || "https://investorflipapi-production-4970.up.railway.app").replace(/\/$/, "");
 const API = `${BASE}/api`;
 
 export type Property = {
@@ -341,11 +341,6 @@ export type QuillAnalysis = {
   generated_at: string;
 };
 
-export async function getQuillAnalysis(id: string): Promise<QuillAnalysis> {
-  const res = await fetch(`${API}/quill/analyze/${encodeURIComponent(id)}`);
-  if (!res.ok) throw new Error(`Quill analysis failed (${res.status})`);
-  return res.json();
-}
 export async function getQuillAnalysis(id: string): Promise<QuillAnalysis> {
   const res = await fetch(`${API}/quill/analyze/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error(`Quill analysis failed (${res.status})`);

@@ -1,5 +1,5 @@
 // Feeds + export API helpers
-const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || "").replace(/\/$/, "");
+const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || "https://investorflipapi-production-4970.up.railway.app").replace(/\/$/, "");
 const API = `${BASE}/api`;
 
 export type FeedStatus = { name: string; properties_from_feed: number };
