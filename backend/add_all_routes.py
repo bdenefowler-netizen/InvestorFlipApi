@@ -898,6 +898,21 @@ async def import_from_skip_trace(limit: int = 100):
         await db.close()
 
 
+@router.post("/import/apify/us-listings")
+async def import_from_us_listings(limit: int = 500, city: str = ""):
+    """Import real MLS listings (Realtor.com) scraped by Apify's US listings actor."""
+    from database import PostgresDatabase
+    from importers.apify_sources import import_us_listings
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        result = await import_us_listings(db, limit=limit, city=city or None)
+        return {"ok": True, **result}
+    finally:
+        await db.close()
+
+
 @router.post("/import/apify/run-aggregator")
 async def run_real_estate_aggregator(location: str = "Fort Worth, TX"):
     """Run the Real Estate Aggregator actor. Scrapes Zillow + Realtor for Fort Worth.

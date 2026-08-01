@@ -347,6 +347,12 @@ INVESTOR_FILTERS = [
     {"key": "corporate", "label": "Corporate Owner"},
     {"key": "trust", "label": "Trust-Owned"},
     {"key": "bank_owned", "label": "Bank-Owned"},
+    {"key": "distressed", "label": "Distressed"},
+    {"key": "code_violation", "label": "Code Violations"},
+    {"key": "pre_foreclosure", "label": "Pre-Foreclosure"},
+    {"key": "motivated_seller", "label": "Motivated Seller"},
+    {"key": "tax_lien", "label": "Tax Lien"},
+    {"key": "wholesale", "label": "Wholesale Deal"},
 ]
 
 
@@ -390,6 +396,21 @@ def apply_filter(filter_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
         query["owner_type"] = "Trust"
     elif f == "bank_owned":
         query["owner_type"] = "Bank"
+    elif f == "distressed":
+        query["distress_score"] = {"$gte": 50}
+    elif f == "code_violation":
+        query["violation_count"] = {"$gte": 1}
+    elif f == "pre_foreclosure":
+        query["$or"] = [
+            {"pre_foreclosure": True},
+            {"listing_status": "Pre-Foreclosure"},
+        ]
+    elif f == "motivated_seller":
+        query["motivation_score"] = {"$gte": 50}
+    elif f == "tax_lien":
+        query["tax_delinquent"] = True
+    elif f == "wholesale":
+        query["wholesale"] = True
     return query
 
 
@@ -423,6 +444,18 @@ def matches_investor_filter(property_record: Dict[str, Any], filter_key: str) ->
         return property_record.get("owner_type") == "Trust"
     if key == "bank_owned":
         return property_record.get("owner_type") == "Bank"
+    if key == "distressed":
+        return (property_record.get("distress_score") or 0) >= 50 or (property_record.get("violation_count") or 0) >= 1
+    if key == "code_violation":
+        return (property_record.get("violation_count") or 0) >= 1
+    if key == "pre_foreclosure":
+        return property_record.get("pre_foreclosure") is True or property_record.get("listing_status") == "Pre-Foreclosure"
+    if key == "motivated_seller":
+        return (property_record.get("motivation_score") or 0) >= 50
+    if key == "tax_lien":
+        return property_record.get("tax_delinquent") is True
+    if key == "wholesale":
+        return property_record.get("wholesale") is True
     return True
 
 

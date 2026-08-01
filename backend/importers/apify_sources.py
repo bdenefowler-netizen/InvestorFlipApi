@@ -45,8 +45,11 @@ ACTORS = {
 
 # Datasets from previous runs
 EXISTING_DATASETS = {
-    "investorlift_scraper": "OE2djKWGKK9Izxon5",
-    "motivated_seller_leads": "xHubiWe8fDEzlYGzm",
+    "investorlift_scraper": "K00xbwfLYOFQ9fcmQ",
+    "investorlift_property": "K00xbwfLYOFQ9fcmQ",
+    "motivated_seller_leads": "BG4icdyQcGVJ7MjCJ",
+    "us_listings": "HEo6OX3hLmXzaYMhw",
+    "propwire": "G5kN67pFvxwLkAvCN",
     "skip_trace": "rmcgNCc7QPLwIQ7LT",
 }
 
@@ -113,7 +116,7 @@ async def import_investorlift(
     if city:
         items = [i for i in items if i.get("city", "").upper() == city.upper()]
     else:
-        items = [i for i in items if i.get("state_code", "").upper() in ("TX",)]
+        items = [i for i in items if (i.get("state") or i.get("state_code") or "").upper() in ("TX",)]
 
     inserted = 0
     matched = 0
@@ -154,8 +157,8 @@ def _parse_investorlift(item: Dict[str, Any]) -> Dict[str, Any]:
     """Parse an InvestorLift deal into InvestorFlip format."""
     title = item.get("title", "")
     city = (item.get("city") or "").strip().upper()
-    state = (item.get("state_code") or "TX").upper()
-    zip_code = (item.get("zip") or "").strip()
+    state = (item.get("state") or item.get("state_code") or "TX").upper()
+    zip_code = (item.get("zip") or item.get("postalCode") or "").strip()
     address = item.get("address", item.get("street_address", ""))
 
     # Parse address from title if missing
@@ -388,6 +391,117 @@ async def import_skip_trace_apify(
         "source": "Skip Trace (Apify)",
         "data": items[:10],  # Sample
     }
+
+
+def _parse_us_listing(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse a US real-estate listing (Realtor.com format) into InvestorFlip shape."""
+    street = (item.get("street") or item.get("address") or "").strip()
+    city = (item.get("city") or "Fort Worth").strip().upper()
+    state = (item.get("state") or "TX").upper()
+    zip_code = (item.get("zipCode") or item.get("zip") or "").strip()
+    full_address = f"{street}, {city}, {state} {zip_code}".strip(", ")
+
+    price = item.get("listPrice") or item.get("price") or 0
+    beds = item.get("beds")
+    baths = item.get("fullBaths") or item.get("baths")
+    sqft = item.get("sqft")
+    year_built = item.get("yearBuilt")
+    lot_sqft = item.get("lotSqft")
+    mls_id = item.get("mlsId")
+    listing_url = item.get("propertyUrl") or item.get("url")
+    status = (item.get("status") or "FOR_SALE").lower()
+    county = (item.get("county") or "").upper()
+    listing_date = item.get("listingDate") or item.get("listDate")
+    description = item.get("listingDescription")
+    agent_name = item.get("agentName") or item.get("listingAgentName")
+    agent_phone = item.get("agentPhone") or item.get("listingAgentPhone")
+    photos = item.get("photos") or item.get("imageUrls") or []
+
+    prop = {
+        "situs_address": full_address,
+        "city": city,
+        "state": state,
+        "zip": zip_code,
+        "county": county,
+        "price": int(price) if price else None,
+        "beds": beds,
+        "baths": baths,
+        "sqft": sqft,
+        "year_built": year_built,
+        "lot_size_sqft": lot_sqft,
+        "latitude": item.get("latitude"),
+        "longitude": item.get("longitude"),
+        "mls_id": mls_id,
+        "listing_type": "MLS LISTING",
+        "data_source": "Apify US Listings (Realtor.com)",
+        "source_platform": "Realtor.com",
+        "detail_url": listing_url,
+        "listing_status": status,
+        "listing_description": description,
+        "listing_agent_name": agent_name,
+        "listing_agent_phone": agent_phone,
+        "photos": photos if isinstance(photos, list) else [],
+        "image_url": photos[0] if isinstance(photos, list) and photos else None,
+        "listing_date": listing_date,
+        "investment_score": None,
+    }
+    return prop
+
+
+async def import_us_listings(
+    db: PostgresDatabase,
+    limit: int = 500,
+    city: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Import real MLS listings scraped by the US real-estate listings actor."""
+    dataset = EXISTING_DATASETS.get("us_listings")
+    if not dataset:
+        return {"fetched": 0, "inserted": 0, "matched": 0, "skipped": 0,
+                "error": "No US Listings dataset found. Run the actor first."}
+
+    items = await _get_dataset_items(dataset, limit)
+    if not items:
+        return {"fetched": 0, "inserted": 0, "matched": 0, "skipped": 0}
+
+    if city:
+        items = [i for i in items if (i.get("city") or "").upper() == city.upper()]
+
+    inserted = 0
+    matched = 0
+    skipped = 0
+
+    for item in items:
+        try:
+            prop = _parse_us_listing(item)
+            if not prop.get("situs_address") or len(prop["situs_address"].split(",")[0]) < 4:
+                skipped += 1
+                continue
+
+            existing = await db.properties.find_one({"situs_address": prop["situs_address"]})
+            if existing:
+                update_fields = {}
+                if not existing.get("price") and prop.get("price"):
+                    update_fields["price"] = prop["price"]
+                if not existing.get("mls_id") and prop.get("mls_id"):
+                    update_fields["mls_id"] = prop["mls_id"]
+                if not existing.get("detail_url") and prop.get("detail_url"):
+                    update_fields["detail_url"] = prop["detail_url"]
+                update_fields["data_source"] = existing.get("data_source", "") + " + USListings"
+                update_fields["listing_status"] = prop.get("listing_status")
+                if prop.get("photos"):
+                    update_fields["photos"] = prop["photos"]
+                if update_fields:
+                    await db.properties.update_one({"id": existing["id"]}, {"$set": update_fields})
+                matched += 1
+            else:
+                await db.properties.insert_one(prop)
+                inserted += 1
+        except Exception as e:
+            logger.warning("US listing parse error: %s", e)
+            skipped += 1
+
+    return {"fetched": len(items), "inserted": inserted, "matched": matched,
+            "skipped": skipped, "source": "Apify US Listings (Realtor.com)"}
 
 
 async def run_real_estate_aggregator(
