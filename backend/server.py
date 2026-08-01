@@ -1230,9 +1230,15 @@ async def list_properties(
         if is_user_visible_property(p)
     ][:limit]
 
+    # Total matching documents (before limit) so the app can show "X of Y"
+    total_matching = await db.properties.count_documents(q)
+
     return {
         "count": len(items),
+        "total": total_matching,
         "items": items,
+        "properties": items,
+        "properties": items,
         "rule": "InvestorFlip V1 shows priced listings first, then off-market distressed targets.",
     }
 
