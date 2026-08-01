@@ -159,7 +159,14 @@ def _parse_investorlift(item: Dict[str, Any]) -> Dict[str, Any]:
     city = (item.get("city") or "").strip().upper()
     state = (item.get("state") or item.get("state_code") or "TX").upper()
     zip_code = (item.get("zip") or item.get("postalCode") or "").strip()
-    address = item.get("address", item.get("street_address", item.get("public_address", "")))
+    address = item.get("address", item.get("street_address", ""))
+    if not address:
+        # InvestorLift only exposes county-level public address (has city/state/zip)
+        pa = (item.get("public_address") or "").strip()
+        if pa:
+            address = pa
+            full_address = pa
+            return _build_investorlift_prop(item, full_address)
 
     # Parse address from title if missing
     if not address and title:
@@ -172,6 +179,13 @@ def _parse_investorlift(item: Dict[str, Any]) -> Dict[str, Any]:
                 address = addr_part
 
     full_address = f"{address}, {city}, {state} {zip_code}".strip(", ")
+    return _build_investorlift_prop(item, full_address)
+
+
+def _build_investorlift_prop(item: Dict[str, Any], full_address: str) -> Dict[str, Any]:
+    city = (item.get("city") or "").strip().upper()
+    state = (item.get("state") or item.get("state_code") or "TX").upper()
+    zip_code = (item.get("zip") or item.get("postalCode") or "").strip()
 
     price_raw = str(item.get("price") or "0").replace(",", "").replace("$", "").strip()
     price = int(float(price_raw)) if price_raw.replace(".", "").isdigit() else 0
