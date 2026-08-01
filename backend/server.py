@@ -1222,7 +1222,7 @@ async def list_properties(
             {"owner_name": regex},
         ]
 
-    cursor = db.properties.find(q, {"_id": 0}).sort("updated_at", -1).limit(limit * 10)
+    cursor = db.properties.find(q, {"_id": 0}).sort([("price", -1), ("updated_at", -1)]).limit(limit * 10)
     raw_items = await cursor.to_list(length=limit * 10)
     items = [
         hydrate_listing_record(p)
@@ -1233,7 +1233,7 @@ async def list_properties(
     return {
         "count": len(items),
         "items": items,
-        "rule": "InvestorFlip V1 prioritizes live single-family and residential multi-family listings.",
+        "rule": "InvestorFlip V1 shows priced listings first, then off-market distressed targets.",
     }
 
 
