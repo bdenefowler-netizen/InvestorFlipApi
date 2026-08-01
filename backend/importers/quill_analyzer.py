@@ -616,23 +616,36 @@ async def analyze_property(
         try:
             bd = await _bd_cross_check(property_data)
             analysis["live_zillow"] = bd
-            if bd.get("zestimate") and bd["status"] == "ok":
-                # Blend the live Zestimate into the value cross-check
-                live = bd["zestimate"]
+            if bd["status"] == "ok":
+                # Blend ALL live sources into the value cross-check
                 vc = analysis.get("value_check", {})
                 sources = dict(vc.get("sources", {}))
-                sources["live_zillow"] = live
-                vc["sources"] = sources
-                vc["available_sources"] = len(sources)
-                # Recompute validated ARV with live data
-                anchor = sources.get("county_appraised")
-                if anchor:
-                    agreeing = [v for v in sources.values()
-                                if abs((v - anchor) / anchor * 100) <= 25]
-                    vc["validated_arv"] = int(round((sum(agreeing) / len(agreeing)) / 100) * 100) if agreeing else int(round(anchor / 100) * 100)
-                    vc["confidence"] = "high" if len(agreeing) >= 3 else ("medium" if len(agreeing) >= 2 else "low")
-                analysis["value_check"] = vc
-                analysis["value_take"] = quill_value_take(vc)
+                blended = False
+                if bd.get("zestimate"):
+                    sources["live_zillow"] = bd["zestimate"]
+                    blended = True
+                if bd.get("cotality"):
+                    sources["live_realtor"] = bd["cotality"]
+                    blended = True
+                if bd.get("redfin_value") and bd["redfin_value"] > 1000:
+                    # Redfin value is often the LIST price for active listings,
+                    # so only use it when it agrees with the cluster.
+                    sources["redfin"] = bd["redfin_value"]
+                    blended = True
+                if blended:
+                    vc["sources"] = sources
+                    vc["available_sources"] = len(sources)
+                    # Recompute validated ARV with live data
+                    anchor = sources.get("county_appraised")
+                    if anchor:
+                        agreeing = [v for v in sources.values()
+                                    if abs((v - anchor) / anchor * 100) <= 25]
+                        vc["validated_arv"] = int(round((sum(agreeing) / len(agreeing)) / 100) * 100) if agreeing else int(round(anchor / 100) * 100)
+                        vc["confidence"] = "high" if len(agreeing) >= 3 else ("medium" if len(agreeing) >= 2 else "low")
+                    analysis["value_check"] = vc
+                    analysis["value_take"] = quill_value_take(vc)
+                if bd.get("comps"):
+                    analysis["comps"] = bd["comps"]
         except Exception as e:
             logger.debug(f"Bright Data check failed: {e}")
             analysis["live_zillow"] = {"status": "error", "error": str(e)}
