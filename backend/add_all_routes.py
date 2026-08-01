@@ -1097,3 +1097,44 @@ async def brightdata_check_batch(payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await db.close()
+
+
+@router.post("/brightdata/save-check")
+async def brightdata_save_check(payload: dict):
+    """Save verified Bright Data cross-check results back to a property.
+
+    payload: {"property_id": "...", "result": {...cross_check_property output}}
+    """
+    from database import PostgresDatabase
+
+    prop_id = payload.get("property_id")
+    result = payload.get("result") or {}
+    if not prop_id:
+        raise HTTPException(status_code=400, detail="property_id required")
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        prop = await db.properties.find_one({"id": prop_id})
+        if not prop:
+            raise HTTPException(status_code=404, detail="Property not found")
+
+        updates = {
+            "verified_zestimate": result.get("zestimate"),
+            "verified_cotality": result.get("cotality"),
+            "verified_redfin": result.get("redfin_value"),
+            "verified_zillow_url": result.get("zillow_url"),
+            "verified_realtor_url": result.get("realtor_url"),
+            "verified_redfin_url": result.get("redfin_url"),
+            "verified_comps": result.get("comps") or [],
+            "verified_status": result.get("status"),
+            "verified_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.properties.update_one({"id": prop_id}, {"$set": updates})
+        return {"saved": True, "property_id": prop_id, "updates": updates}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await db.close()
