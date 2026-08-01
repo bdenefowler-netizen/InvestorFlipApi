@@ -1222,7 +1222,7 @@ async def list_properties(
             {"owner_name": regex},
         ]
 
-    cursor = db.properties.find(q, {"_id": 0}).sort([("price", -1), ("updated_at", -1)]).limit(limit * 10)
+    cursor = db.properties.find(q, {"_id": 0}).sort("price", -1).sort("updated_at", -1).limit(limit * 10)
     raw_items = await cursor.to_list(length=limit * 10)
     items = [
         hydrate_listing_record(p)
