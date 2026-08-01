@@ -128,30 +128,78 @@ def _parse_cotality(results: List[Dict[str, Any]]) -> Optional[int]:
     return None
 
 
+def _parse_estimate(results: List[Dict[str, Any]], pattern: str) -> Optional[int]:
+    """Parse first $ value matching a pattern from result snippets."""
+    for r in results:
+        snippet = r.get("description") or r.get("snippet") or ""
+        m = re.search(pattern, snippet, re.IGNORECASE)
+        if m:
+            return int(m.group(1).replace(",", ""))
+    return None
+
+
 async def cross_check_property(property_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Cross-check one property → Zestimate + Cotality + zillow url."""
+    """Cross-check one property across Zillow + Realtor + Redfin (3 searches).
+
+    Each property = up to 3 credits (1 per search). Returns:
+        zestimate, cotality, redfin_value, zillow_url, realtor_url, comps
+    """
     address = property_data.get("situs_address") or property_data.get("address") or ""
     city = property_data.get("city") or "Fort Worth"
     state = property_data.get("state") or "TX"
     zip_code = (property_data.get("zip") or "")[:5]
 
     street = address.split(",")[0].strip()
-    query = f"{street} {city} {state} {zip_code} zestimate zillow"
+    queries = [
+        f"{street} {city} {state} {zip_code} zestimate zillow",
+        f"site:realtor.com {street} {city} {state}",
+        f"site:redfin.com {street} {city} {state}",
+    ]
 
     async with BrightDataMCP() as mcp:
-        results = await mcp.search(query)
+        all_results = [await mcp.search(q) for q in queries]
 
-    zestimate = _parse_zestimate(results)
-    cotality = _parse_cotality(results)
+    zillow_res = all_results[0]
+    realtor_res = all_results[1]
+    redfin_res = all_results[2]
+
+    zestimate = _parse_estimate(zillow_res, r"\$([\d,]+)\s*Zestimate")
+    cotality = _parse_estimate(realtor_res, r"Cotality[^\d]*\$([\d,]+)")
+    if not cotality:
+        cotality = _parse_estimate(realtor_res, r"Estimated value\s*\$([\d,]+)")
+    redfin_value = _parse_estimate(redfin_res, r"\$([\d,]+)")
+
     zillow_url = next(
-        (r.get("link") for r in results if "zillow.com" in (r.get("link") or "")), None
-    )
+        (r.get("link") for r in zillow_res if "zillow.com" in (r.get("link") or "")), None)
+    realtor_url = next(
+        (r.get("link") for r in realtor_res if "realtor.com" in (r.get("link") or "")), None)
+    redfin_url = next(
+        (r.get("link") for r in redfin_res if "redfin.com" in (r.get("link") or "")), None)
 
+    # Comps: grab neighbor values from the realtor results (other homes)
+    comps = []
+    for r in realtor_res[:4]:
+        link = r.get("link") or ""
+        if "realtor.com" in link and street.split()[0] not in link:
+            snippet = r.get("description") or r.get("snippet") or ""
+            m = re.search(r"\$([\d,]+)", snippet)
+            if m and "estimated" in snippet.lower():
+                comps.append({
+                    "url": link,
+                    "title": r.get("title", ""),
+                    "estimated_value": int(m.group(1).replace(",", "")),
+                })
+
+    found = zestimate or cotality or redfin_value
     return {
         "zestimate": zestimate,
         "cotality": cotality,
+        "redfin_value": redfin_value,
         "zillow_url": zillow_url,
-        "status": "ok" if (zestimate or cotality) else "not_found",
+        "realtor_url": realtor_url,
+        "redfin_url": redfin_url,
+        "comps": comps[:4],
+        "status": "ok" if found else "not_found",
     }
 
 
