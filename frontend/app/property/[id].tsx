@@ -9,7 +9,7 @@ import * as Haptics from "expo-haptics";
 import {
   getProperty,
   getNearby,
-  getAIAnalysis,
+  getQuillAnalysis,
   getSavedIds,
   saveProperty,
   unsaveProperty,
@@ -20,6 +20,7 @@ import {
   type Property,
   type Enrichment,
   type TaxHistoryEntry,
+  type QuillAnalysis,
 } from "@/src/lib/api";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 import { OwnerBadge } from "@/src/components/OwnerBadge";
@@ -134,6 +135,8 @@ export default function PropertyDetail() {
   const [nearby, setNearby] = useState<{ nearby_foreclosures: any[]; nearby_investor_purchases: any[] } | null>(null);
   const [ai, setAi] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [quill, setQuill] = useState<QuillAnalysis | null>(null);
+  const [quillError, setQuillError] = useState<string | null>(null);
   const [enrich, setEnrich] = useState<Enrichment | null>(null);
   const [enrichLoading, setEnrichLoading] = useState(false);
   const [taxHistory, setTaxHistory] = useState<TaxHistoryEntry[]>([]);
@@ -185,11 +188,12 @@ export default function PropertyDetail() {
   const runAI = async () => {
     if (!id) return;
     setAiLoading(true);
+    setQuillError(null);
     try {
-      const res = await getAIAnalysis(id);
-      setAi(res.narrative);
+      const res = await getQuillAnalysis(id);
+      setQuill(res);
     } catch {
-      setAi("Could not generate analysis. Please retry.");
+      setQuillError("Quill hit a snag. Try again in a moment.");
     } finally {
       setAiLoading(false);
     }
@@ -494,24 +498,39 @@ export default function PropertyDetail() {
           </View>
         ) : null}
 
-        {/* AI Investment Analysis */}
+        {/* Quill AI Investment Analysis */}
         <View style={styles.section} testID="section-ai">
-          <Text style={styles.sectionTitle}>AI INVESTMENT ANALYSIS</Text>
+          <Text style={styles.sectionTitle}>🪶 QUILL · AI DEAL GURU</Text>
           <View style={styles.card}>
-            {ai ? (
-              <Text style={styles.aiText} testID="ai-narrative">{ai}</Text>
+            {quill ? (
+              <QuillReport quill={quill} />
             ) : aiLoading ? (
-              <View style={{ alignItems: "center", paddingVertical: 16 }}>
+              <View style={{ alignItems: "center", paddingVertical: 20 }}>
                 <ActivityIndicator color={colors.brandPrimary} />
-                <Text style={{ color: colors.muted, marginTop: 8, fontSize: 12 }}>Generating analysis with Claude…</Text>
+                <Text style={{ color: colors.muted, marginTop: 10, fontSize: 12 }}>
+                  Quill's crunching the numbers…{"\n"}cross-checking Zillow, Realtor & Redfin live
+                </Text>
+              </View>
+            ) : quillError ? (
+              <View style={{ alignItems: "center", paddingVertical: 12, gap: 12 }}>
+                <Text style={{ color: colors.error, fontSize: 13, textAlign: "center" }}>{quillError}</Text>
+                <Pressable testID="ai-analyze-btn" onPress={runAI} style={styles.aiBtn}>
+                  <Ionicons name="refresh" size={16} color={colors.onBrandPrimary} />
+                  <Text style={styles.aiBtnText}>Try Again</Text>
+                </Pressable>
               </View>
             ) : (
               <Pressable testID="ai-analyze-btn" onPress={runAI} style={styles.aiBtn}>
                 <Ionicons name="sparkles" size={16} color={colors.onBrandPrimary} />
-                <Text style={styles.aiBtnText}>Run AI Analysis</Text>
+                <Text style={styles.aiBtnText}>Analyze with Quill</Text>
               </Pressable>
             )}
           </View>
+          {!quill && !aiLoading && !quillError ? (
+            <Text style={styles.sourceNote}>
+              Verdict + verified ARV + max offer. Live cross-check: Zillow · Realtor · Redfin · county.
+            </Text>
+          ) : null}
         </View>
 
         {/* Financials */}
@@ -619,6 +638,144 @@ export default function PropertyDetail() {
           <Text style={styles.ctaPrimaryText}>Contact Owner</Text>
         </Pressable>
       </View>
+    </View>
+  );
+}
+
+const VERDICT_COLORS: Record<string, string> = {
+  FLIP: "#355C44",
+  WHOLESALE: "#2B5A7A",
+  SKIP: "#A3413B",
+};
+
+function VerdictBanner({ quill }: { quill: QuillAnalysis }) {
+  const bg = VERDICT_COLORS[quill.verdict] || colors.brandPrimary;
+  return (
+    <View style={{ backgroundColor: bg, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.md }}>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+        <Text style={{ color: "#fff", fontSize: 20, fontWeight: "900", letterSpacing: 0.5 }}>
+          {quill.verdict === "FLIP" ? "FLIP IT 🔨" : quill.verdict === "WHOLESALE" ? "WHOLESALE 💼" : "SKIP IT 👋"}
+        </Text>
+        <Text style={{ color: "#fff", fontSize: 26, fontWeight: "900", ...tabularNums }}>
+          {quill.deal_score}/100
+        </Text>
+      </View>
+      <Text style={{ color: "rgba(255,255,255,0.92)", fontSize: 13, marginTop: 6, lineHeight: 19 }}>
+        {quill.verdict_reason}
+      </Text>
+    </View>
+  );
+}
+
+function MoneyRow({ k, v, strong = false }: { k: string; v: string; strong?: boolean }) {
+  return (
+    <View style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 3 }}>
+      <Text style={{ fontSize: 13, color: colors.muted }}>{k}</Text>
+      <Text style={{ fontSize: strong ? 15 : 13, fontWeight: strong ? "800" : "600", color: colors.onSurface, ...tabularNums }}>
+        {v}
+      </Text>
+    </View>
+  );
+}
+
+function QuillReport({ quill }: { quill: QuillAnalysis }) {
+  const vc = quill.value_check;
+  const pnl = quill.pnl;
+  const live = quill.live_zillow;
+  const comps = quill.comps?.length ? quill.comps : live?.comps?.length ? live.comps : [];
+  const sourceRows = vc?.sources
+    ? Object.entries(vc.sources).map(([k, v]) => ({
+        label: k.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()),
+        value: typeof v === "number" ? `$${v.toLocaleString()}` : "—",
+      }))
+    : [];
+
+  return (
+    <View style={{ gap: spacing.md }}>
+      <VerdictBanner quill={quill} />
+
+      {/* Verified ARV */}
+      <View>
+        <Text style={styles.subTitle}>VERIFIED ARV · {vc?.confidence?.toUpperCase() || "?"} CONFIDENCE</Text>
+        <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
+          <Text style={{ fontSize: 28, fontWeight: "900", color: colors.brandPrimary, ...tabularNums }}>
+            {vc?.validated_arv ? `$${vc.validated_arv.toLocaleString()}` : "—"}
+          </Text>
+          <Text style={{ fontSize: 12, color: colors.muted }}>
+            ({vc?.available_sources || 0} sources agreeing)
+          </Text>
+        </View>
+        {sourceRows.length > 0 ? (
+          <View style={{ marginTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.divider, paddingTop: 6 }}>
+            {sourceRows.map((row) => (
+              <MoneyRow key={row.label} k={row.label} v={row.value} />
+            ))}
+          </View>
+        ) : null}
+      </View>
+
+      {/* P&L */}
+      <View>
+        <Text style={styles.subTitle}>DEAL MATH</Text>
+        <MoneyRow k="Purchase" v={`$${pnl.purchase_price.toLocaleString()}`} />
+        <MoneyRow k="Rehab" v={`$${pnl.rehab_cost.toLocaleString()}`} />
+        <MoneyRow k="Holding + closing" v={`$${(pnl.holding_cost + pnl.closing_cost).toLocaleString()}`} />
+        <MoneyRow k="Total in" v={`$${pnl.total_investment.toLocaleString()}`} />
+        <MoneyRow k="ARV (verified)" v={`$${pnl.arv.toLocaleString()}`} strong />
+        <View style={{ borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.divider, marginTop: 4, paddingTop: 4 }}>
+          <MoneyRow k="Net profit" v={`$${pnl.net_profit.toLocaleString()}`} strong />
+          <MoneyRow k="ROI" v={`${pnl.roi_pct}%`} strong />
+        </View>
+      </View>
+
+      {/* Max offer */}
+      <View style={{ backgroundColor: "#E3EBE5", borderRadius: radius.sm, padding: spacing.md }}>
+        <Text style={{ fontSize: 11, fontWeight: "800", color: colors.success, letterSpacing: 0.5 }}>QUILL'S MAX OFFER</Text>
+        <Text style={{ fontSize: 24, fontWeight: "900", color: colors.brandPrimary, marginTop: 2, ...tabularNums }}>
+          ${quill.max_offer.toLocaleString()}
+        </Text>
+      </View>
+
+      {/* Comps */}
+      {comps.length > 0 ? (
+        <View>
+          <Text style={styles.subTitle}>NEARBY COMPS</Text>
+          {comps.slice(0, 4).map((c, i) => (
+            <View key={i} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 3 }}>
+              <Text style={{ fontSize: 12, color: colors.muted, flex: 1, paddingRight: 8 }} numberOfLines={1}>
+                {c.title}
+              </Text>
+              <Text style={{ fontSize: 13, fontWeight: "700", color: colors.onSurface, ...tabularNums }}>
+                ${c.estimated_value.toLocaleString()}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
+      {/* Risk flags */}
+      {quill.risk_flags?.length ? (
+        <View>
+          <Text style={styles.subTitle}>⚠️ WATCH OUT</Text>
+          {quill.risk_flags.map((flag, i) => (
+            <Text key={i} style={{ fontSize: 12, color: colors.error, lineHeight: 18, paddingVertical: 1 }}>
+              • {flag}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+
+      {/* Quill's take */}
+      {quill.value_take ? (
+        <View style={{ backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border }}>
+          <Text style={{ fontSize: 13, color: colors.onSurface, lineHeight: 20, fontStyle: "italic" }}>
+            {quill.value_take}
+          </Text>
+        </View>
+      ) : null}
+      {quill.take ? (
+        <Text style={{ fontSize: 13, color: colors.muted, lineHeight: 20 }}>{quill.take}</Text>
+      ) : null}
     </View>
   );
 }
