@@ -1042,3 +1042,58 @@ async def quill_negotiate(payload: dict):
         "advice": negotiation_advice(analysis),
         "take": analysis["take"],
     }
+
+
+# ========== Bright Data Cross-Check Routes ==========
+
+@router.get("/brightdata/check/{property_id}")
+async def brightdata_check(property_id: str):
+    """Cross-check a property against live Zillow data via Bright Data MCP."""
+    from database import PostgresDatabase
+    from importers.brightdata_check import cross_check_property
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        prop = await db.properties.find_one({"id": property_id})
+        if not prop:
+            prop = await db.properties.find_one({"situs_address": property_id})
+        if not prop:
+            raise HTTPException(status_code=404, detail=f"Property not found: {property_id}")
+        if isinstance(prop.get("data"), dict):
+            prop.update(prop["data"])
+        result = await cross_check_property(prop)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await db.close()
+
+
+@router.post("/brightdata/check-batch")
+async def brightdata_check_batch(payload: dict):
+    """Cross-check multiple properties (payload: {"properties": [ids...]} or full objects)."""
+    from database import PostgresDatabase
+    from importers.brightdata_check import cross_check_batch
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        ids = payload.get("properties") or []
+        props = []
+        for pid in ids[:25]:
+            prop = await db.properties.find_one({"id": pid})
+            if prop:
+                if isinstance(prop.get("data"), dict):
+                    prop.update(prop["data"])
+                props.append(prop)
+        if not props:
+            return {"results": [], "note": "No properties found"}
+        results = await cross_check_batch(props, concurrency=3)
+        return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await db.close()
