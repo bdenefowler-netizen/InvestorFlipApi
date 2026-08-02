@@ -162,13 +162,14 @@ async def run(args: argparse.Namespace) -> None:
             "status": "success",
         })
         if previous and not args.force:
-            print(json.dumps({
+            result = {
                 "ok": True,
                 "skipped": True,
                 "reason": "This official tax-roll ZIP was already applied",
                 "source_url": source_url,
-            }, indent=2))
-            return
+            }
+            print(json.dumps(result, indent=2))
+            return result
 
         with tempfile.TemporaryDirectory(prefix="investorflip-taxroll-") as temp_dir:
             zip_path = Path(temp_dir) / "tarrant-tax-roll.zip"
