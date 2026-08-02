@@ -143,7 +143,7 @@ def validate_archive(path: Path, layout: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def run(args: argparse.Namespace) -> None:
-    layout_path = Path(args.layout).expanduser().resolve()
+    layout_path = Path(args.layout).expanduser().resolve() if getattr(args, "layout", None) else DEFAULT_LAYOUT
     if not layout_path.exists():
         raise FileNotFoundError(layout_path)
     layout = load_layout(layout_path)
