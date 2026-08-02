@@ -2108,3 +2108,12 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     await db.close()
+
+
+@api_router.post("/admin/data-cleanup")
+async def admin_data_cleanup(dry_run: bool = Query(False)):
+    """Run the V1 data-quality pass: dedupe, Tarrant gate, placeholder prices,
+    confidence gating, and pollution cleanup. Pass dry_run=true to preview."""
+    from data_cleanup import run_data_cleanup
+    stats = await run_data_cleanup(db, dry_run=dry_run)
+    return {"ok": True, **stats}

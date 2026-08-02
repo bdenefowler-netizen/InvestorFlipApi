@@ -40,6 +40,7 @@ export default function ListingsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [debugInfo, setDebugInfo] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
 
   const loadFilters = useCallback(async () => {
@@ -63,8 +64,10 @@ export default function ListingsScreen() {
     try {
       const data = await getProperties(active, search.trim());
       setItems(data.items);
+      setDebugInfo(`OK: ${data.total ?? data.count} total \u00b7 ${data.items.length} shown \u00b7 filter=${active}`);
     } catch (e: any) {
       setError("Unable to load Tarrant County listings.");
+      setDebugInfo(`ERR: ${e?.message || String(e)}`);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -232,6 +235,12 @@ export default function ListingsScreen() {
         </View>
       </View>
 
+      {debugInfo ? (
+        <View style={[styles.debugBanner, debugInfo.startsWith("OK") ? styles.debugOk : styles.debugErr]} testID="debug-banner">
+          <Text style={styles.debugText}>{debugInfo}</Text>
+        </View>
+      ) : null}
+
       {/* List */}
       {loading ? (
         <View style={styles.center} testID="listings-loading">
@@ -369,4 +378,8 @@ const styles = StyleSheet.create({
   retryText: { color: colors.onBrandPrimary, fontWeight: "700" },
   emptyText: { fontSize: 15, color: colors.onSurface, fontWeight: "700", marginTop: 12 },
   emptySub: { fontSize: 13, color: colors.muted, marginTop: 4 },
+  debugBanner: { paddingHorizontal: spacing.lg, paddingVertical: 6 },
+  debugOk: { backgroundColor: "#0d3b26" },
+  debugErr: { backgroundColor: "#3d1010" },
+  debugText: { fontSize: 12, color: "#d6f0e0", fontWeight: "700" },
 });

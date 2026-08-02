@@ -39,11 +39,11 @@ function KeyValue({ k, v, mono = true }: { k: string; v: string; mono?: boolean 
 }
 
 function maybeMoney(value?: number | null): string {
-  return typeof value === "number" ? `$${value.toLocaleString()}` : "Needs data";
+  return typeof value === "number" ? `$${value.toLocaleString()}` : "—";
 }
 
 function maybeDate(value?: string | null): string {
-  if (!value) return "Needs data";
+  if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
@@ -224,7 +224,7 @@ export default function PropertyDetail() {
   const taxBase = prop.tax_roll_market_value || prop.assessed_value;
   const taxRate = prop.annual_taxes && taxBase
     ? `${((prop.annual_taxes / taxBase) * 100).toFixed(2)}%`
-    : "Needs data";
+    : "—";
 
   const beds = enrich?.beds ?? prop.beds;
   const baths = enrich?.baths ?? prop.baths;
@@ -315,23 +315,23 @@ export default function PropertyDetail() {
           <View style={styles.card}>
             <KeyValue
               k="Property Type"
-              v={(prop.property_type || prop.home_type || "Needs data").replace(/_/g, " ")}
+              v={(prop.property_type || prop.home_type || "—").replace(/_/g, " ")}
               mono={false}
             />
-            <KeyValue k="Status" v={prop.listing_status || prop.listing_type || "Needs data"} mono={false} />
+            <KeyValue k="Status" v={prop.listing_status || prop.listing_type || "—"} mono={false} />
             <KeyValue
               k="Lot Size"
-              v={prop.lot_size_sqft ? `${prop.lot_size_sqft.toLocaleString()} sqft` : "Needs data"}
+              v={prop.lot_size_sqft ? `${prop.lot_size_sqft.toLocaleString()} sqft` : "—"}
             />
             <KeyValue k="Listed" v={maybeDate(prop.listing_date)} />
-            <KeyValue k="MLS" v={prop.source_mls || "Needs data"} mono={false} />
-            <KeyValue k="MLS ID" v={prop.mls_id || "Needs data"} />
+            <KeyValue k="MLS" v={prop.source_mls || "—"} mono={false} />
+            <KeyValue k="MLS ID" v={prop.mls_id || "—"} />
             <KeyValue
               k="HOA"
-              v={prop.hoa_fee != null ? `$${prop.hoa_fee.toLocaleString()}` : "Needs data"}
+              v={prop.hoa_fee != null ? `$${prop.hoa_fee.toLocaleString()}` : "—"}
             />
-            <KeyValue k="Listing Agent" v={prop.listing_agent_name || "Needs data"} mono={false} />
-            <KeyValue k="Contact" v={prop.listing_agent_phone || "Needs data"} />
+            <KeyValue k="Listing Agent" v={prop.listing_agent_name || "—"} mono={false} />
+            <KeyValue k="Contact" v={prop.listing_agent_phone || "—"} />
             {prop.listing_agent_email ? <KeyValue k="Agent Email" v={prop.listing_agent_email} mono={false} /> : null}
             {prop.listing_agent_rating != null ? (
               <KeyValue
@@ -339,13 +339,13 @@ export default function PropertyDetail() {
                 v={`${prop.listing_agent_rating.toFixed(1)} · ${prop.listing_agent_review_count ?? 0} reviews`}
               />
             ) : null}
-            <KeyValue k="Broker" v={prop.broker_name || "Needs data"} mono={false} />
+            <KeyValue k="Broker" v={prop.broker_name || "—"} mono={false} />
             <KeyValue
               k="Coordinates"
               v={
                 prop.latitude != null && prop.longitude != null
                   ? `${prop.latitude.toFixed(5)}, ${prop.longitude.toFixed(5)}`
-                  : "Needs data"
+                  : "—"
               }
             />
           </View>

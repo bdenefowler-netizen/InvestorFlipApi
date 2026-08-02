@@ -225,10 +225,10 @@ export async function getFilters(): Promise<{ filters: FilterDef[] }> {
 export async function getProperties(
   filter: string,
   search: string,
-): Promise<{ count: number; items: Property[] }> {
+): Promise<{ count: number; total?: number; items: Property[] }> {
   const params = new URLSearchParams({ filter });
   if (search) params.set("search", search);
-  const data = await jsonGet<{ count: number; items: Property[] }>(
+  const data = await jsonGet<{ count: number; total?: number; items: Property[] }>(
     `${API}/properties?${params.toString()}`,
   );
   return { ...data, items: data.items.map(normalizeProperty) };
@@ -414,8 +414,8 @@ export async function getSavedIds(): Promise<{ ids: string[] }> {
   return jsonGet(`${API}/saved/ids`);
 }
 
-export async function getSaved(): Promise<{ count: number; items: Property[] }> {
-  const data = await jsonGet<{ count: number; items: Property[] }>(`${API}/saved`);
+export async function getSaved(): Promise<{ count: number; total?: number; items: Property[] }> {
+  const data = await jsonGet<{ count: number; total?: number; items: Property[] }>(`${API}/saved`);
   return { ...data, items: data.items.map(normalizeProperty) };
 }
 
