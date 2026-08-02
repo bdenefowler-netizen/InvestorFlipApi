@@ -40,21 +40,24 @@ async def run_all(limit: int = 2000) -> dict:
         return results
 
     # ── Source definitions ──
+    # NOTE: always pass params as KEYWORDS — several importers take (db, city,
+    # limit) or (db, lead_types, limit); positional args silently bind to the
+    # wrong parameter (e.g. (db, 300) → city=300 → TAD fetches 0 every day).
     sources = [
-        ("fort_worth_violations", "importers.fort_worth_violations", "import_fort_worth_violations", (db, limit)),
-        ("foreclosures", "importers.foreclosure_finder", "import_foreclosures", (db,)),
-        ("foreclosure_listings", "importers.foreclosure_listings_scraper", "import_foreclosure_listings", (db, 3)),
-        ("smartpropleads", "importers.smartpropleads_scraper", "import_smartpropleads", (db, 400)),
-        ("tad", "importers.tad_scraper", "import_tad_properties", (db, 300)),  # 300 = more reliable
-        ("apify", None, None, None),  # handled separately below
+        ("fort_worth_violations", "importers.fort_worth_violations", "import_fort_worth_violations", (db,), {"limit": limit}),
+        ("foreclosures", "importers.foreclosure_finder", "import_foreclosures", (db,), {}),
+        ("foreclosure_listings", "importers.foreclosure_listings_scraper", "import_foreclosure_listings", (db,), {"pages": 3}),
+        ("smartpropleads", "importers.smartpropleads_scraper", "import_smartpropleads", (db,), {"limit": 400}),
+        ("tad", "importers.tad_scraper", "import_tad_properties", (db,), {"limit": 300}),
+        ("apify", None, None, None, {}),  # handled separately below
     ]
 
-    for name, module_path, func_name, args in sources:
+    for name, module_path, func_name, args, kwargs in sources:
         logger.info("Importing %s...", name)
         try:
             mod = __import__(module_path, fromlist=[func_name])
             func = getattr(mod, func_name)
-            out = await func(*args)
+            out = await func(*args, **kwargs)
             results["sources"][name] = {
                 "ok": "error" not in out,
                 **out,
