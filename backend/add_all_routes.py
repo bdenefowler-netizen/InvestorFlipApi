@@ -51,6 +51,19 @@ async def mortgage_lookup_post(address: str = ""):
 
 # ========== Apify Scraper Integration ==========
 
+# Fort Worth scoping defaults per known actor — applied when run_input omits
+# location/caps, so a bare call can NEVER fire a nationwide run. This is the
+# second layer of the Fort Worth lockdown (the first is the ingest filter in
+# apify_import.py, which drops any non-Tarrant record before it hits the DB).
+FORT_WORTH_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "cMyVy1qjmV7jKZ4YW": {"locations": ["Fort Worth, Tx"], "maxItems": 500},          # crawlerbros/propwire
+    "j0emD7OFNyWcl8ZMQ": {"locations": ["Fort Worth, Tx"], "maxItems": 500},          # jungle_synthesizer/propwire (dupe)
+    "PM6eEFaxhMZCWpn1Y": {"location": "Fort Worth, TX", "listingType": "for_sale", "maxItems": 500},  # jp_ishac/us-listings
+    "d4o0SCOyzzwUSxL3e": {"mode": "active", "propertyTypes": ["Single-Family"], "states": ["TX"]},    # investorlift (state-only; ingest filter bounds it)
+    "qu04TKDjVwWvLWpQW": {"mode": "active", "propertyTypes": ["Single-Family"], "states": ["TX"]},    # corent1robert/investorlift (dupe)
+    "GMyiJdAWTaVk9ElKN": {"cities": ["Fort Worth"], "states": ["TX"], "maxItems": 100},              # swerve/motivated-seller
+}
+
 @router.post("/import/apify")
 async def import_from_apify(
     actor_id: str = Body(..., description="Apify Actor ID (e.g. 'nF7qJ5wQdQx9bY3uL' for Zillow)"),
@@ -62,6 +75,13 @@ async def import_from_apify(
     if not api_key:
         raise HTTPException(400, "APIFY_API_KEY not configured — add it to Railway env vars")
     
+    # FORT WORTH ENFORCEMENT: merge scoped defaults under any caller input.
+    defaults = FORT_WORTH_DEFAULTS.get(actor_id, {})
+    if not defaults and not run_input:
+        raise HTTPException(400, "Unknown actor — pass an explicit Fort Worth-scoped run_input "
+                                 "(location/city + maxItems) or use a known actor ID")
+    run_input = {**defaults, **run_input}
+
     # Start the Apify actor run
     async with httpx.AsyncClient(timeout=30.0) as client:
         start_resp = await client.post(

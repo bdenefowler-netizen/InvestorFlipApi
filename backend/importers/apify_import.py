@@ -22,6 +22,29 @@ logger = logging.getLogger("apify_import")
 APIFY_BASE = "https://api.apify.com/v2"
 DEFAULT_LOOKBACK_DAYS = 7  # how far back to check for runs
 
+# Fort Worth / Tarrant County allowlist — the ONLY cities we ingest.
+# This is the enforcement layer: even if an Apify actor ignores its input
+# config and scrapes nationwide, nothing outside this list reaches the DB.
+TARRANT_CITIES = {
+    "fort worth", "arlington", "north richland hills", "haltom city",
+    "keller", "southlake", "colleyville", "grapevine", "bedford",
+    "euless", "hurst", "benbrook", "white settlement", "saginaw",
+    "watauga", "river oaks", "forest hill", "crowley", "burleson",
+    "mansfield", "azle", "lake worth", "sansom park", "westworth village",
+    "haslet", "eagle mountain", "blue mound", "pelican bay",
+    "kennedale", "everman", "dalworthington gardens", "pantego",
+}
+
+def is_fort_worth_area(city: str) -> bool:
+    """True if the city is Fort Worth or a Tarrant County city."""
+    c = (city or "").strip().lower()
+    if not c:
+        return False
+    if c in TARRANT_CITIES:
+        return True
+    # tolerate "Fort Worth, TX" style values
+    return c.startswith("fort worth") or "fort worth" in c
+
 
 def get_api_key() -> str:
     key = os.environ.get("APIFY_API_KEY", "").strip()
@@ -142,7 +165,7 @@ async def import_apify_runs(
     if not token:
         return {"error": "APIFY_API_KEY not configured", "imported": 0}
     
-    results = {"runs_found": 0, "runs_imported": 0, "records_fetched": 0, "records_imported": 0}
+    results = {"runs_found": 0, "runs_imported": 0, "records_fetched": 0, "records_imported": 0, "records_skipped_non_fortworth": 0}
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         runs = await fetch_recent_runs(client, token, lookback_days)
@@ -162,6 +185,11 @@ async def import_apify_runs(
                     try:
                         prop = normalize_record(record)
                         if not prop:
+                            continue
+
+                        # FORT WORTH ENFORCEMENT: drop anything outside Tarrant/Fort Worth
+                        if not is_fort_worth_area(prop.get("city", "")):
+                            results["records_skipped_non_fortworth"] += 1
                             continue
                         
                         # Case-insensitive match
