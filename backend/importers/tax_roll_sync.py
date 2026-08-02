@@ -194,7 +194,7 @@ async def run(args: argparse.Namespace) -> None:
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 })
 
-            print(json.dumps({
+            result = {
                 "ok": True,
                 "source_url": source_url,
                 "mode": "apply" if args.apply else "dry-run",
@@ -202,7 +202,9 @@ async def run(args: argparse.Namespace) -> None:
                 "download": download_result,
                 "archive": archive_result,
                 "matches": match_result,
-            }, indent=2, default=str))
+            }
+            print(json.dumps(result, indent=2, default=str))
+            return result
     finally:
         await db.close()
 
