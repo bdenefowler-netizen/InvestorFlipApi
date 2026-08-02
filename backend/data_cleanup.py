@@ -58,27 +58,57 @@ def _completeness(record: Dict[str, Any]) -> int:
     return score
 
 
+_STREET_SUFFIX = {
+    "street": "st", "st": "st", "drive": "dr", "dr": "dr", "road": "rd", "rd": "rd",
+    "avenue": "ave", "ave": "ave", "ave.": "ave", "lane": "ln", "ln": "ln",
+    "court": "ct", "ct": "ct", "circle": "cir", "cir": "cir", "boulevard": "blvd",
+    "blvd": "blvd", "place": "pl", "pl": "pl", "terrace": "ter", "ter": "ter",
+    "trail": "trl", "trl": "trl", "highway": "hwy", "hwy": "hwy", "parkway": "pkwy",
+    "pkwy": "pkwy", "way": "wy", "wy": "wy",
+}
+_DIRECTIONS = {"north": "n", "n": "n", "south": "s", "s": "s", "east": "e", "e": "e",
+               "west": "w", "w": "w", "ne": "ne", "nw": "nw", "se": "se", "sw": "sw"}
+
+
 def _clean_address(raw: Any) -> str:
-    """Normalize situs_address: strip county suffix, collapse whitespace."""
+    """Normalize situs_address: strip county suffix, normalize suffix/direction words,
+    collapse whitespace — so '2401 Kelton Street' == '2401 Kelton St' for merging."""
     text = _norm(raw)
     if not text:
         return ""
     text = re.sub(r",?\s*tarrant\s+county,?\s*(tx)?\.?\s*$", "", text, flags=re.I).strip()
     text = re.sub(r",?\s*tarrant\s+county\s*$", "", text, flags=re.I).strip()
+    # remove state + zip at end so address matching ignores formatting diffs
+    text = re.sub(r",?\s*tx\.?\s*\d{5}(-\d{4})?\s*$", "", text, flags=re.I).strip()
     text = re.sub(r"\s+", " ", text).strip().rstrip(",")
-    return text
+    # token-level normalization of directions + suffixes
+    tokens = text.split()
+    out = []
+    for tok in tokens:
+        low = tok.strip(".,")
+        if low in _DIRECTIONS:
+            out.append(_DIRECTIONS[low])
+        elif low in _STREET_SUFFIX:
+            out.append(_STREET_SUFFIX[low])
+        else:
+            out.append(tok.strip(".,"))
+    return " ".join(out)
 
 
 def _duplicate_key(record: Dict[str, Any]) -> Optional[str]:
-    """Stable dedupe key: parcel_id > normalized address+zip > coordinates."""
-    parcel = _norm(record.get("parcel_id"))
-    if parcel:
-        return f"parcel:{parcel}"
+    """Stable dedupe key: normalized address+zip > parcel_id > coordinates.
 
+    Address is preferred because different sources (foreclosure CSV, Zillow,
+    code violations) store different parcel_ids for the same house, but the
+    street address matches. This merges the Kelton-style splits."""
     address = _clean_address(record.get("situs_address"))
     if address:
         zip_code = _norm(record.get("zip"))
         return f"addr:{address}|zip:{zip_code}"
+
+    parcel = _norm(record.get("parcel_id"))
+    if parcel:
+        return f"parcel:{parcel}"
 
     lat = record.get("latitude")
     lon = record.get("longitude")
@@ -141,11 +171,52 @@ def _gate_scores(record: Dict[str, Any]) -> Dict[str, Any]:
     return changes
 
 
+
+
+def _merge_into_keeper(keeper: Dict[str, Any], dup: Dict[str, Any]) -> Dict[str, Any]:
+    """Absorb missing fields and union list fields from a duplicate into the keeper."""
+    merged = dict(keeper)
+
+    # union data_source strings ("Foreclosure Finder + Zillow")
+    sources = _clean_data_source(keeper.get("data_source"))
+    dup_sources = _clean_data_source(dup.get("data_source"))
+    source_parts = [s.strip() for s in str(sources).split("+") if s.strip()]
+    for s in str(dup_sources).split("+"):
+        s = s.strip()
+        if s and s not in source_parts:
+            source_parts.append(s)
+    if source_parts:
+        merged["data_source"] = " + ".join(source_parts)
+
+    # union photos
+    for field in ("photos", "image_urls"):
+        keep_val = merged.get(field)
+        dup_val = dup.get(field)
+        if isinstance(keep_val, list) and isinstance(dup_val, list):
+            seen = set(map(str, keep_val))
+            for u in dup_val:
+                if str(u) not in seen:
+                    keep_val.append(u)
+                    seen.add(str(u))
+        elif not keep_val and dup_val:
+            merged[field] = dup_val
+
+    # fill missing scalar fields from the duplicate (keeper wins on conflicts)
+    for field in _COMPLETENESS_FIELDS:
+        if field in ("data_source", "photos", "image_urls"):
+            continue
+        if merged.get(field) in (None, "", 0) and dup.get(field) not in (None, "", 0):
+            merged[field] = dup.get(field)
+
+    return merged
+
+
 async def run_data_cleanup(db, dry_run: bool = False) -> Dict[str, Any]:
     """Execute the cleanup pass. Returns a stats report."""
     stats: Dict[str, Any] = {
         "scanned": 0,
         "duplicates_deleted": 0,
+        "duplicates_merged": 0,
         "out_of_tarrant_deleted": 0,
         "placeholder_prices_fixed": 0,
         "data_source_cleaned": 0,
@@ -179,19 +250,30 @@ async def run_data_cleanup(db, dry_run: bool = False) -> Dict[str, Any]:
         groups.setdefault(key, []).append(doc)
 
     duplicate_ids: List[str] = []
+    merged_updates: List[Dict[str, Any]] = []
     for key, group in groups.items():
         if len(group) <= 1:
             continue
         group.sort(key=lambda d: (_completeness(d), str(d.get("updated_at") or "")), reverse=True)
         keeper = group[0]
         for dup in group[1:]:
-            if dup["id"] != keeper["id"]:
-                duplicate_ids.append(dup["id"])
+            if dup["id"] == keeper["id"]:
+                continue
+            merged_updates.append({"keeper": keeper, "dup": dup})
+            duplicate_ids.append(dup["id"])
 
     if not dry_run:
+        for m in merged_updates:
+            merged = _merge_into_keeper(m["keeper"], m["dup"])
+            # only write if something actually changed
+            keeper_changed = any(merged.get(k) != m["keeper"].get(k) for k in merged)
+            if keeper_changed:
+                changes = {k: v for k, v in merged.items() if v != m["keeper"].get(k)}
+                await db.properties.update_one({"id": m["keeper"]["id"]}, {"$set": changes})
         for doc_id in duplicate_ids:
             await db.properties.delete_one({"id": doc_id})
     stats["duplicates_deleted"] = len(duplicate_ids)
+    stats["duplicates_merged"] = len(merged_updates)
 
     # --- Pass 3+: field-level cleanup on surviving records ------------------
     surviving = [d for d in docs if d["id"] not in to_delete and d["id"] not in duplicate_ids]

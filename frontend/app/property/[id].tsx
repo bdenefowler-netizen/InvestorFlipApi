@@ -537,7 +537,7 @@ export default function PropertyDetail() {
         <View style={styles.section} testID="section-financials">
           <Text style={styles.sectionTitle}>FINANCIALS · TAX ROLL</Text>
           <View style={styles.card}>
-            <KeyValue k="Asking Price" v={`$${prop.price.toLocaleString()}`} />
+            <KeyValue k="Asking Price" v={prop.price ? `$${prop.price.toLocaleString()}` : "Price unavailable"} />
             <KeyValue k="Value Benchmark" v={maybeMoney(prop.value_benchmark)} />
             <KeyValue k="Benchmark Source" v={prop.value_benchmark_source || "Needs verified comps"} mono={false} />
             <KeyValue k="Tax-Roll Market Value" v={maybeMoney(prop.tax_roll_market_value)} />
@@ -599,7 +599,7 @@ export default function PropertyDetail() {
                   <Image source={propertyImageUrl(n) ? { uri: propertyImageUrl(n) } : undefined} style={styles.nearbyImg} contentFit="cover" />
                     <View style={{ flex: 1, marginLeft: 10 }}>
                       <Text style={styles.nearbyAddr} numberOfLines={1}>{n.situs_address}</Text>
-                      <Text style={[styles.nearbyMeta, tabularNums]}>{n.listing_type} · ${n.price.toLocaleString()}</Text>
+                      <Text style={[styles.nearbyMeta, tabularNums]}>{n.listing_type} · {n.price ? `$${n.price.toLocaleString()}` : "Price unavailable"}</Text>
                     </View>
                     <Ionicons name="chevron-forward" size={18} color={colors.muted} />
                   </Pressable>
@@ -709,7 +709,7 @@ function QuillReport({ quill }: { quill: QuillAnalysis }) {
       {/* Deal numbers */}
       <View>
         <Text style={styles.subTitle}>THE NUMBERS</Text>
-        <MoneyRow k="Asking price" v={`$${(numbers?.price || 0).toLocaleString()}`} />
+        <MoneyRow k="Asking price" v={numbers?.price ? `$${numbers.price.toLocaleString()}` : "Price unavailable"} />
         <MoneyRow k="Repairs (est)" v={`$${(pnl?.estimated_repairs || 0).toLocaleString()}`} />
         <MoneyRow k="Closing + carry" v={`$${((pnl?.closing_costs || 0) + (pnl?.carry_costs || 0)).toLocaleString()}`} />
         <MoneyRow k="Total investment" v={`$${(pnl?.total_investment || 0).toLocaleString()}`} strong />

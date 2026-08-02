@@ -101,8 +101,14 @@ def main():
     results = asyncio.run(run_all(args.limit))
     print(json.dumps(results, indent=2, default=str))
 
-    # Exit error if any source failed
-    if any(not s.get("ok", False) for s in results.get("sources", {}).values()):
+    # Exit error if a CORE source failed. Apify is optional (free-plan account is
+    # hard-blocked), so it must not turn every cron execution red.
+    core_failed = [
+        name for name, s in results.get("sources", {}).items()
+        if name != "apify" and not s.get("ok", False)
+    ]
+    if core_failed:
+        logger.error("Core sources failed: %s", ", ".join(core_failed))
         sys.exit(1)
 
 

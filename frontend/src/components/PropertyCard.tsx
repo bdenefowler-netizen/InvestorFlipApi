@@ -6,7 +6,8 @@ import { colors, radius, spacing, tabularNums } from "../theme/tokens";
 import { OwnerBadge } from "./OwnerBadge";
 import { propertyImageUrl, type Property } from "../lib/api";
 
-export function fmtMoney(n: number): string {
+export function fmtMoney(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n) || n <= 0) return "Price unavailable";
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `$${Math.round(n / 1000)}K`;
   return `$${n}`;

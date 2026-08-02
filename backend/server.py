@@ -1222,7 +1222,7 @@ async def list_properties(
             {"owner_name": regex},
         ]
 
-    cursor = db.properties.find(q, {"_id": 0}).sort("price", -1).sort("updated_at", -1).limit(limit * 10)
+    cursor = db.properties.find(q, {"_id": 0}).sort([("price", -1), ("updated_at", -1)]).limit(limit * 10)
     raw_items = await cursor.to_list(length=limit * 10)
     items = [
         hydrate_listing_record(p)
@@ -1230,14 +1230,18 @@ async def list_properties(
         if is_user_visible_property(p)
     ][:limit]
 
-    # Total matching documents (before limit) so the app can show "X of Y"
-    total_matching = await db.properties.count_documents(q)
+    # Total matching documents (before limit) so the app can show "X of Y".
+    # Count VISIBLE docs only — otherwise chips (896) disagree with total (1,556).
+    total_matching = 0
+    cursor_all = db.properties.find(q, {"_id": 0}).limit(10000)
+    for p in await cursor_all.to_list(length=10000):
+        if is_user_visible_property(p):
+            total_matching += 1
 
     return {
         "count": len(items),
         "total": total_matching,
         "items": items,
-        "properties": items,
         "properties": items,
         "rule": "InvestorFlip V1 shows priced listings first, then off-market distressed targets.",
     }

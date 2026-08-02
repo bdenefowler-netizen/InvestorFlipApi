@@ -687,7 +687,7 @@ async def data_sources_status():
     # Check each source
     checks = [
         ("fort_worth_violations", "https://mapit.fortworthtexas.gov/ags/rest/services/CIVIC/Code_Violations_Experience_Builder/MapServer/4/query?where=1=1&outFields=Address&resultRecordCount=1&f=json"),
-        ("tad", "https://mapit.tarrantcounty.com/arcgis/rest/services/Dynamic/TADParcels/FeatureServer/0/query?where=1%3D1https://services8.arcgis.com/5S5T6XdxjqI5BK2Y/arcgis/rest/services/TAD_Parcels_1/FeatureServer/0/query?where=1=1&outFields=TAXPIN&resultRecordCount=1&f=jsonoutFields=TAXPINhttps://services8.arcgis.com/5S5T6XdxjqI5BK2Y/arcgis/rest/services/TAD_Parcels_1/FeatureServer/0/query?where=1=1&outFields=TAXPIN&resultRecordCount=1&f=jsonresultRecordCount=1https://services8.arcgis.com/5S5T6XdxjqI5BK2Y/arcgis/rest/services/TAD_Parcels_1/FeatureServer/0/query?where=1=1&outFields=TAXPIN&resultRecordCount=1&f=jsonf=json"),
+        ("tad", "https://mapit.tarrantcounty.com/arcgis/rest/services/Dynamic/TADParcels/FeatureServer/0/query?where=1%3D1&outFields=TAXPIN&resultRecordCount=1&f=json"),
         ("foreclosure_listings", "https://www.foreclosurelistingsusa.com/fort-worth-tx/"),
         ("offmarketdeck", "https://offmarketdeck.com/texas/fort-worth"),
         ("new_western", "https://marketplace.newwestern.com/"),
