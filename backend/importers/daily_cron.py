@@ -47,7 +47,6 @@ async def run_all(limit: int = 2000) -> dict:
         ("fort_worth_violations", "importers.fort_worth_violations", "import_fort_worth_violations", (db,), {"limit": limit}),
         ("foreclosures", "importers.foreclosure_finder", "import_foreclosures", (db,), {}),
         ("foreclosure_listings", "importers.foreclosure_listings_scraper", "import_foreclosure_listings", (db,), {"pages": 3}),
-        ("smartpropleads", "importers.smartpropleads_scraper", "import_smartpropleads", (db,), {"limit": 400}),
         ("tad", "importers.tad_scraper", "import_tad_properties", (db,), {"limit": 300}),
         ("apify", None, None, None, {}),  # handled separately below
     ]
@@ -83,6 +82,25 @@ async def run_all(limit: int = 2000) -> dict:
         logger.error("Apify failed: %s", traceback.format_exc())
         results["sources"]["apify"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
     
+    # ── Tarrant County Tax Roll (official delinquent-tax data) ──
+    logger.info("Importing Tarrant County tax roll (official ZIP)...")
+    try:
+        import argparse
+        from importers.tax_roll_sync import run as run_tax_roll
+        tax_args = argparse.Namespace(
+            url=None, layout=None, max_records=None, force=False,
+            apply=True, dry_run=False,
+        )
+        tax_result = await run_tax_roll(tax_args)
+        results["sources"]["tax_roll"] = {
+            "ok": bool(tax_result.get("ok", False)),
+            **tax_result,
+        }
+        logger.info("Tax roll → %s", tax_result.get("matches", tax_result))
+    except Exception as e:
+        logger.error("Tax roll failed: %s", traceback.format_exc())
+        results["sources"]["tax_roll"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
     # ── Summary ──
     results["finished_at"] = datetime.now(timezone.utc).isoformat()
     ok_count = sum(1 for s in results["sources"].values() if s.get("ok"))

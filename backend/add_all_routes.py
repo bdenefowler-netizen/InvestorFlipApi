@@ -465,6 +465,30 @@ async def import_stessa(limit: int = 100):
 
 # ========== SmartPropLeads (FREE to browse) ==========
 
+
+@router.post("/import/tax-roll")
+async def import_tax_roll(apply: bool = False, url: str = "", max_records: int = 0):
+    """Download & match the official Tarrant County tax roll ZIP.
+
+    apply=False → dry-run report only (safe default).
+    apply=True  → writes matched tax facts + enriches properties.
+    """
+    import argparse
+    from importers.tax_roll_sync import run as run_tax_roll
+
+    tax_args = argparse.Namespace(
+        url=url or None,
+        layout=None,
+        max_records=max_records or None,
+        force=False,
+        apply=apply,
+        dry_run=not apply,
+    )
+    try:
+        return await run_tax_roll(tax_args)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/import/smartpropleads")
 async def import_smartpropleads(
     lead_types: Optional[List[str]] = None,
@@ -655,6 +679,15 @@ async def import_all_sources():
             results["smartpropleads"] = await import_smartpropleads(db, limit=100)
         except Exception as e:
             results["smartpropleads"] = {"error": str(e)}
+
+        # Tarrant County Tax Roll (official, delinquent-tax data)
+        try:
+            import argparse
+            from importers.tax_roll_sync import run as run_tax_roll
+            tax_args = argparse.Namespace(url=None, layout=None, max_records=None, force=False, apply=True, dry_run=False)
+            results["tax_roll"] = await run_tax_roll(tax_args)
+        except Exception as e:
+            results["tax_roll"] = {"error": str(e)}
         
         return results
     finally:
@@ -676,6 +709,7 @@ async def data_sources_status():
         "new_western": {"available": False, "cost": "FREE"},
         "stessa": {"available": False, "cost": "FREE"},
         "smartpropleads": {"available": False, "cost": "FREE"},
+        "tax_roll": {"available": False, "cost": "FREE", "note": "Official Tarrant County tax roll ZIP"},
         "foreclosures": {"available": True, "cost": "FREE", "note": "CSV file included"},
         "realtor": {"available": False, "cost": "BLOCKED", "note": "Anti-scraping protections (429)"},
         "zillow": {"available": False, "cost": "BLOCKED", "note": "Anti-scraping protections (403)"},
@@ -693,6 +727,7 @@ async def data_sources_status():
         ("new_western", "https://marketplace.newwestern.com/"),
         ("stessa", "https://www.stessa.com/investment-properties/"),
         ("smartpropleads", "https://smartpropleads.com/browse"),
+        ("tax_roll", "https://www.tarrantcountytx.gov/content/main/en/tax/property-tax/tarrant-county-tax-roll.html"),
     ]
     
     for key, url in checks:
