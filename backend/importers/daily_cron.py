@@ -43,6 +43,8 @@ async def run_all(limit: int = 2000) -> dict:
     sources = [
         ("fort_worth_violations", "importers.fort_worth_violations", "import_fort_worth_violations", (db, limit)),
         ("foreclosures", "importers.foreclosure_finder", "import_foreclosures", (db,)),
+        ("foreclosure_listings", "importers.foreclosure_listings_scraper", "import_foreclosure_listings", (db, 3)),
+        ("smartpropleads", "importers.smartpropleads_scraper", "import_smartpropleads", (db, 400)),
         ("tad", "importers.tad_scraper", "import_tad_properties", (db, 300)),  # 300 = more reliable
         ("apify", None, None, None),  # handled separately below
     ]

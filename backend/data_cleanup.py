@@ -221,6 +221,7 @@ async def run_data_cleanup(db, dry_run: bool = False) -> Dict[str, Any]:
         "placeholder_prices_fixed": 0,
         "data_source_cleaned": 0,
         "address_cleaned": 0,
+        "address_key_backfilled": 0,
         "scores_gated": 0,
         "records_updated": 0,
         "dry_run": dry_run,
@@ -228,6 +229,18 @@ async def run_data_cleanup(db, dry_run: bool = False) -> Dict[str, Any]:
 
     docs = await db.properties.find({}, {"_id": 0}).to_list(length=10000)
     stats["scanned"] = len(docs)
+
+    # --- Pass 0: backfill canonical address_key so every importer (and the
+    # tax-roll matcher) can find records by normalized street ----------------
+    for doc in docs:
+        if doc.get("address_key"):
+            continue
+        key = canonical_street_key(doc.get("situs_address") or doc.get("address"))
+        if not key:
+            continue
+        stats["address_key_backfilled"] += 1
+        if not dry_run:
+            await db.properties.update_one({"id": doc["id"]}, {"$set": {"address_key": key}})
 
     # --- Pass 1: drop confident out-of-Tarrant records ---------------------
     to_delete: List[str] = []

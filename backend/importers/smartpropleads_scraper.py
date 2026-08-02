@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from address_utils import canonical_street_key, street_prefix_regex
 from database import PostgresDatabase
 
 logger = logging.getLogger("tarrantrei.smartpropleads")
@@ -295,7 +296,21 @@ async def import_smartpropleads(
     for prop in properties:
         address = prop.get("situs_address", "")
         
-        existing = await db.properties.find_one({"situs_address": address})
+        key = canonical_street_key(address)
+        match_query: Dict[str, Any] = {}
+        if key:
+            prefix = street_prefix_regex(address)
+            if prefix:
+                match_query["$or"] = [
+                    {"address_key": key},
+                    {"situs_address": {"$regex": prefix, "$options": "i"}},
+                ]
+            else:
+                match_query["address_key"] = key
+        else:
+            match_query["situs_address"] = address
+
+        existing = await db.properties.find_one(match_query)
         
         if existing:
             # Update with SmartPropLeads data
@@ -319,6 +334,8 @@ async def import_smartpropleads(
             matched += 1
         else:
             try:
+                if key:
+                    prop["address_key"] = key
                 await db.properties.insert_one(prop)
                 inserted += 1
             except Exception as e:

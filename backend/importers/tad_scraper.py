@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from address_utils import canonical_street_key, street_prefix_regex
 from database import PostgresDatabase
 
 logger = logging.getLogger("tarrantrei.tad")
@@ -251,6 +252,46 @@ async def fetch_tad_properties(
     return all_results
 
 
+
+# --- Off-market distress gate -------------------------------------------------
+# TAD is the tax roll (every parcel). We only INSERT unmatched parcels when they
+# show investor-relevant distress signals; otherwise we skip them so the DB
+# doesn't fill with random county parcels.
+
+_PROBATE_MARKERS = ("ESTATE", "HEIRS", "HEIR", "DECEASED", "PROBATE",
+                    "REVOCABLE", "LIVING TRUST", "TRUSTEE")
+
+
+def _deed_years_owned(deed_date: Optional[str]) -> float:
+    if not deed_date:
+        return 0.0
+    try:
+        d = datetime.fromisoformat(str(deed_date).replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - d).days / 365.25
+    except Exception:
+        return 0.0
+
+
+def _tad_distress_signals(prop: Dict[str, Any]) -> Dict[str, Any]:
+    owner = str(prop.get("owner_name") or "").upper()
+    probate = any(m in owner for m in _PROBATE_MARKERS)
+    years = _deed_years_owned(prop.get("deed_date"))
+    long_term = years >= 15
+    market_value = prop.get("market_value") or 0
+    high_equity = long_term and market_value >= 100000
+    improvement = prop.get("improvement_value") or 0
+    land = prop.get("land_value") or 0
+    vacant_land = bool(improvement == 0 and land > 0)
+    return {
+        "probate_estate": probate,
+        "long_term_owner": long_term,
+        "high_equity": high_equity,
+        "vacant_land": vacant_land,
+    }
+
+
 async def import_tad_properties(
     db: PostgresDatabase,
     city: str = "FORT WORTH",
@@ -278,16 +319,38 @@ async def import_tad_properties(
                 skipped += 1
                 continue
 
-            existing = await db.properties.find_one({"situs_address": {"$regex": f"^" + re.escape(address) + "$", "$options": "i"}})
+            # Match on a canonical street key so the tax roll finds houses from
+            # ANY source (bare '123 Main St' from code violations, full
+            # '123 MAIN ST, FORT WORTH, TX' from listings) — not just exact
+            # full-address strings. Fallback: street-prefix regex.
+            key = canonical_street_key(address)
+            match_query: Dict[str, Any] = {}
+            if key:
+                prefix = street_prefix_regex(address)
+                if prefix:
+                    match_query["$or"] = [
+                        {"address_key": key},
+                        {"situs_address": {"$regex": prefix, "$options": "i"}},
+                    ]
+                else:
+                    match_query["address_key"] = key
+            else:
+                match_query["situs_address"] = address
+
+            existing = await db.properties.find_one(match_query)
 
             if existing:
                 update_fields = {}
-                for key in ["assessed_value", "market_value", "owner_name",
-                            "owner_mailing_address", "beds", "baths", "sqft",
-                            "year_built", "lot_size_sqft", "land_value",
-                            "improvement_value", "deed_date"]:
-                    if prop.get(key) and not existing.get(key):
-                        update_fields[key] = prop[key]
+                for key_ in ["assessed_value", "market_value", "owner_name",
+                             "owner_mailing_address", "beds", "baths", "sqft",
+                             "year_built", "lot_size_sqft", "land_value",
+                             "improvement_value", "deed_date"]:
+                    if prop.get(key_) and not existing.get(key_):
+                        update_fields[key_] = prop[key_]
+
+                # Always stamp the canonical key so future matches are exact.
+                if key:
+                    update_fields["address_key"] = key
 
                 if not update_fields:
                     matched += 1
@@ -303,8 +366,20 @@ async def import_tad_properties(
                 )
                 matched += 1
             else:
-                await db.properties.insert_one(prop)
-                inserted += 1
+                # Off-market distress gate: only insert unmatched parcels that
+                # show investor-relevant signals. No more random county parcels.
+                signals = _tad_distress_signals(prop)
+                if any(signals.values()):
+                    prop["address_key"] = key
+                    prop.update(signals)
+                    prop["price"] = None
+                    prop["is_live_listing"] = False
+                    prop["listing_status"] = "Off Market"
+                    prop["listing_type"] = "Distressed"
+                    await db.properties.insert_one(prop)
+                    inserted += 1
+                else:
+                    skipped += 1
         except Exception as e:
             logger.warning("Failed to process TAD record: %s", e)
             skipped += 1

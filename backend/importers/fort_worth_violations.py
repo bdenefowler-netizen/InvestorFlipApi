@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from address_utils import canonical_street_key
 from database import PostgresDatabase
 from investor_logic import classify_owner, compute_scores, derive_owner_signals
 
@@ -222,6 +223,7 @@ def _build_property_doc(v: Dict[str, Any], idx: int) -> Dict[str, Any]:
     return {
         "id": f"fw-violation-{uuid.uuid5(uuid.NAMESPACE_DNS, address.upper()).hex[:12]}",
         "situs_address": address,
+        "address_key": canonical_street_key(address),
         "city": "Fort Worth",
         "state": "TX",
         "zip": zip_code,
