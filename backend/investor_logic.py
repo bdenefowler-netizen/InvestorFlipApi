@@ -44,6 +44,85 @@ SYNTHETIC_SOURCE_MARKERS = (
     "synthetic",
 )
 
+OPPORTUNITY_SIGNAL_LABELS = {
+    "motivated_seller": "Motivated Seller",
+    "foreclosure": "Foreclosure",
+    "distressed": "Distressed Property",
+    "reo": "REO / Bank-Owned",
+    "tax_lien": "Tax Lien / Delinquent",
+    "cash_offer": "Cash Offer",
+    "investor_special": "Investor Special",
+    "as_is": "As-Is",
+}
+
+OPPORTUNITY_FILTER_TO_SIGNAL = {
+    "motivated": "motivated_seller",
+    "motivated_seller": "motivated_seller",
+    "foreclosure": "foreclosure",
+    "distressed": "distressed",
+    "reo": "reo",
+    "tax_lien": "tax_lien",
+    "tax_delinquent": "tax_lien",
+    "cash_offer": "cash_offer",
+    "cash_house": "cash_offer",
+    "investor": "investor_special",
+    "investor_special": "investor_special",
+    "as_is": "as_is",
+}
+
+OPPORTUNITY_TEXT_PATTERNS = {
+    "motivated_seller": (
+        r"\bmotivated seller\b",
+        r"\bseller(?:s)? (?:is |are )?motivated\b",
+        r"\bmust sell\b",
+        r"\bpriced to sell\b",
+        r"\bbring (?:all|your) offers\b",
+        r"\bmake (?:us |an )?offer\b",
+    ),
+    "foreclosure": (
+        r"\bpre[- ]?foreclosure\b",
+        r"\bforeclos(?:ure|ed)\b",
+        r"\bshort sale\b",
+    ),
+    "distressed": (
+        r"\bdistressed propert(?:y|ies)\b",
+        r"\bfixer[- ]?upper\b",
+        r"\bneeds (?:significant |major )?(?:work|repairs?|renovation|rehab)\b",
+        r"\bfire[- ]damaged\b",
+        r"\bmajor rehab\b",
+        r"\btear[- ]?down\b",
+    ),
+    "reo": (
+        r"\breo\b",
+        r"\bbank[- ]owned\b",
+        r"\breal estate owned\b",
+    ),
+    "tax_lien": (
+        r"\btax liens?\b",
+        r"\btax delinquen",
+        r"\bdelinquent propert(?:y|ies) tax",
+    ),
+    "cash_offer": (
+        r"\bcash offers?\b",
+        r"\bcash only\b",
+        r"\bcash buyers? only\b",
+        r"\bcash sale\b",
+    ),
+    "investor_special": (
+        r"\binvestors?'? special\b",
+        r"\binvestor opportunity\b",
+        r"\bhandyman special\b",
+        r"\bcalling all investors\b",
+        r"\bperfect for (?:an )?investor\b",
+    ),
+    "as_is": (
+        r"\bas[- ]is\b",
+        r"\bsold in (?:its )?present condition\b",
+        r"\bseller (?:will|to) (?:make|perform) no repairs\b",
+        r"\bno repairs (?:will be|are) made\b",
+    ),
+}
+
 
 def classify_owner(owner_name: str) -> str:
     if not owner_name:
@@ -85,6 +164,116 @@ def is_synthetic_property(property_record: Mapping[str, Any]) -> bool:
     if source.strip() == legacy_foreclosure:
         return True
     return any(marker in source for marker in SYNTHETIC_SOURCE_MARKERS)
+
+
+def _opportunity_text(property_record: Mapping[str, Any]) -> str:
+    """Return only marketing/status text, excluding false-valued flag names."""
+    parts = []
+    for key in (
+        "listing_type", "listing_status", "listing_description", "description",
+        "public_remarks", "remarks", "marketing_remarks",
+        "special_listing_conditions", "distress_status",
+    ):
+        value = property_record.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value)
+
+    tags = property_record.get("listing_tags")
+    if isinstance(tags, (list, tuple)):
+        parts.extend(str(tag) for tag in tags if isinstance(tag, str))
+
+    raw = property_record.get("raw_source_excerpt")
+    if isinstance(raw, dict):
+        raw_description = raw.get("description")
+        if isinstance(raw_description, dict):
+            raw_description = raw_description.get("text")
+        for value in (
+            raw_description,
+            raw.get("descriptionText"),
+            raw.get("publicRemarks"),
+            raw.get("public_remarks"),
+            raw.get("remarks"),
+            raw.get("marketingRemarks"),
+            raw.get("statusText"),
+            raw.get("homeStatus"),
+            raw.get("listingStatus"),
+            raw.get("specialListingConditions"),
+        ):
+            if isinstance(value, str) and value.strip():
+                parts.append(value)
+        raw_tags = raw.get("tags")
+        if isinstance(raw_tags, list):
+            parts.extend(str(tag) for tag in raw_tags if isinstance(tag, str))
+
+    return " ".join(parts).lower().replace("_", " ")
+
+
+def _listing_subtype_flags(property_record: Mapping[str, Any]) -> Mapping[str, Any]:
+    raw = property_record.get("raw_source_excerpt")
+    if not isinstance(raw, dict):
+        return {}
+    for key in ("listing_sub_type", "listingSubType", "foreclosureTypes", "flags"):
+        value = raw.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def classify_opportunity(property_record: Mapping[str, Any]) -> Dict[str, Any]:
+    """Classify only explicit investor-opportunity evidence.
+
+    This deliberately avoids treating absentee, entity, or FSBO ownership as
+    proof that a seller is motivated. Those can remain research signals, but
+    they do not qualify a listing for the focused opportunity feed by themselves.
+    """
+    signals = []
+    evidence = []
+
+    def add(signal: str, reason: str) -> None:
+        if signal not in signals:
+            signals.append(signal)
+        if reason not in evidence:
+            evidence.append(reason)
+
+    listing_type = str(property_record.get("listing_type") or "").strip().lower()
+    flags = _listing_subtype_flags(property_record)
+    normalized_flags = {str(key).replace("_", "").lower(): value for key, value in flags.items()}
+
+    if listing_type == "foreclosure" or any(
+        normalized_flags.get(key) is True
+        for key in ("isforeclosure", "wassdefault", "wasdefault")
+    ):
+        add("foreclosure", "Provider identifies foreclosure status")
+    if normalized_flags.get("isshortsale") is True:
+        add("foreclosure", "Provider identifies a short sale")
+
+    owner_type = str(property_record.get("owner_type") or "").strip().lower()
+    if listing_type == "reo" or owner_type == "bank" or any(
+        normalized_flags.get(key) is True
+        for key in ("isbankowned", "isreo")
+    ):
+        add("reo", "Provider or county ownership data identifies bank/REO status")
+
+    current_due = _number(property_record.get("current_tax_amount_due")) or 0
+    prior_due = _number(property_record.get("prior_tax_amount_due")) or 0
+    if property_record.get("tax_delinquent") is True or current_due > 0 or prior_due > 0:
+        add("tax_lien", "County tax data shows an outstanding balance")
+
+    text = _opportunity_text(property_record)
+    for signal, patterns in OPPORTUNITY_TEXT_PATTERNS.items():
+        if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns):
+            add(signal, f"Listing language matches {OPPORTUNITY_SIGNAL_LABELS[signal].lower()}")
+
+    return {
+        "is_target_opportunity": bool(signals),
+        "opportunity_signal_keys": signals,
+        "opportunity_signals": [OPPORTUNITY_SIGNAL_LABELS[signal] for signal in signals],
+        "opportunity_evidence": evidence,
+    }
+
+
+def is_target_opportunity(property_record: Mapping[str, Any]) -> bool:
+    return bool(classify_opportunity(property_record)["is_target_opportunity"])
 
 
 def _street(value: str) -> str:
@@ -293,4 +482,5 @@ def merge_live_refresh(
         str(merged.get("state") or "TX"),
     ))
     merged.update(compute_scores(merged))
+    merged.update(classify_opportunity(merged))
     return merged

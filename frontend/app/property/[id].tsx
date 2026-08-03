@@ -258,7 +258,11 @@ export default function PropertyDetail() {
             </Pressable>
           </SafeAreaView>
           <View style={styles.heroMeta}>
-            <View style={styles.listingChip}><Text style={styles.listingChipText}>{prop.listing_type.toUpperCase()}</Text></View>
+            <View style={styles.listingChip}>
+              <Text style={styles.listingChipText}>
+                {(prop.opportunity_signals?.[0] || prop.listing_type).toUpperCase()}
+              </Text>
+            </View>
             <Text style={styles.heroPrice}>{fmtMoney(prop.price)}</Text>
             <Text style={styles.heroAddress} numberOfLines={2}>{prop.situs_address}</Text>
           </View>
@@ -284,6 +288,25 @@ export default function PropertyDetail() {
             </View>
           ) : null}
         </View>
+
+        {prop.opportunity_signals?.length ? (
+          <View style={styles.section} testID="section-opportunity-signals">
+            <Text style={styles.sectionTitle}>WHY THIS MATCHED</Text>
+            <View style={styles.tagWrap}>
+              {prop.opportunity_signals.map((signal) => (
+                <View key={signal} style={[styles.featureTag, styles.opportunityTag]}>
+                  <Text style={[styles.featureTagText, styles.opportunityTagText]}>{signal}</Text>
+                </View>
+              ))}
+            </View>
+            {prop.opportunity_evidence?.map((evidence) => (
+              <View key={evidence} style={styles.opportunityEvidenceRow}>
+                <Ionicons name="checkmark-circle" size={14} color={colors.success} />
+                <Text style={styles.opportunityEvidenceText}>{evidence}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
 
         {photos.length > 1 ? (
           <View style={styles.section} testID="section-photos">
@@ -870,6 +893,20 @@ const styles = StyleSheet.create({
     color: colors.onSurfaceTertiary,
     fontSize: 10,
     fontWeight: "700",
+  },
+  opportunityTag: { backgroundColor: "#E7DDD0" },
+  opportunityTagText: { color: "#5C3C17" },
+  opportunityEvidenceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginTop: 8,
+  },
+  opportunityEvidenceText: {
+    flex: 1,
+    color: colors.onSurface,
+    fontSize: 12,
+    lineHeight: 17,
   },
   agentListingRow: {
     flexDirection: "row",
