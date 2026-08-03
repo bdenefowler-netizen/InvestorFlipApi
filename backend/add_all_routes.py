@@ -850,6 +850,19 @@ async def quick_analyze(
 
     max_offer = calculate_max_offer(arv, repairs)
     decision = decide_buy_pass_negotiate(price, max_offer)
+    if price <= 0:
+        # No purchase price → refuse to fabricate a profit/ROI.
+        return {
+            "address": address,
+            "decision": "PASS",
+            "listing_price": None,
+            "arv": arv,
+            "repairs": repairs,
+            "max_offer": max_offer,
+            "estimated_profit": None,
+            "roi_pct": None,
+            "warning": "Purchase price required — profit and ROI cannot be computed without it.",
+        }
     profit = arv - price - repairs
 
     return {

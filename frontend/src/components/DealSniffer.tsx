@@ -133,7 +133,7 @@ export default function DealSniffer(props: DealSnifferProps) {
         <View style={styles.bio}>
           <Text style={styles.bioText}>
             Sniffing out the best deals in Fort Worth — one property at a time. 
-            If Chef doesn't approve it, neither should you.
+            If Chef doesn’t approve it, neither should you.
           </Text>
           <Text style={styles.bioMemorial}>
             🐾 In loving memory of a very good dog who found the best deals 🐾

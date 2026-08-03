@@ -17,7 +17,8 @@ Important:
 """
 
 from fastapi import FastAPI, APIRouter, HTTPException, Query, UploadFile, File, Form
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, Response, JSONResponse
+from fastapi import Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from ai.models import QuillAnalyzeRequest, QuillAnalyzeResponse
@@ -63,6 +64,36 @@ load_dotenv(ROOT_DIR / ".env")
 db = PostgresDatabase()
 
 app = FastAPI(title="TarrantREI / InvestorFlip API")
+
+
+@app.middleware("http")
+async def protect_admin_routes(request: Request, call_next):
+    """Lock manual import + destructive admin endpoints behind an admin key.
+
+    Applies to /api/import/* and /api/admin/* (cleanup, data-cleanup,
+    backfill). The mobile app never calls these (imports run via the daily
+    cron), so locking them breaks nothing client-side. When
+    INVESTORFLIP_ADMIN_KEY is unset we FAIL CLOSED with a 503 so the
+    destructive routes can never be hit publicly by accident.
+    """
+    path = request.url.path
+    if path.startswith("/api/import/") or path.startswith("/api/admin/"):
+        expected = os.environ.get("INVESTORFLIP_ADMIN_KEY", "").strip()
+        if not expected:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Admin key not configured — set INVESTORFLIP_ADMIN_KEY"},
+            )
+        auth = request.headers.get("x-admin-key", "")
+        bearer = request.headers.get("authorization", "")
+        if bearer.startswith("Bearer "):
+            auth = bearer[len("Bearer "):].strip()
+        if auth != expected:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized — valid admin key required"},
+            )
+    return await call_next(request)
 api_router = APIRouter(prefix="/api")
 
 logger = logging.getLogger("tarrantrei")
@@ -1222,20 +1253,17 @@ async def list_properties(
             {"owner_name": regex},
         ]
 
-    cursor = db.properties.find(q, {"_id": 0}).sort("price", -1).limit(limit * 10)
-    raw_items = await cursor.to_list(length=limit * 10)
-    items = [
-        hydrate_listing_record(p)
-        for p in raw_items
-        if is_user_visible_property(p)
-    ][:limit]
-
-    # Total matching documents (before limit) so the app can show "X of Y".
-    # Count at the DB level (cheap) and exclude synthetic demo records so the
-    # total agrees with what the app actually displays.
-    q_count = dict(q)
-    q_count["is_synthetic"] = {"$ne": True}
-    total_matching = await db.properties.count_documents(q_count)
+    # Fetch all matching docs (the store is small — a few thousand rows) and
+    # apply the SAME Python-side visibility filter used for display, so
+    # `total` always equals the count the app can actually show (fixes the
+    # 914-vs-1578 disagreement). Sort by NUMERIC price in Python: some older
+    # rows store price as a string, and Mongo's string sort would order
+    # "$99,000" before "$950,000".
+    all_matching = await db.properties.find(q, {"_id": 0}).to_list(length=20000)
+    visible = [p for p in all_matching if is_user_visible_property(p)]
+    visible.sort(key=lambda p: safe_float(p.get("price")) or 0, reverse=True)
+    items = [hydrate_listing_record(p) for p in visible][:limit]
+    total_matching = len(visible)
 
     return {
         "count": len(items),

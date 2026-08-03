@@ -508,7 +508,7 @@ export default function PropertyDetail() {
               <View style={{ alignItems: "center", paddingVertical: 20 }}>
                 <ActivityIndicator color={colors.brandPrimary} />
                 <Text style={{ color: colors.muted, marginTop: 10, fontSize: 12 }}>
-                  Quill's crunching the numbers…{"\n"}cross-checking Zillow, Realtor & Redfin live
+                  Quill’s crunching the numbers…{"\n"}cross-checking Zillow, Realtor & Redfin live
                 </Text>
               </View>
             ) : quillError ? (

@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
+from address_utils import canonical_street_key
+
 # Fort Worth + Tarrant County municipalities (conservative allowlist).
 TARRANT_CITIES = {
     "fort worth", "arlington", "bedford", "hurst", "euless", "north richland hills",

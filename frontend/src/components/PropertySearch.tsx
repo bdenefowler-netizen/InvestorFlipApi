@@ -262,7 +262,7 @@ export default function PropertySearch() {
             onSubmitEditing={search}
           />
           <Text style={styles.aiHint}>
-            Try: "vacant 3bd/2ba under 250k near TCU"
+            Try: “vacant 3bd/2ba under 250k near TCU”
           </Text>
         </View>
       )}
@@ -298,7 +298,7 @@ export default function PropertySearch() {
           ) : null
         }
         ListEmptyComponent={
-          !loading && (
+          !loading ? (
             <View style={styles.empty}>
               <Text style={styles.emptyIcon}>🏠</Text>
               <Text style={styles.emptyText}>
@@ -315,7 +315,7 @@ export default function PropertySearch() {
                 </TouchableOpacity>
               )}
             </View>
-          )
+          ) : null
         }
         renderItem={({ item }) => (
           <TouchableOpacity style={styles.card} activeOpacity={0.7}>
@@ -336,7 +336,7 @@ export default function PropertySearch() {
               {item.arv && <Text>📈 ${item.arv.toLocaleString()}</Text>}
             </View>
             <View style={styles.cardBadges}>
-              {item.violation_count > 0 && (
+              {(item.violation_count ?? 0) > 0 && (
                 <View style={styles.badgeDistressed}>
                   <Text style={styles.badgeDistressedText}>
                     ⚠️ {item.violation_count}
@@ -383,7 +383,7 @@ export default function PropertySearch() {
                 <Text style={styles.emptyIcon}>📂</Text>
                 <Text style={styles.emptyText}>No saved searches yet</Text>
                 <Text style={styles.emptySubtext}>
-                  Run a search then tap "Save This Search"
+                  Run a search then tap “Save This Search”
                 </Text>
               </View>
             ) : (

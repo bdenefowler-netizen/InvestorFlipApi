@@ -85,17 +85,32 @@ def cross_check_value(property_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     sources = {}
 
-    county = property_data.get("appraised_value") or property_data.get("assessed_value")
+    # County anchor: PREFER the genuine separate tax-roll field (official
+    # Tarrant County roll), then TAD/feed-provided appraised/assessed.
+    # QA audit 2026-08-02: previously compared ordinary merged fields
+    # (market_value/assessed_value that feeds and TAD both overwrite),
+    # which silently double-counted the same number as "agreement".
+    county = (
+        property_data.get("tax_roll_market_value")
+        or property_data.get("appraised_value")
+        or property_data.get("assessed_value")
+    )
     if county:
         sources["county_appraised"] = float(county)
 
+    taxroll = property_data.get("tax_roll_market_value")
+    if taxroll and "county_appraised" not in sources:
+        sources["tax_roll"] = float(taxroll)
+
     feed_mv = property_data.get("market_value")
     if feed_mv:
-        sources["market_estimate"] = float(feed_mv)
-
-    taxroll = property_data.get("tax_roll_market_value")
-    if taxroll:
-        sources["tax_roll"] = float(taxroll)
+        # market_value is ambiguous — feeds AND TAD both write it. If it's
+        # within 1% of the county anchor it's the same source double-counted;
+        # skip it so it can't manufacture fake "agreement"/confidence.
+        if county and abs(float(feed_mv) - float(county)) / float(county) < 0.01:
+            pass
+        else:
+            sources["market_estimate"] = float(feed_mv)
 
     arv_claim = property_data.get("arv_estimate")
     if arv_claim:
@@ -469,16 +484,23 @@ def build_analysis(property_data: Dict[str, Any]) -> Dict[str, Any]:
     crosscheck = cross_check_value(property_data)
     validated_arv = crosscheck.get("validated_arv") or float(arv or 0)
     
+    has_price = float(price or 0) > 0
     deal = determine_deal_type(float(price or 0), float(validated_arv or 0), repairs)
     
-    # P&L (use validated ARV)
+    # P&L (use validated ARV) — NEVER fabricate a profit when the purchase
+    # price is unknown. price=0 previously produced phantom $100K+ profits
+    # and 200%+ ROI that could push a user into a bad decision.
     eff_arv = float(validated_arv or 0)
     closing_costs = float(price or 0) * DEFAULT_CLOSING_PCT
     carry_costs = DEFAULT_CARRY_MONTHS * DEFAULT_CARRY_MONTHLY
     total_investment = float(price or 0) + repairs["total"] + closing_costs + carry_costs
     commission = eff_arv * DEFAULT_COMMISSION_PCT
-    net_profit = eff_arv - total_investment - commission
-    roi = (net_profit / total_investment * 100) if total_investment else 0
+    if has_price:
+        net_profit = eff_arv - total_investment - commission
+        roi = (net_profit / total_investment * 100) if total_investment else 0.0
+    else:
+        net_profit = None
+        roi = None
     
     return {
         "property": {
@@ -498,6 +520,7 @@ def build_analysis(property_data: Dict[str, Any]) -> Dict[str, Any]:
             "spread": int(float(validated_arv or 0) - float(price or 0)),
             "repairs": repairs,
             "mortgage": mortgage,
+            "price_missing": not has_price,
             "deal_type": deal["type"],
             "deal_confidence": deal["confidence"],
             "deal_reason": deal["reason"],
@@ -512,8 +535,8 @@ def build_analysis(property_data: Dict[str, Any]) -> Dict[str, Any]:
             "total_investment": int(total_investment),
             "arv": int(float(arv or 0)),
             "commission": int(commission),
-            "net_profit": int(net_profit),
-            "roi_pct": round(roi, 1),
+            "net_profit": int(net_profit) if net_profit is not None else None,
+            "roi_pct": round(roi, 1) if roi is not None else None,
         },
         "flags": _build_flags(property_data, deal, net_profit),
     }
@@ -527,7 +550,9 @@ def _build_flags(
     """Generate quick-glance flags for the deal."""
     flags = []
     
-    if net_profit > 50000:
+    if net_profit is None:
+        flags.append({"type": "warn", "label": "⚠️ No purchase price — profit unknown"})
+    elif net_profit > 50000:
         flags.append({"type": "hot", "label": f"🔥 +${int(net_profit):,} potential"})
     elif net_profit > 20000:
         flags.append({"type": "good", "label": f"✅ +${int(net_profit):,} potential"})
@@ -562,6 +587,12 @@ def quill_take(
     else:
         greeting = "Alright, here's the scoop:"
     
+    if p["net_profit"] is None:
+        return (
+            f"{greeting} We don't have a purchase price for this one yet, so "
+            "I can't run the numbers. 🤷 Once we know the ask, I'll sniff out "
+            "the profit and ROI."
+        )
     if p["net_profit"] > 50000:
         vibe = f"This one's got some real juice in it. 🧃 We're looking at roughly ${p['net_profit']:,} in it after everything shakes out — that's a solid {p['roi_pct']}% return on your money."
     elif p["net_profit"] > 20000:

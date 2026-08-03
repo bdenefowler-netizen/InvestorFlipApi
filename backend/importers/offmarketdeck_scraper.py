@@ -159,7 +159,7 @@ def _parse_deal_to_property(deal: Dict[str, Any]) -> Dict[str, Any] | None:
         county = "Dallas"
 
     return {
-        "id": f"omd-{deal.get('id', hash(full_address) & 0xFFFFFFFF:08x)}",
+        "id": f"omd-{deal.get('id', f'{hash(full_address) & 0xFFFFFFFF:08x}')}",
         "situs_address": full_address,
         "city": city,
         "state": state,

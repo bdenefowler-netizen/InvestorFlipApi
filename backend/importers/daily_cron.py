@@ -101,6 +101,39 @@ async def run_all(limit: int = 2000) -> dict:
         logger.error("Tax roll failed: %s", traceback.format_exc())
         results["sources"]["tax_roll"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
+    # ── Live Listings (OpenWeb Ninja → RapidAPI fallback) ──
+    # Re-enabled per QA audit 2026-08-02: production's last live sync was
+    # July 28 because daily_cron stopped calling the sync entirely.
+    logger.info("Syncing live Fort Worth listings (OpenWeb Ninja/RapidAPI)...")
+    try:
+        if os.environ.get("ENABLE_LIVE_LISTING_CRON", "false").lower() != "true":
+            results["sources"]["live_listings"] = {
+                "ok": True, "skipped": True,
+                "reason": "Set ENABLE_LIVE_LISTING_CRON=true to enable the live-listing sync",
+            }
+        elif not (
+            os.environ.get("OPENWEB_NINJA_REAL_ESTATE_API_KEY", "").strip()
+            or os.environ.get("OPENWEB_NINJA_ZILLOW_API_KEY", "").strip()
+            or os.environ.get("OPENWEB_NINJA_API_KEY", "").strip()
+            or os.environ.get("OPENWEB_NINJA_KEY", "").strip()
+            or os.environ.get("RAPIDAPI_KEY", "").strip()
+        ):
+            results["sources"]["live_listings"] = {
+                "ok": True, "skipped": True,
+                "reason": "No OpenWeb Ninja / RapidAPI key configured",
+            }
+        else:
+            from server import sync_live_listings_to_database
+            live_out = await sync_live_listings_to_database(db, limit=50)
+            results["sources"]["live_listings"] = {
+                "ok": "error" not in live_out,
+                **{k: v for k, v in live_out.items() if k != "items"},
+            }
+            logger.info("Live listings → %s", live_out.get("summary", live_out))
+    except Exception as e:
+        logger.error("Live listings failed: %s", traceback.format_exc())
+        results["sources"]["live_listings"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
     # ── Summary ──
     results["finished_at"] = datetime.now(timezone.utc).isoformat()
     ok_count = sum(1 for s in results["sources"].values() if s.get("ok"))
