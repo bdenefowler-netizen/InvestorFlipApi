@@ -7,3 +7,4 @@ pydantic==2.13.4
 python-dotenv==1.2.2
 python-multipart==0.0.32
 curl_cffi==0.15.0
+beautifulsoup4==4.15.0
