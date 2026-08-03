@@ -60,8 +60,8 @@ def analyze_property_with_quill(body: QuillAnalyzeRequest) -> QuillAnalyzeRespon
 
         # 🐾 Chef Deal Sniffer Score
     deal_sniffer_score = 0
-    if max_offer and listing_price:
-        ratio = listing_price / max_offer
+    if max_offer and price:
+        ratio = price / max_offer
         if decision == "BUY":
             deal_sniffer_score = min(100, int(80 + (1 - ratio) * 50))
         elif decision == "NEGOTIATE":

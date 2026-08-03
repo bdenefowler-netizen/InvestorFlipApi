@@ -1188,6 +1188,7 @@ async def brightdata_save_check(payload: dict):
 
     payload: {"property_id": "...", "result": {...cross_check_property output}}
     """
+    from datetime import datetime, timezone
     from database import PostgresDatabase
 
     prop_id = payload.get("property_id")
