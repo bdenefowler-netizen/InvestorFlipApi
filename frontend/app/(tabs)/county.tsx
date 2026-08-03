@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter, type Href } from "expo-router";
 
 import {
   countyRecordsCsvUrl,
@@ -135,7 +135,7 @@ export default function CountyRecordsScreen() {
 
   const renderRow = ({ item, index }: { item: CountyRecord; index: number }) => (
     <Pressable
-      onPress={() => router.push(`/county/${encodeURIComponent(item.id)}`)}
+      onPress={() => router.push(`/county/${encodeURIComponent(item.id)}` as Href)}
       style={({ pressed }) => [
         styles.row,
         index % 2 === 1 && styles.rowAlternate,
