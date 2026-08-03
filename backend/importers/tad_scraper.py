@@ -48,6 +48,7 @@ def _query_tad(
     out_fields: str = _REQUIRED_FIELDS,
     result_offset: int = 0,
     result_count: int = TAD_MAX_RECORDS,
+    order_by: str = "",
 ) -> List[Dict[str, Any]]:
     """Query the TAD Parcels Feature Service (sync)."""
     params = {
@@ -58,6 +59,8 @@ def _query_tad(
         "f": "json",
         "returnGeometry": "false",
     }
+    if order_by:
+        params["orderByFields"] = order_by
     with httpx.Client(timeout=60.0) as client:
         response = client.get(TAD_PARCELS_URL, params=params)
         response.raise_for_status()
@@ -297,98 +300,21 @@ async def import_tad_properties(
     city: str = "FORT WORTH",
     limit: int = 1000,
 ) -> Dict[str, Any]:
-    """Import TAD properties into the database."""
-    try:
-        raw_properties = await fetch_tad_properties(city=city, limit=limit)
-    except Exception as e:
-        logger.error("Failed to fetch TAD data: %s", e)
-        return {"fetched": 0, "inserted": 0, "matched": 0, "skipped": 0, "error": str(e)}
+    """Compatibility wrapper that stores TAD only in county_records.
 
-    if not raw_properties:
-        return {"fetched": 0, "inserted": 0, "matched": 0, "skipped": 0}
+    Older jobs and admin routes still call this name. Redirecting them here is
+    the final guard against public parcel rows becoming listing cards.
+    """
+    from importers.county_records import sync_tad_county_records
 
-    inserted = 0
-    matched = 0
-    skipped = 0
-
-    for raw in raw_properties:
-        try:
-            prop = _parse_tad_property(raw)
-            address = prop.get("situs_address", "")
-            if not address or address in (", FORT WORTH, TX", ", , TX"):
-                skipped += 1
-                continue
-
-            # Match on a canonical street key so the tax roll finds houses from
-            # ANY source (bare '123 Main St' from code violations, full
-            # '123 MAIN ST, FORT WORTH, TX' from listings) — not just exact
-            # full-address strings. Fallback: street-prefix regex.
-            key = canonical_street_key(address)
-            match_query: Dict[str, Any] = {}
-            if key:
-                prefix = street_prefix_regex(address)
-                if prefix:
-                    match_query["$or"] = [
-                        {"address_key": key},
-                        {"situs_address": {"$regex": prefix, "$options": "i"}},
-                    ]
-                else:
-                    match_query["address_key"] = key
-            else:
-                match_query["situs_address"] = address
-
-            existing = await db.properties.find_one(match_query)
-
-            if existing:
-                update_fields = {}
-                for key_ in ["assessed_value", "market_value", "owner_name",
-                             "owner_mailing_address", "beds", "baths", "sqft",
-                             "year_built", "lot_size_sqft", "land_value",
-                             "improvement_value", "deed_date"]:
-                    if prop.get(key_) and not existing.get(key_):
-                        update_fields[key_] = prop[key_]
-
-                # Always stamp the canonical key so future matches are exact.
-                if key:
-                    update_fields["address_key"] = key
-
-                if not update_fields:
-                    matched += 1
-                    continue
-
-                update_fields["data_source"] = existing.get("data_source", "") + " + TAD"
-                update_fields["tad_data"] = prop.get("tad_data")
-                update_fields["parcel_id"] = existing.get("parcel_id") or prop.get("parcel_id")
-
-                await db.properties.update_one(
-                    {"id": existing["id"]},
-                    {"$set": update_fields},
-                )
-                matched += 1
-            else:
-                # Off-market distress gate: only insert unmatched parcels that
-                # show investor-relevant signals. No more random county parcels.
-                signals = _tad_distress_signals(prop)
-                if any(signals.values()):
-                    prop["address_key"] = key
-                    prop.update(signals)
-                    prop["price"] = None
-                    prop["is_live_listing"] = False
-                    prop["listing_status"] = "Off Market"
-                    prop["listing_type"] = "Distressed"
-                    await db.properties.insert_one(prop)
-                    inserted += 1
-                else:
-                    skipped += 1
-        except Exception as e:
-            logger.warning("Failed to process TAD record: %s", e)
-            skipped += 1
-
+    result = await sync_tad_county_records(db, records_per_run=limit)
     return {
-        "fetched": len(raw_properties),
-        "inserted": inserted,
-        "matched": matched,
-        "skipped": skipped,
+        **result,
+        "inserted": 0,
+        "matched": 0,
+        "skipped": result.get("rejected_blank", 0),
+        "deprecated_entrypoint": True,
+        "note": "TAD rows were stored in county_records; no listing cards were created.",
     }
 
 

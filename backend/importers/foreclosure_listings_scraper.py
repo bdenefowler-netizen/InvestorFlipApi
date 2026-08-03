@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import re
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import httpx
@@ -180,9 +182,16 @@ def _parse_foreclosure_property(raw: Dict[str, Any]) -> Dict[str, Any]:
     state = raw.get("state", "TX")
     zip_code = raw.get("zip", "")
     full_address = f"{address}, {city}, {state} {zip_code}".strip(", ")
+    raw_property_type = str(raw.get("property_type") or "").strip()
+    property_type = (
+        raw_property_type
+        if any(term in raw_property_type.lower() for term in ("single family", "single-family", "house", "detached"))
+        else None
+    )
 
+    now = datetime.now(timezone.utc).isoformat()
     return {
-        "id": f"flusa-{hash(full_address) & 0xFFFFFFFF:08x}",
+        "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"listing:{full_address.upper()}")),
         "situs_address": full_address,
         "city": city,
         "state": state,
@@ -195,7 +204,7 @@ def _parse_foreclosure_property(raw: Dict[str, Any]) -> Dict[str, Any]:
         "sqft": raw.get("sqft"),
         "year_built": None,
         "lot_size_sqft": None,
-        "property_type": raw.get("property_type", "Single Family"),
+        "property_type": property_type,
         "price": raw.get("price"),
         "assessed_value": None,
         "market_value": None,
@@ -212,6 +221,11 @@ def _parse_foreclosure_property(raw: Dict[str, Any]) -> Dict[str, Any]:
         "is_synthetic": False,
         "foreclosure": True,
         "pre_foreclosure": True,
+        "is_live_listing": True,
+        "listing_last_seen_at": now,
+        "created_at": now,
+        "updated_at": now,
+        "missed_syncs": 0,
     }
 
 
@@ -231,11 +245,12 @@ async def import_foreclosure_listings(
             logger.warning("Failed to fetch page %d: %s", page, e)
 
     if not all_properties:
-        return {"fetched": 0, "inserted": 0, "matched": 0, "skipped": 0}
+        return {"fetched": 0, "inserted": 0, "matched": 0, "skipped": 0, "property_ids": []}
 
     inserted = 0
     matched = 0
     skipped = 0
+    property_ids: List[str] = []
 
     for raw in all_properties:
         try:
@@ -253,16 +268,24 @@ async def import_foreclosure_listings(
                 update_fields["data_source"] = existing.get("data_source", "") + " + ForeclosureListingsUSA"
                 update_fields["listing_type"] = "Foreclosure"
                 update_fields["foreclosure"] = True
+                update_fields["is_live_listing"] = True
+                update_fields["listing_last_seen_at"] = datetime.now(timezone.utc).isoformat()
+                update_fields["missed_syncs"] = 0
                 await db.properties.update_one({"id": existing["id"]}, {"$set": update_fields})
+                property_ids.append(existing["id"])
                 matched += 1
             else:
                 await db.properties.insert_one(prop)
+                property_ids.append(prop["id"])
                 inserted += 1
         except Exception as e:
             logger.warning("Failed to process listing: %s", e)
             skipped += 1
 
-    return {"fetched": len(all_properties), "inserted": inserted, "matched": matched, "skipped": skipped}
+    return {
+        "fetched": len(all_properties), "inserted": inserted, "matched": matched,
+        "skipped": skipped, "property_ids": property_ids,
+    }
 
 
 if __name__ == "__main__":

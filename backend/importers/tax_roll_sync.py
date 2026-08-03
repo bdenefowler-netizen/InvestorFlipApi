@@ -156,12 +156,20 @@ async def run(args: argparse.Namespace) -> None:
     db = PostgresDatabase(database_url)
     try:
         await ensure_indexes(db)
-        previous = await db.live_sync_log.find_one({
+        previous_runs = await db.live_sync_log.find({
             "sync_type": "tax_roll",
             "source_url": source_url,
             "status": "success",
-        })
-        if previous and not args.force:
+        }).to_list(length=100)
+        previous = next(
+            (item for item in previous_runs if item.get("county_snapshot_scope") == "all_addressable"),
+            previous_runs[0] if previous_runs else None,
+        )
+        # Older successful runs either enriched only live listings or retained
+        # only delinquent rows. Reprocess once for the complete addressable
+        # county-record worksheet.
+        county_snapshot_done = previous and previous.get("county_snapshot_scope") == "all_addressable"
+        if previous and county_snapshot_done and not args.force:
             result = {
                 "ok": True,
                 "skipped": True,
@@ -183,8 +191,9 @@ async def run(args: argparse.Namespace) -> None:
                 max_records=args.max_records,
             )
             if args.apply:
-                await db.live_sync_log.insert_one({
-                    "id": str(uuid.uuid4()),
+                sync_id = str(uuid.uuid4())
+                sync_document = {
+                    "id": sync_id,
                     "sync_type": "tax_roll",
                     "source": "Tarrant County Tax Roll",
                     "source_url": source_url,
@@ -192,7 +201,17 @@ async def run(args: argparse.Namespace) -> None:
                     "status": "success",
                     "matched_tax_records": match_result["matched_tax_records"],
                     "properties_enriched": match_result["properties_enriched"],
+                    "county_records_written": match_result["county_records_written"],
+                    "county_records_rejected_blank": match_result["county_records_rejected_blank"],
+                    "county_snapshot_scope": "all_addressable",
                     "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                await db.live_sync_log.insert_one(sync_document)
+                await db.county_sync_log.insert_one({
+                    **sync_document,
+                    "id": str(uuid.uuid4()),
+                    "source": "tax_roll",
+                    "written": match_result["county_records_written"],
                 })
 
             result = {

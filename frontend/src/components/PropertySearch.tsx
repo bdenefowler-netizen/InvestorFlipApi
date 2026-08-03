@@ -3,6 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, FlatList,
   ScrollView, StyleSheet, ActivityIndicator, Alert, Modal
 } from 'react-native';
+import { adminRequestHeaders } from '@/src/lib/admin';
 
 // ─── Types ───────────────────────────────────────────────
 interface Property {
@@ -83,9 +84,10 @@ export default function PropertySearch() {
     setLoading(true);
     try {
       if (aiMode && aiQuery.trim()) {
+        const headers = await adminRequestHeaders({ 'Content-Type': 'application/json' });
         const res = await fetch(`${API_BASE}/api/ai/search`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({ query: aiQuery, limit: 20 }),
         });
         const data = await res.json();
@@ -128,9 +130,10 @@ export default function PropertySearch() {
       return;
     }
     try {
+      const headers = await adminRequestHeaders({ 'Content-Type': 'application/json' });
       const res = await fetch(`${API_BASE}/api/saved-searches`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           name: saveName.trim(),
           query: query.trim(),
@@ -158,7 +161,8 @@ export default function PropertySearch() {
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
-          await fetch(`${API_BASE}/api/saved-searches/${id}`, { method: 'DELETE' });
+          const headers = await adminRequestHeaders();
+          await fetch(`${API_BASE}/api/saved-searches/${id}`, { method: 'DELETE', headers });
           loadSavedSearches();
         },
       },
@@ -169,8 +173,10 @@ export default function PropertySearch() {
     setLoading(true);
     setShowSaved(false);
     try {
+      const headers = await adminRequestHeaders();
       const res = await fetch(`${API_BASE}/api/saved-searches/${saved.id}/run?limit=30`, {
         method: 'POST',
+        headers,
       });
       if (res.ok) {
         const data = await res.json();

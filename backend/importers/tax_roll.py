@@ -157,6 +157,30 @@ async def load_live_targets(db: PostgresDatabase) -> Dict[str, List[Dict[str, An
     return targets
 
 
+def select_tax_roll_matches(
+    record: Mapping[str, Any],
+    address_candidates: Iterable[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Accept direct tax-roll enrichment only on an exact tax account.
+
+    MASTER.DAT contains only a street address—no property city or situs ZIP—so
+    a street-only match cannot satisfy the county match safety rule. Rows with
+    no shared account remain in county_records and can later merge with TAD by
+    account instead of overwriting an unrelated live listing.
+    """
+    from importers.county_records import normalize_account_id
+
+    account = normalize_account_id(record.get("account_id"))
+    if not account:
+        return []
+    matches: List[Dict[str, Any]] = []
+    for candidate in address_candidates:
+        prop = candidate.get("property") or {}
+        if normalize_account_id(prop.get("account_id")) == account:
+            matches.append(dict(candidate))
+    return matches
+
+
 def master_document(record: Dict[str, Any], property_ids: List[str], source_name: str) -> Dict[str, Any]:
     situs_address = build_situs_address(record)
     owner_name = _clean_text(f"{record.get('owner_name_1') or ''} {record.get('owner_name_2') or ''}")
@@ -225,7 +249,7 @@ def property_enrichment(
             "tax_roll": {
                 "source": document.get("data_source"),
                 "matched_at": datetime.now(timezone.utc).isoformat(),
-                "match_method": "exact normalized street address",
+                "match_method": "exact normalized tax account",
             },
         },
     }
@@ -254,9 +278,10 @@ async def import_matches(
     layout: Mapping[str, Any],
     dry_run: bool = False,
     max_records: Optional[int] = None,
+    include_county_records: bool = True,
 ) -> Dict[str, int]:
     targets = await load_live_targets(db)
-    if not targets:
+    if not targets and not include_county_records:
         raise RuntimeError("No live Fort Worth listings found in PostgreSQL. Sync live listings first.")
 
     master = layout["master"]
@@ -266,8 +291,20 @@ async def import_matches(
     source_name = f"Tarrant County Tax Roll ({zip_path.name})"
 
     scanned = malformed = matched_records = matched_properties = 0
+    county_records_written = county_records_rejected = 0
     tax_records: List[Dict[str, Any]] = []
     property_updates: List[tuple[str, Dict[str, Any]]] = []
+    county_batch: List[Dict[str, Any]] = []
+
+    async def flush_county_batch() -> None:
+        nonlocal county_records_written
+        if not county_batch or dry_run:
+            county_batch.clear()
+            return
+        from importers.county_records import upsert_county_records
+
+        county_records_written += await upsert_county_records(db, county_batch)
+        county_batch.clear()
 
     with zipfile.ZipFile(zip_path, "r") as archive:
         if member not in archive.namelist():
@@ -279,7 +316,22 @@ async def import_matches(
                 continue
             record = parse_fixed_width(line, fields)
             key = normalize_address(build_situs_address(record))
-            matches = targets.get(key)
+            matches = select_tax_roll_matches(record, targets.get(key) or [])
+
+            # Keep every addressable public-record row outside the live-listing
+            # table. This is the complete tax-roll worksheet; only exact live
+            # matches are copied into listing cards below.
+            if include_county_records:
+                from importers.county_records import county_record_from_tax_roll
+
+                county_document = county_record_from_tax_roll(record, source_name)
+                if county_document:
+                    county_batch.append(county_document)
+                    if len(county_batch) >= 500:
+                        await flush_county_batch()
+                elif not county_document:
+                    county_records_rejected += 1
+
             if not matches:
                 if max_records and scanned >= max_records:
                     break
@@ -302,6 +354,8 @@ async def import_matches(
             if max_records and scanned >= max_records:
                 break
 
+    await flush_county_batch()
+
     tax_written = properties_enriched = 0
     if not dry_run:
         for document in tax_records:
@@ -321,6 +375,8 @@ async def import_matches(
         "matched_live_properties": matched_properties,
         "tax_records_written": tax_written,
         "properties_enriched": properties_enriched,
+        "county_records_written": county_records_written,
+        "county_records_rejected_blank": county_records_rejected,
     }
 
 

@@ -48,8 +48,7 @@ async def run_all(limit: int = 2000) -> dict:
         ("fort_worth_violations", "importers.fort_worth_violations", "import_fort_worth_violations", (db,), {"limit": limit}),
         ("foreclosures", "importers.foreclosure_finder", "import_foreclosures", (db,), {}),
         ("foreclosure_listings", "importers.foreclosure_listings_scraper", "import_foreclosure_listings", (db,), {"pages": 3}),
-        ("tad", "importers.tad_scraper", "import_tad_properties", (db,), {"limit": 300}),
-        ("apify", None, None, None, {}),  # handled separately below
+        ("county_tad", "importers.county_records", "sync_tad_county_records", (db,), {}),
     ]
 
     for name, module_path, func_name, args, kwargs in sources:
@@ -127,7 +126,7 @@ async def run_all(limit: int = 2000) -> dict:
             from server import sync_live_listings_to_database
             live_out = await sync_live_listings_to_database(db, limit=50)
             results["sources"]["live_listings"] = {
-                "ok": "error" not in live_out,
+                "ok": bool(live_out.get("ok")),
                 **{k: v for k, v in live_out.items() if k != "items"},
             }
             logger.info("Live listings → %s", live_out.get("summary", live_out))

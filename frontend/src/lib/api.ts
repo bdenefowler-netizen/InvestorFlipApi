@@ -1,4 +1,6 @@
 // API client for TarrantREI backend
+import { adminRequestHeaders } from "@/src/lib/admin";
+
 const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || "https://investorflipapi-production-4970.up.railway.app").replace(/\/$/, "");
 const API = `${BASE}/api`;
 
@@ -201,6 +203,77 @@ export function propertyImageUrl(
 
 export type FilterDef = { key: string; label: string; count: number };
 
+export type CountyRecord = {
+  id: string;
+  account_id?: string;
+  parcel_id?: string;
+  situs_address: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  county?: string;
+  owner_name?: string;
+  owner_mailing_address?: string;
+  mailing_city?: string;
+  mailing_state?: string;
+  mailing_zip?: string;
+  beds?: number | null;
+  baths?: number | null;
+  sqft?: number | null;
+  year_built?: number | null;
+  lot_size_sqft?: number | null;
+  lot_size_acres?: number | null;
+  garage_capacity?: number | null;
+  appraised_value?: number | null;
+  market_value?: number | null;
+  tax_roll_market_value?: number | null;
+  land_value?: number | null;
+  improvement_value?: number | null;
+  annual_taxes?: number | null;
+  current_tax_amount_due?: number | null;
+  prior_tax_amount_due?: number | null;
+  tax_delinquent?: boolean;
+  delinquency_date?: string;
+  legal_description?: string;
+  roll_code?: string;
+  account_status_codes?: string;
+  owner_exemption_codes?: string;
+  tad_litigation_flag?: string;
+  school_district?: string;
+  deed_date?: string;
+  absentee_owner?: boolean;
+  out_of_state_owner?: boolean;
+  trust_owned?: boolean;
+  company_owned?: boolean;
+  has_tad?: boolean;
+  has_tax_roll?: boolean;
+  sources: string[];
+  completeness_score?: number;
+  missing_fields?: string[];
+  tad_updated_at?: string;
+  tax_roll_updated_at?: string;
+  updated_at?: string;
+  tad_raw?: Record<string, unknown>;
+  tax_roll_raw?: Record<string, unknown>;
+};
+
+export type CountyRecordStats = {
+  total: number;
+  with_tad: number;
+  with_tax_roll: number;
+  tax_delinquent: number;
+  tad_next_offset: number;
+  tad_snapshot_completed_at?: string | null;
+  recent_syncs: {
+    id: string;
+    source: string;
+    status: string;
+    written?: number;
+    fetched?: number;
+    created_at: string;
+  }[];
+};
+
 export type AddressSuggestion = {
   type: string;
   title: string;
@@ -234,12 +307,38 @@ export async function getProperties(
   return { ...data, items: data.items.map(normalizeProperty) };
 }
 
+export async function getCountyRecords(
+  source: "all" | "tad" | "tax_roll" | "tax_delinquent" = "all",
+  search = "",
+  page = 1,
+  limit = 75,
+): Promise<{ count: number; total: number; page: number; pages: number; items: CountyRecord[] }> {
+  const params = new URLSearchParams({ source, page: String(page), limit: String(limit) });
+  if (search.trim()) params.set("search", search.trim());
+  return jsonGet(`${API}/county-records?${params.toString()}`);
+}
+
+export async function getCountyRecordStats(): Promise<CountyRecordStats> {
+  return jsonGet(`${API}/county-records/stats`);
+}
+
+export async function getCountyRecord(id: string): Promise<CountyRecord> {
+  return jsonGet(`${API}/county-records/${encodeURIComponent(id)}`);
+}
+
+export function countyRecordsCsvUrl(
+  source: "all" | "tad" | "tax_roll" | "tax_delinquent" = "all",
+): string {
+  return `${API}/county-records/export.csv?source=${encodeURIComponent(source)}`;
+}
+
 export async function getAddressSuggestions(
   query: string,
   signal?: AbortSignal,
 ): Promise<{ count: number; items: AddressSuggestion[]; cached: boolean }> {
   const params = new URLSearchParams({ query, limit: "6" });
-  const res = await fetch(`${API}/address-suggestions?${params.toString()}`, { signal });
+  const headers = await adminRequestHeaders();
+  const res = await fetch(`${API}/address-suggestions?${params.toString()}`, { signal, headers });
   if (!res.ok) throw new Error(`address suggestions failed (${res.status})`);
   return res.json();
 }
@@ -256,7 +355,8 @@ export async function getNearby(id: string): Promise<{
 }
 
 export async function getAIAnalysis(id: string): Promise<{ property_id: string; narrative: string }> {
-  const res = await fetch(`${API}/properties/${id}/ai-analysis`, { method: "POST" });
+  const headers = await adminRequestHeaders();
+  const res = await fetch(`${API}/properties/${id}/ai-analysis`, { method: "POST", headers });
   if (!res.ok) throw new Error(`AI analysis failed (${res.status})`);
   return res.json();
 }
@@ -342,7 +442,8 @@ export type QuillAnalysis = {
 };
 
 export async function getQuillAnalysis(id: string): Promise<QuillAnalysis> {
-  const res = await fetch(`${API}/quill/analyze/${encodeURIComponent(id)}`);
+  const headers = await adminRequestHeaders();
+  const res = await fetch(`${API}/quill/analyze/${encodeURIComponent(id)}`, { headers });
   if (!res.ok) throw new Error(`Quill analysis failed (${res.status})`);
   return res.json();
 }
@@ -392,9 +493,98 @@ export type Enrichment = {
 };
 
 export async function enrichProperty(id: string): Promise<Enrichment> {
-  const res = await fetch(`${API}/properties/${id}/enrich`, { method: "POST" });
+  const headers = await adminRequestHeaders();
+  const res = await fetch(`${API}/properties/${id}/enrich`, { method: "POST", headers });
   if (!res.ok) throw new Error(`enrich failed (${res.status})`);
   return res.json();
+}
+
+export type IntakeEnrichment = {
+  county: { live_checked: number; enriched: number; tad_lookups: number; missing: number };
+  details: { attempted: number; found: number; not_found: number; errors: { property_id: string; error: string }[] };
+};
+
+export type UploadIntakeResult = {
+  ok: boolean;
+  filename: string;
+  rows_read: number;
+  accepted: number;
+  rejected: number;
+  duplicates_merged: number;
+  inserted: number;
+  updated: number;
+  property_ids: string[];
+  rejections: { row: number; reason: string }[];
+  enrichment: IntakeEnrichment;
+};
+
+export type LinkIntakeResult = {
+  ok: boolean;
+  property_id: string;
+  property: Property;
+  source_host: string;
+  enrichment: IntakeEnrichment;
+};
+
+export type ProviderSyncReport = {
+  provider: string;
+  status: "success" | "empty" | "error" | "skipped";
+  fetched?: number;
+  accepted?: number;
+  errors?: string[];
+};
+
+export type AllSourceSyncResult = {
+  ok: boolean;
+  upserted: number;
+  total_properties_touched: number;
+  missed: number;
+  retired: number;
+  providers: ProviderSyncReport[];
+  county_enrichment: { live_checked: number; enriched: number; tad_lookups: number; missing: number };
+  detail_enrichment: { attempted: number; found: number; not_found: number; errors: unknown[] };
+};
+
+export async function uploadPropertyFile(asset: {
+  uri: string;
+  name?: string | null;
+  mimeType?: string | null;
+  file?: Blob;
+  }): Promise<UploadIntakeResult> {
+  const headers = await adminRequestHeaders();
+  const form = new FormData();
+  if (asset.file) form.append("file", asset.file, asset.name || "property-import.csv");
+  else {
+    form.append("file", {
+      uri: asset.uri,
+      name: asset.name || "property-import.csv",
+      type: asset.mimeType || "text/csv",
+    } as any);
+  }
+  const res = await fetch(`${API}/intake/upload`, { method: "POST", headers, body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `upload failed (${res.status})`);
+  return data;
+}
+
+export async function addPropertyLink(url: string): Promise<LinkIntakeResult> {
+  const headers = await adminRequestHeaders({ "Content-Type": "application/json" });
+  const res = await fetch(`${API}/intake/link`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ url }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `link import failed (${res.status})`);
+  return { ...data, property: normalizeProperty(data.property) };
+}
+
+export async function syncAllListingSources(limit = 50): Promise<AllSourceSyncResult> {
+  const headers = await adminRequestHeaders();
+  const res = await fetch(`${API}/live/sync-fort-worth?limit=${limit}`, { method: "POST", headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `source sync failed (${res.status})`);
+  return data;
 }
 
 export type TaxHistoryEntry = {
@@ -405,7 +595,8 @@ export type TaxHistoryEntry = {
 };
 
 export async function getTaxHistory(id: string): Promise<{ tax_history: TaxHistoryEntry[]; available: boolean }> {
-  const res = await fetch(`${API}/properties/${id}/tax-history`);
+  const headers = await adminRequestHeaders();
+  const res = await fetch(`${API}/properties/${id}/tax-history`, { headers });
   if (!res.ok) throw new Error(`tax history failed (${res.status})`);
   return res.json();
 }
@@ -420,15 +611,17 @@ export async function getSaved(): Promise<{ count: number; total?: number; items
 }
 
 export async function saveProperty(id: string): Promise<void> {
+  const headers = await adminRequestHeaders({ "Content-Type": "application/json" });
   const res = await fetch(`${API}/saved`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ property_id: id }),
   });
   if (!res.ok) throw new Error("save failed");
 }
 
 export async function unsaveProperty(id: string): Promise<void> {
-  const res = await fetch(`${API}/saved/${id}`, { method: "DELETE" });
+  const headers = await adminRequestHeaders();
+  const res = await fetch(`${API}/saved/${id}`, { method: "DELETE", headers });
   if (!res.ok) throw new Error("unsave failed");
 }

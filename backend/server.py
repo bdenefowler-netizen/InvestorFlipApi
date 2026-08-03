@@ -39,6 +39,10 @@ from listing_normalization import (
 )
 from property_enrichment import normalize_property_detail
 from address_suggestions import normalize_address_suggestions
+from address_utils import canonical_street_key
+from intake import infer_listing_type, property_link_seed, upsert_import_records
+import asyncio
+import hmac
 import os
 import re
 import random
@@ -55,7 +59,9 @@ import httpx
 from importers import feeds as feeds_mod
 from add_all_routes import router as all_router
 from saved_searches_routes import router as saved_searches_router
+from county_records_routes import router as county_records_router
 from auto_sync import start_background_sync
+from admin_auth import requires_admin_key
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -68,16 +74,14 @@ app = FastAPI(title="TarrantREI / InvestorFlip API")
 
 @app.middleware("http")
 async def protect_admin_routes(request: Request, call_next):
-    """Lock manual import + destructive admin endpoints behind an admin key.
+    """Lock administrative and provider-credit operations behind an admin key.
 
-    Applies to /api/import/* and /api/admin/* (cleanup, data-cleanup,
-    backfill). The mobile app never calls these (imports run via the daily
-    cron), so locking them breaks nothing client-side. When
-    INVESTORFLIP_ADMIN_KEY is unset we FAIL CLOSED with a 503 so the
-    destructive routes can never be hit publicly by accident.
+    The personal mobile app stores this key in the device keychain and sends it
+    only for write/enrichment operations. When INVESTORFLIP_ADMIN_KEY is unset
+    we fail closed so public traffic cannot consume provider credits.
     """
     path = request.url.path
-    if path.startswith("/api/import/") or path.startswith("/api/admin/"):
+    if requires_admin_key(path, request.method):
         expected = os.environ.get("INVESTORFLIP_ADMIN_KEY", "").strip()
         if not expected:
             return JSONResponse(
@@ -88,7 +92,7 @@ async def protect_admin_routes(request: Request, call_next):
         bearer = request.headers.get("authorization", "")
         if bearer.startswith("Bearer "):
             auth = bearer[len("Bearer "):].strip()
-        if auth != expected:
+        if not hmac.compare_digest(auth, expected):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized — valid admin key required"},
@@ -500,6 +504,10 @@ class SaveRequest(BaseModel):
     property_id: str
 
 
+class PropertyLinkRequest(BaseModel):
+    url: str
+
+
 # ---------- RapidAPI Helpers ----------
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
 OPENWEB_NINJA_ZILLOW_API_KEY = (
@@ -528,15 +536,15 @@ HOST_REALTOR_SEARCH = "realtor-search.p.rapidapi.com"
 HOST_REALTY_US = "realty-us.p.rapidapi.com"
 RAPIDAPI_CAKEMLS_ENABLED = os.environ.get(
     "RAPIDAPI_CAKEMLS_ENABLED",
-    "false",
+    "true",
 ).lower() == "true"
 RAPIDAPI_REALTOR_SEARCH_ENABLED = os.environ.get(
     "RAPIDAPI_REALTOR_SEARCH_ENABLED",
-    "false",
+    "true",
 ).lower() == "true"
 RAPIDAPI_REALTY_US_ENABLED = os.environ.get(
     "RAPIDAPI_REALTY_US_ENABLED",
-    "false",
+    "true",
 ).lower() == "true"
 PROPERTY_DETAIL_CACHE_VERSION = 1
 ADDRESS_SUGGESTION_CACHE_SECONDS = 24 * 60 * 60
@@ -748,10 +756,17 @@ def _deep_find_items(obj: Any) -> List[Dict[str, Any]]:
     def walk(x: Any):
         if isinstance(x, dict):
             keys = set(k.lower() for k in x.keys())
+            has_address = any(k in keys for k in [
+                "address", "streetaddress", "street_address", "fulladdress",
+                "full_address", "location",
+            ])
+            has_property_facts = any(k in keys for k in [
+                "price", "listprice", "list_price", "beds", "bedrooms",
+                "hometype", "home_type", "propertytype", "property_type",
+            ])
             looks_like_listing = (
-                any(k in keys for k in ["zpid", "property_id", "listing_id", "id"])
-                and any(k in keys for k in ["price", "listprice", "list_price"])
-                and any(k in keys for k in ["address", "streetaddress", "street_address", "location"])
+                has_address
+                and has_property_facts
             )
             if looks_like_listing:
                 found.append(x)
@@ -830,14 +845,19 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
     photos = fields["photos"]
 
     listing_status = str(item.get("homeStatus") or item.get("status") or item.get("listingStatus") or "For Sale")
-    listing_type = "For Sale"
-    if "foreclosure" in listing_status.lower():
-        listing_type = "Foreclosure"
-    elif "reo" in listing_status.lower():
-        listing_type = "REO"
+    description_value = item.get("description")
+    if isinstance(description_value, dict):
+        description_value = description_value.get("text") or description_value.get("value")
+    motivation_text = " ".join(str(value or "") for value in (
+        listing_status,
+        description_value,
+        item.get("tags"),
+        item.get("specialties"),
+    ))
+    motivation = infer_listing_type(motivation_text)
 
     zpid = item.get("zpid") or item.get("property_id") or item.get("propertyId") or item.get("listing_id") or item.get("listingId") or item.get("id")
-    stable_key = f"{source_name}:{zpid or candidate['situs_address']}"
+    stable_key = f"listing:{canonical_street_key(candidate['situs_address'])}:{addr['zip']}"
 
     prop = {
         "id": str(uuid.uuid5(uuid.NAMESPACE_URL, stable_key)),
@@ -866,7 +886,7 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
         "est_roi_pct": None,
         "roi_status": "unknown - ARV, repairs, holding, and selling costs required",
         "legal_description": "",
-        "listing_type": listing_type,
+        **motivation,
         "listing_status": listing_status,
         "owner_name": item.get("owner_name") or "",
         "owner_type": classify_owner(item.get("owner_name") or ""),
@@ -915,114 +935,208 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
     return prop
 
 
-async def fetch_live_fort_worth_residential_listings(limit: int = 50) -> List[Dict[str, Any]]:
-    """Try multiple RapidAPI listing endpoints and normalize live Fort Worth residential listings.
+def _listing_identity(record: Dict[str, Any]) -> str:
+    street = canonical_street_key(record.get("situs_address"))
+    zip_code = str(record.get("zip") or "")[:5]
+    return f"{street}:{zip_code}" if street else ""
 
-    The endpoint names vary between RapidAPI providers/plans, so this function tries
-    several common patterns and uses the first successful responses.
+
+def _merge_provider_listings(listings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse the same house from multiple providers without losing useful fields."""
+    by_address: Dict[str, Dict[str, Any]] = {}
+    for incoming in listings:
+        identity = _listing_identity(incoming)
+        if not identity:
+            continue
+        current = by_address.get(identity)
+        source_name = str(incoming.get("data_source") or "Unknown provider")
+        if current is None:
+            current = dict(incoming)
+            current["listing_sources"] = [source_name]
+            current["external_ids"] = {
+                source_name: incoming.get("external_id")
+            } if incoming.get("external_id") else {}
+            current["raw_source_excerpts"] = {
+                source_name: incoming.get("raw_source_excerpt")
+            }
+            by_address[identity] = current
+            continue
+
+        sources = list(current.get("listing_sources") or [])
+        if source_name not in sources:
+            sources.append(source_name)
+        current["listing_sources"] = sources
+        external_ids = dict(current.get("external_ids") or {})
+        if incoming.get("external_id"):
+            external_ids[source_name] = incoming["external_id"]
+        current["external_ids"] = external_ids
+        excerpts = dict(current.get("raw_source_excerpts") or {})
+        excerpts[source_name] = incoming.get("raw_source_excerpt")
+        current["raw_source_excerpts"] = excerpts
+
+        # Provider order establishes precedence. Later providers fill blanks and
+        # contribute media/provenance instead of erasing a valid earlier value.
+        for key, value in incoming.items():
+            if key in {"id", "created_at", "data_source", "raw_source_excerpt", "photos", "image_url"}:
+                continue
+            if current.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+                current[key] = value
+        photos = []
+        for value in [
+            *(current.get("photos") or []),
+            current.get("image_url"),
+            *(incoming.get("photos") or []),
+            incoming.get("image_url"),
+        ]:
+            url = _photo_url(value)
+            if url and url not in photos:
+                photos.append(url)
+        current["photos"] = photos
+        current["image_url"] = photos[0] if photos else None
+
+    merged = []
+    for identity, record in by_address.items():
+        sources = list(record.get("listing_sources") or [])
+        record["id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"listing:{identity}"))
+        record["data_source"] = " + ".join(sources)
+        provenance = dict(record.get("data_provenance") or {})
+        provenance["listing_sources"] = sources
+        record["data_provenance"] = provenance
+        record.update(compute_scores(record))
+        merged.append(record)
+    return merged
+
+
+async def fetch_live_fort_worth_residential_listings(
+    limit: int = 50,
+    include_report: bool = False,
+) -> Any:
+    """Query every configured provider and merge duplicate Fort Worth houses.
+
+    Multiple URL shapes for the same provider are fallbacks, while separate
+    providers all run. A failed provider is reported but cannot blank the
+    successful results from another provider.
     """
-    attempts = []
+    provider_groups: List[Dict[str, Any]] = []
     if OPENWEB_NINJA_REAL_ESTATE_API_KEY:
-        attempts.append({
-            "provider": "openweb",
-            "api_key": OPENWEB_NINJA_REAL_ESTATE_API_KEY,
-            "base_url": OPENWEB_NINJA_REAL_ESTATE_BASE_URL,
-            "path": "/search",
-            "params": {
-                "location": "Fort Worth, TX",
-                "home_status": "FOR_SALE",
-            },
-            "source": "OpenWeb Ninja Real-Time Real Estate Data /zillow/search",
+        provider_groups.append({
+            "name": "OpenWeb Ninja Real-Time Real Estate Data",
+            "attempts": [{
+                "provider": "openweb",
+                "api_key": OPENWEB_NINJA_REAL_ESTATE_API_KEY,
+                "base_url": OPENWEB_NINJA_REAL_ESTATE_BASE_URL,
+                "path": "/search",
+                "params": {"location": "Fort Worth, TX", "home_status": "FOR_SALE"},
+                "source": "OpenWeb Ninja Real-Time Real Estate Data /zillow/search",
+            }],
         })
     if OPENWEB_NINJA_ZILLOW_API_KEY:
-        attempts.append({
-            "provider": "openweb",
-            "api_key": OPENWEB_NINJA_ZILLOW_API_KEY,
-            "base_url": OPENWEB_NINJA_ZILLOW_BASE_URL,
-            "path": "/search",
-            "params": {
-                "location": "Fort Worth, TX",
-                "home_status": "FOR_SALE",
-            },
-            "source": "OpenWeb Ninja Real-Time Zillow Data /search",
+        provider_groups.append({
+            "name": "OpenWeb Ninja Real-Time Zillow Data",
+            "attempts": [{
+                "provider": "openweb",
+                "api_key": OPENWEB_NINJA_ZILLOW_API_KEY,
+                "base_url": OPENWEB_NINJA_ZILLOW_BASE_URL,
+                "path": "/search",
+                "params": {"location": "Fort Worth, TX", "home_status": "FOR_SALE"},
+                "source": "OpenWeb Ninja Real-Time Zillow Data /search",
+            }],
         })
-    attempts.extend([
-        {
+    if RAPIDAPI_KEY:
+        provider_groups.append({
+            "name": "RapidAPI Real-Time Real Estate Data",
+            "attempts": [{
             "provider": "rapidapi",
             "host": HOST_REALTIME,
             "path": "/search",
             "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "NEWEST", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /search",
-        },
-        {
+        }, {
             "provider": "rapidapi",
             "host": HOST_REALTIME,
             "path": "/search-by-location",
             "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "NEWEST", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /search-by-location",
-        },
-        {
+        }, {
             "provider": "rapidapi",
             "host": HOST_REALTIME,
             "path": "/propertyExtendedSearch",
             "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "sort": "NEWEST", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /propertyExtendedSearch",
-        },
-        {
+        }, {
             "provider": "rapidapi",
             "host": HOST_REALTIME,
             "path": "/properties/list",
             "params": {"location": "Fort Worth, TX", "status_type": "ForSale", "home_type": "Houses", "limit": limit},
             "source": "RapidAPI real-time-real-estate-data /properties/list",
-        },
-        {
-            "provider": "rapidapi",
-            "host": HOST_LISTINGS,
-            "path": "/for-sale",
-            "params": {"location": "Fort Worth, TX", "property_type": "single_family", "limit": limit},
-            "source": "RapidAPI us-real-estate-listings /for-sale",
-        },
-    ])
+            }],
+        })
+        provider_groups.append({
+            "name": "RapidAPI US Real Estate Listings",
+            "attempts": [{
+                "provider": "rapidapi",
+                "host": HOST_LISTINGS,
+                "path": "/for-sale",
+                "params": {"location": "Fort Worth, TX", "property_type": "single_family", "limit": limit},
+                "source": "RapidAPI us-real-estate-listings /for-sale",
+            }],
+        })
 
-    normalized: List[Dict[str, Any]] = []
-    errors: List[str] = []
+    async def run_group(group: Dict[str, Any]) -> Dict[str, Any]:
+        errors: List[str] = []
+        had_response = False
+        had_exception = False
+        for attempt in group["attempts"]:
+            try:
+                if attempt["provider"] == "openweb":
+                    raw = await _openweb_get(
+                        attempt["path"], attempt["params"],
+                        api_key=attempt["api_key"], base_url=attempt["base_url"],
+                    )
+                else:
+                    raw = await _rapid_get(attempt["host"], attempt["path"], attempt["params"])
+                had_response = True
+                raw_items = _deep_find_items(raw)
+                items = [
+                    normalized
+                    for item in raw_items
+                    if (normalized := normalize_live_listing(item, attempt["source"]))
+                ]
+                if items:
+                    return {
+                        "provider": group["name"], "status": "success",
+                        "endpoint": attempt["path"], "fetched": len(raw_items),
+                        "accepted": len(items), "items": items, "errors": errors,
+                    }
+                errors.append(f"{attempt['path']}: no usable Fort Worth houses")
+            except Exception as exc:
+                had_exception = True
+                message = f"{attempt['path']}: {str(exc)[:200]}"
+                errors.append(message)
+                logger.info("Live listing provider failed: %s: %s", group["name"], message)
+        return {
+            "provider": group["name"],
+            "status": "empty" if had_response else ("error" if had_exception else "skipped"),
+            "fetched": 0, "accepted": 0, "items": [], "errors": errors,
+        }
 
-    for attempt in attempts:
-        try:
-            if attempt["provider"] == "openweb":
-                raw = await _openweb_get(
-                    attempt["path"],
-                    attempt["params"],
-                    api_key=attempt["api_key"],
-                    base_url=attempt["base_url"],
-                )
-            else:
-                raw = await _rapid_get(attempt["host"], attempt["path"], attempt["params"])
-            items = _deep_find_items(raw)
-            for item in items:
-                prop = normalize_live_listing(item, attempt["source"])
-                if prop:
-                    normalized.append(prop)
-            if normalized:
-                break
-        except Exception as e:
-            errors.append(f"{attempt['source']}: {str(e)[:200]}")
-            logger.info("Live listing attempt failed: %s", errors[-1])
-
-    # Deduplicate by address / id
-    out = []
-    seen = set()
-    for p in normalized:
-        key = (p.get("external_id") or p.get("situs_address") or "").lower()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        out.append(p)
-
-    if not out and errors:
-        logger.warning("No live listings fetched. Attempts: %s", errors)
-
-    return out[:limit]
+    group_results = await asyncio.gather(*(run_group(group) for group in provider_groups))
+    normalized = [item for result in group_results for item in result["items"]]
+    merged_all = _merge_provider_listings(normalized)
+    merged = merged_all[:limit]
+    report = [
+        {key: value for key, value in result.items() if key != "items"}
+        for result in group_results
+    ]
+    if not merged and report:
+        logger.warning("No live listings fetched. Provider report: %s", report)
+    result = {
+        "items": merged,
+        "providers": report,
+        "raw_accepted": len(normalized),
+        "merged_total": len(merged_all),
+    }
+    return result if include_report else merged
 
 
 async def sync_live_listings_to_database(
@@ -1034,7 +1148,9 @@ async def sync_live_listings_to_database(
     An empty provider response never marks existing data stale; this protects the
     database from transient provider failures or exhausted API quotas.
     """
-    listings = await fetch_live_fort_worth_residential_listings(limit=limit)
+    fetched = await fetch_live_fort_worth_residential_listings(limit=limit, include_report=True)
+    listings = fetched["items"]
+    provider_report = fetched["providers"]
     previous = await database.properties.find(
         {"is_live_listing": True}, {"_id": 0}
     ).to_list(length=5000)
@@ -1059,8 +1175,78 @@ async def sync_live_listings_to_database(
         )
         upserted += 1
 
+    # Registered scrapers/feeds are part of the same pull. They remain
+    # independent from the listing APIs so a scraper outage cannot erase API
+    # results (or vice versa).
+    feed_result = await feeds_mod.run_feed_sync(
+        database,
+        classify_owner,
+        compute_scores,
+        limit_per_feed=limit,
+    )
+    feed_ids = set(feed_result.get("property_ids") or [])
+    returned_ids.update(feed_ids)
+    provider_report.extend([
+        {
+            "provider": name,
+            "status": "error" if details.get("error") else (
+                "success" if details.get("fetched") else "empty"
+            ),
+            **{key: value for key, value in details.items() if key != "property_ids"},
+        }
+        for name, details in (feed_result.get("by_feed") or {}).items()
+    ])
+
+    scraper_results: Dict[str, Any] = {}
+    try:
+        from importers.foreclosure_listings_scraper import import_foreclosure_listings
+
+        result = await import_foreclosure_listings(database, pages=3)
+        scraper_results["ForeclosureListingsUSA"] = result
+    except Exception as exc:
+        scraper_results["ForeclosureListingsUSA"] = {"error": str(exc)[:240], "property_ids": []}
+    if os.environ.get("APIFY_API_KEY", "").strip():
+        try:
+            from importers.apify_import import import_apify_runs
+
+            result = await import_apify_runs(database, lookback_days=7)
+            scraper_results["Apify recent runs"] = result
+        except Exception as exc:
+            scraper_results["Apify recent runs"] = {"error": str(exc)[:240], "property_ids": []}
+    else:
+        scraper_results["Apify recent runs"] = {
+            "skipped": True, "reason": "APIFY_API_KEY is not configured", "property_ids": [],
+        }
+    for name, details in scraper_results.items():
+        returned_ids.update(details.get("property_ids") or [])
+        fetched_count = details.get("fetched", details.get("records_fetched", 0))
+        accepted_count = details.get("inserted", details.get("records_imported", 0))
+        provider_report.append({
+            "provider": name,
+            "status": "error" if details.get("error") else (
+                "skipped" if details.get("skipped") else ("success" if fetched_count else "empty")
+            ),
+            "fetched": fetched_count,
+            "accepted": accepted_count,
+            **({"error": details["error"]} if details.get("error") else {}),
+            **({"reason": details["reason"]} if details.get("reason") else {}),
+        })
+
     missed = retired = 0
-    if listings:
+    api_provider_succeeded = any(
+        report.get("status") == "success"
+        and not str(report.get("provider") or "").startswith(("Foreclosure Finder", "TX Foreclosure"))
+        for report in fetched["providers"]
+    )
+    provider_result_capped = (
+        fetched["merged_total"] > len(listings)
+        or any(
+            report.get("status") == "success" and int(report.get("accepted") or 0) >= limit
+            for report in fetched["providers"]
+        )
+    )
+    retirement_safe = api_provider_succeeded and not provider_result_capped
+    if retirement_safe:
         now = datetime.now(timezone.utc).isoformat()
         for property_record in previous:
             if is_synthetic_property(property_record) or property_record.get("id") in returned_ids:
@@ -1078,26 +1264,87 @@ async def sync_live_listings_to_database(
                 {"id": property_record["id"]}, {"$set": updates}
             )
 
+    direct_provider_failed = any(
+        report.get("status") == "error" for report in fetched["providers"]
+    )
+    overall_status = (
+        "success" if api_provider_succeeded
+        else "partial" if returned_ids
+        else "error" if direct_provider_failed
+        else "empty"
+    )
     await database.live_sync_log.insert_one({
         "id": str(uuid.uuid4()),
         "sync_type": "live_listings",
         "source": "live Fort Worth residential listings",
-        "status": "success" if listings else "empty",
-        "count": upserted,
+        "status": overall_status,
+        "api_provider_succeeded": api_provider_succeeded,
+        "count": len(returned_ids),
         "missed": missed,
         "retired": retired,
+        "retirement_safe": retirement_safe,
+        "providers": provider_report,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
+    county_enrichment = {"live_checked": 0, "enriched": 0, "tad_lookups": 0, "missing": 0}
+    if returned_ids:
+        from importers.county_records import enrich_live_properties_from_county_records
+
+        county_enrichment = await enrich_live_properties_from_county_records(
+            database,
+            property_ids=returned_ids,
+            lookup_missing_tad=True,
+        )
+    detail_enrichment: Dict[str, Any] = {
+        "attempted": 0, "found": 0, "not_found": 0, "errors": [],
+    }
+    if returned_ids:
+        semaphore = asyncio.Semaphore(4)
+
+        async def enrich_one(property_id: str) -> Dict[str, Any]:
+            async with semaphore:
+                try:
+                    result = await enrich_property_record(
+                        database, property_id, require_visible=False,
+                    )
+                    return {"property_id": property_id, "found": bool(result.get("found"))}
+                except Exception as exc:
+                    return {"property_id": property_id, "found": False, "error": str(exc)[:240]}
+
+        enrichment_results = await asyncio.gather(
+            *(enrich_one(property_id) for property_id in sorted(returned_ids))
+        )
+        detail_enrichment["attempted"] = len(enrichment_results)
+        detail_enrichment["found"] = sum(bool(item.get("found")) for item in enrichment_results)
+        detail_enrichment["not_found"] = sum(
+            not item.get("found") and not item.get("error") for item in enrichment_results
+        )
+        detail_enrichment["errors"] = [
+            item for item in enrichment_results if item.get("error")
+        ][:20]
     return {
-        "ok": bool(listings),
+        "ok": api_provider_succeeded,
+        "status": overall_status,
         "upserted": upserted,
+        "total_properties_touched": len(returned_ids),
+        "feeds": feed_result,
+        "scrapers": {
+            name: {key: value for key, value in details.items() if key != "property_ids"}
+            for name, details in scraper_results.items()
+        },
         "missed": missed,
         "retired": retired,
+        "retirement_safe": retirement_safe,
         "items": listings,
-        "rule": "Synced current Fort Worth for-sale houses; two missed syncs retire stale rows.",
+        "providers": provider_report,
+        "raw_accepted": fetched["raw_accepted"],
+        "merged_total": fetched["merged_total"],
+        "county_enrichment": county_enrichment,
+        "detail_enrichment": detail_enrichment,
+        "rule": "Synced current Fort Worth houses; two complete uncapped syncs retire stale rows.",
         "note": (
-            "No existing listings were retired because the provider returned no usable records."
-            if not listings else None
+            "No listings were retired because API results were empty, failed, or capped."
+            if not retirement_safe else None
         ),
     }
 
@@ -1186,7 +1433,13 @@ async def live_status():
                 "method": "GET",
                 "endpoint": f"{OPENWEB_NINJA_ZILLOW_BASE_URL}/search",
                 "detail_endpoint": f"{OPENWEB_NINJA_ZILLOW_BASE_URL}/property-details-address",
-                "trigger": "live sync and property detail fallback",
+                "trigger": "every live sync and property detail fallback",
+            },
+            "rapidapi_real_time_real_estate": {
+                "configured": rapidapi_ready,
+                "method": "GET",
+                "endpoint": f"https://{HOST_REALTIME}/search (with provider-specific fallbacks)",
+                "trigger": "every live sync",
             },
             "rapidapi_cakemls": {
                 "configured": rapidapi_ready,
@@ -1227,6 +1480,18 @@ async def live_status():
                     f"https://{HOST_LOOKUP}/properties/{{zpid}}",
                 ],
                 "trigger": "property detail fallback",
+            },
+            "foreclosure_listings_usa": {
+                "configured": True,
+                "method": "scrape",
+                "endpoint": "https://www.foreclosurelistingsusa.com/fort-worth-tx/",
+                "trigger": "every live sync",
+            },
+            "apify_recent_runs": {
+                "configured": bool(os.environ.get("APIFY_API_KEY", "").strip()),
+                "method": "dataset import",
+                "endpoint": "recent successful Apify actor datasets",
+                "trigger": "every live sync when configured",
             },
         },
         "live_listing_count": total_live,
@@ -1538,6 +1803,145 @@ async def feeds_upload_csv(
     return {"ok": True, "feed_source": feed_source, "listing_type": listing_type, **counts}
 
 
+async def _enrich_imported_properties(property_ids: List[str]) -> Dict[str, Any]:
+    """County-match and provider-enrich every accepted user intake row."""
+    unique_ids = list(dict.fromkeys(property_ids))
+    if not unique_ids:
+        return {
+            "county": {"live_checked": 0, "enriched": 0, "tad_lookups": 0, "missing": 0},
+            "details": {"attempted": 0, "found": 0, "not_found": 0, "errors": []},
+        }
+    from importers.county_records import enrich_live_properties_from_county_records
+
+    county = await enrich_live_properties_from_county_records(
+        db, property_ids=unique_ids, lookup_missing_tad=True,
+    )
+    semaphore = asyncio.Semaphore(4)
+
+    async def run(property_id: str) -> Dict[str, Any]:
+        async with semaphore:
+            try:
+                result = await enrich_property_record(db, property_id, require_visible=False)
+                return {"property_id": property_id, "found": bool(result.get("found"))}
+            except Exception as exc:
+                return {"property_id": property_id, "found": False, "error": str(exc)[:240]}
+
+    results = await asyncio.gather(*(run(property_id) for property_id in unique_ids))
+    return {
+        "county": county,
+        "details": {
+            "attempted": len(results),
+            "found": sum(bool(item.get("found")) for item in results),
+            "not_found": sum(not item.get("found") and not item.get("error") for item in results),
+            "errors": [item for item in results if item.get("error")][:25],
+        },
+    }
+
+
+@api_router.post("/intake/upload")
+async def intake_upload(file: UploadFile = File(...)):
+    """Import CSV/XLS/XLSX rows, reject blanks, then enrich accepted houses."""
+    filename = Path(file.filename or "upload.csv").name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".csv", ".xls", ".xlsx"}:
+        raise HTTPException(400, "Upload a .csv, .xls, or .xlsx file")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "The uploaded file is empty")
+    if len(raw) > 15 * 1024 * 1024:
+        raise HTTPException(413, "The upload is larger than 15 MB")
+    try:
+        if suffix == ".csv":
+            try:
+                frame = pd.read_csv(BytesIO(raw), encoding="utf-8-sig")
+            except UnicodeDecodeError:
+                frame = pd.read_csv(BytesIO(raw), encoding="latin1")
+        else:
+            frame = pd.read_excel(BytesIO(raw))
+    except Exception as exc:
+        raise HTTPException(400, f"Could not read {suffix} file: {str(exc)[:180]}") from exc
+    if len(frame.index) > 250:
+        raise HTTPException(400, "Import up to 250 properties at a time so every row can be enriched")
+
+    source_name = f"User upload: {filename}"
+    report = await upsert_import_records(db, frame.to_dict(orient="records"), source_name)
+    enrichment = await _enrich_imported_properties(report["property_ids"])
+    return {
+        "ok": bool(report["accepted"]),
+        "filename": filename,
+        **report,
+        "enrichment": enrichment,
+    }
+
+
+@api_router.post("/intake/link")
+async def intake_link(body: PropertyLinkRequest):
+    """Create and enrich a property from a recognized real-estate listing URL."""
+    try:
+        seed = property_link_seed(body.url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    detail: Dict[str, Any] = {}
+    if seed.get("zpid") and RAPIDAPI_KEY:
+        try:
+            detail = normalize_property_detail(
+                await _rapid_get(HOST_LOOKUP, f"/properties/{seed['zpid']}", {})
+            )
+        except Exception as exc:
+            logger.info("Link zpid lookup failed for %s: %s", seed["zpid"], exc)
+
+    address = str(detail.get("rapidapi_address") or seed.get("address") or "").strip()
+    city = str(detail.get("rapidapi_city") or "Fort Worth").strip()
+    state = str(detail.get("rapidapi_state") or seed.get("state") or "TX").strip()
+    zip_code = str(detail.get("rapidapi_zip") or seed.get("zip") or "").strip()
+    if not canonical_street_key(address) or not re.match(r"^\d+\s+", canonical_street_key(address)):
+        raise HTTPException(
+            422,
+            "I could not identify the street address from that link. Use the full property-page URL or upload a row with an Address column.",
+        )
+
+    row = {
+        "address": address,
+        "city": city,
+        "state": state,
+        "zip": zip_code,
+        "price": detail.get("list_price"),
+        "market value": detail.get("zestimate"),
+        "beds": detail.get("beds"),
+        "baths": detail.get("baths"),
+        "sqft": detail.get("sqft"),
+        "year built": detail.get("year_built"),
+        "property type": detail.get("home_type") or "Single Family Residential",
+        "status": detail.get("home_status") or "For Sale",
+        "url": body.url,
+    }
+    report = await upsert_import_records(db, [row], f"Property link: {seed['host']}")
+    if not report["property_ids"]:
+        raise HTTPException(422, "The link did not produce a usable property")
+    property_id = report["property_ids"][0]
+    if detail.get("detail_found"):
+        enriched = {
+            "property_id": property_id,
+            "address_queried": f"{address}, {city}, {state} {zip_code}",
+            "source_api": "us-real-estate-data1 link lookup",
+            "found": True,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            **detail,
+        }
+        enriched["property_detail_cache_version"] = PROPERTY_DETAIL_CACHE_VERSION
+        await _persist_enrichment(db, property_id, enriched, enriched.get("photos"))
+    enrichment = await _enrich_imported_properties([property_id])
+    property_record = await db.properties.find_one({"id": property_id}, {"_id": 0})
+    return {
+        "ok": True,
+        "property_id": property_id,
+        "property": hydrate_listing_record(property_record or {}),
+        "source_host": seed["host"],
+        "enrichment": enrichment,
+    }
+
+
 @api_router.post("/propstream/merge")
 async def propstream_merge(
     marketing_file: UploadFile = File(...),
@@ -1644,21 +2048,30 @@ def _build_address_query(prop: Dict[str, Any]) -> str:
 
 @api_router.post("/properties/{property_id}/enrich")
 async def enrich_property(property_id: str):
-    prop = await db.properties.find_one({"id": property_id}, {"_id": 0})
+    return await enrich_property_record(db, property_id)
+
+
+async def enrich_property_record(
+    database: PostgresDatabase,
+    property_id: str,
+    require_visible: bool = True,
+) -> Dict[str, Any]:
+    """Run the reusable detail-enrichment pipeline for one stored property."""
+    prop = await database.properties.find_one({"id": property_id}, {"_id": 0})
     if not prop:
         raise HTTPException(404, "Property not found")
-    if not is_user_visible_property(prop):
+    if require_visible and not is_user_visible_property(prop):
         raise HTTPException(404, "Property not available in verified search results")
     prop = hydrate_listing_record(prop)
 
-    cached = await db.enrichment.find_one({"property_id": property_id}, {"_id": 0})
+    cached = await database.enrichment.find_one({"property_id": property_id}, {"_id": 0})
     if cached and cached.get("zpid") and cached.get("property_detail_cache_version") == PROPERTY_DETAIL_CACHE_VERSION:
-        await _persist_enrichment(property_id, cached, cached.get("photos"))
+        await _persist_enrichment(database, property_id, cached, cached.get("photos"))
         return cached
 
     if cached and cached.get("zpid"):
         enriched = await _add_full_property_details(cached)
-        await _persist_enrichment(property_id, enriched, enriched.get("photos"))
+        await _persist_enrichment(database, property_id, enriched, enriched.get("photos"))
         return enriched
 
     address = _build_address_query(prop)
@@ -1693,7 +2106,7 @@ async def enrich_property(property_id: str):
                 enriched = await _add_realtor_agent_details(enriched)
                 enriched = await _add_realty_us_agent_listings(enriched, prop)
                 photo_urls = enriched.get("photos") if isinstance(enriched.get("photos"), list) else []
-                await _persist_enrichment(property_id, enriched, photo_urls)
+                await _persist_enrichment(database, property_id, enriched, photo_urls)
                 return enriched
         except HTTPException as exc:
             logger.info("CakeMLS enrichment failed: %s", exc.detail)
@@ -1735,7 +2148,7 @@ async def enrich_property(property_id: str):
                 enriched = await _add_realtor_agent_details(enriched)
                 enriched = await _add_realty_us_agent_listings(enriched, prop)
                 photo_urls = enriched.get("photos") if isinstance(enriched.get("photos"), list) else []
-                await _persist_enrichment(property_id, enriched, photo_urls)
+                await _persist_enrichment(database, property_id, enriched, photo_urls)
                 return enriched
         except HTTPException as exc:
             logger.info("%s enrichment failed: %s", provider_name, exc.detail)
@@ -1779,7 +2192,7 @@ async def enrich_property(property_id: str):
             enriched = await _add_realtor_agent_details(enriched)
             enriched = await _add_realty_us_agent_listings(enriched, prop)
             photo_urls = enriched.get("photos") if isinstance(enriched.get("photos"), list) else photo_urls
-            await _persist_enrichment(property_id, enriched, photo_urls)
+            await _persist_enrichment(database, property_id, enriched, photo_urls)
             return enriched
     except HTTPException as e:
         logger.info("Primary enrichment failed: %s", e.detail)
@@ -1811,8 +2224,13 @@ async def _add_full_property_details(enriched: Dict[str, Any]) -> Dict[str, Any]
     return result
 
 
-async def _persist_enrichment(property_id: str, enriched: Dict[str, Any], photo_urls: Optional[List[str]] = None) -> None:
-    existing = await db.properties.find_one({"id": property_id}, {"_id": 0}) or {}
+async def _persist_enrichment(
+    database: PostgresDatabase,
+    property_id: str,
+    enriched: Dict[str, Any],
+    photo_urls: Optional[List[str]] = None,
+) -> None:
+    existing = await database.properties.find_one({"id": property_id}, {"_id": 0}) or {}
     update: Dict[str, Any] = {}
     if enriched.get("beds"):
         update["beds"] = safe_float(enriched["beds"])
@@ -1873,8 +2291,8 @@ async def _persist_enrichment(property_id: str, enriched: Dict[str, Any], photo_
         combined = {**existing, **update}
         update.update(compute_scores(combined))
         update["updated_at"] = datetime.now(timezone.utc).isoformat()
-        await db.properties.update_one({"id": property_id}, {"$set": update})
-    await db.enrichment.update_one({"property_id": property_id}, {"$set": enriched}, upsert=True)
+        await database.properties.update_one({"id": property_id}, {"$set": update})
+    await database.enrichment.update_one({"property_id": property_id}, {"$set": enriched}, upsert=True)
 
 
 @api_router.get("/properties/{property_id}/tax-history")
@@ -2112,17 +2530,26 @@ async def admin_data_cleanup(dry_run: bool = Query(False)):
     stats = await run_data_cleanup(db, dry_run=dry_run)
     return {"ok": True, **stats}
 
-# Include router
-start_background_sync(app)
+# Railway cron is the single production scheduler. The in-process loop is kept
+# only as an explicit local-development fallback; enabling it accidentally on
+# multiple API replicas would duplicate imports on every restart.
+if os.environ.get("ENABLE_API_BACKGROUND_SYNC", "false").strip().lower() == "true":
+    start_background_sync(app)
 
 app.include_router(all_router)  # FREE data sources (violations, foreclosures, OffMarketDeck, SmartPropLeads, etc.)
 app.include_router(saved_searches_router)
+app.include_router(county_records_router)
 app.include_router(api_router)
 
+cors_origins = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "*").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
+    allow_credentials=cors_origins != ["*"],
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -2147,5 +2574,3 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     await db.close()
-
-

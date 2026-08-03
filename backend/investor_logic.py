@@ -38,7 +38,11 @@ NONPROFIT_KEYWORDS = (
     "ministry", "church", "diocese",
 )
 
-SYNTHETIC_SOURCE_MARKERS = ("demo seed data", "seeded sample", "synthetic")
+SYNTHETIC_SOURCE_MARKERS = (
+    "demo seed data",
+    "seeded sample",
+    "synthetic",
+)
 
 
 def classify_owner(owner_name: str) -> str:
@@ -74,6 +78,12 @@ def is_synthetic_property(property_record: Mapping[str, Any]) -> bool:
     if property_record.get("is_synthetic") is True:
         return True
     source = str(property_record.get("data_source") or "").lower()
+    # This exact source was produced only by the bundled 20-row fixture. If a
+    # genuine provider later matched the same house, do not hide that provider's
+    # listing merely because the legacy source label was appended to it.
+    legacy_foreclosure = "tarrant county foreclosure records"
+    if source.strip() == legacy_foreclosure:
+        return True
     return any(marker in source for marker in SYNTHETIC_SOURCE_MARKERS)
 
 

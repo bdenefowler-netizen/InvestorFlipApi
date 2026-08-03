@@ -14,7 +14,7 @@ logger = logging.getLogger("auto_sync")
 
 # How often to refresh each source
 REFRESH_INTERVALS = {
-    "tad": timedelta(days=7),           # TAD data changes slowly
+    "county_tad": timedelta(days=1),    # advance the separate county snapshot
     "fort_worth_violations": timedelta(days=3),  # Violations updated frequently
     "foreclosures": timedelta(days=1),  # Foreclosure sales change daily
     "foreclosure_listings": timedelta(days=3),
@@ -87,7 +87,7 @@ async def sync_source(name: str, import_func, **kwargs):
 
 async def sync_all_sources():
     """Sync all data sources that are due for refresh."""
-    from importers.tad_scraper import import_tad_properties
+    from importers.county_records import sync_tad_county_records
     from importers.fort_worth_violations import import_fort_worth_violations
     from importers.foreclosure_listings_scraper import import_foreclosure_listings
     from importers.offmarketdeck_scraper import import_offmarket_deals
@@ -95,8 +95,13 @@ async def sync_all_sources():
     
     results = []
     
-    # TAD tax roll - auto pulls from ArcGIS API
-    results.append(await sync_source("tad", import_tad_properties, city="FORT WORTH", limit=500))
+    # TAD is a county-record source, not a live listing source. Keeping it in
+    # county_records prevents incomplete public-record rows from becoming cards.
+    results.append(await sync_source(
+        "county_tad",
+        sync_tad_county_records,
+        records_per_run=20000,
+    ))
     
     # Fort Worth Code Violations
     results.append(await sync_source("fort_worth_violations", import_fort_worth_violations, limit=500))

@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -37,7 +38,7 @@ except ImportError:
 # Bright Data MCP (real Zillow cross-check) — optional, degrades gracefully
 try:
     from importers.brightdata_check import cross_check_property as _bd_cross_check
-    HAS_BRIGHTDATA = True
+    HAS_BRIGHTDATA = bool(os.environ.get("BRIGHTDATA_TOKEN", "").strip())
 except Exception:
     HAS_BRIGHTDATA = False
 
@@ -115,6 +116,20 @@ def cross_check_value(property_data: Dict[str, Any]) -> Dict[str, Any]:
     arv_claim = property_data.get("arv_estimate")
     if arv_claim:
         sources["wholesaler_arv"] = float(arv_claim)
+
+    # Optional live search estimates are added to the property before the
+    # analysis is built. Keeping them in this one function guarantees that
+    # the displayed benchmark, deal classification, spread, and P&L all use
+    # the same final evidence set.
+    live_fields = {
+        "live_zillow_value": "live_zillow",
+        "live_realtor_value": "live_realtor",
+        "live_redfin_value": "live_redfin",
+    }
+    for field, label in live_fields.items():
+        value = property_data.get(field)
+        if value and float(value) > 1000:
+            sources[label] = float(value)
 
     if not sources:
         return {
@@ -195,20 +210,20 @@ def quill_value_take(crosscheck: Dict[str, Any]) -> str:
     if conf == "high":
         return (
             f"Numbers check out, bud. Multiple sources agree around ${arv:,} — "
-            "that ARV is real. 🔒"
+            "use that as a screening benchmark, then verify with sold comps. 🔒"
         )
     if flags and conf != "high":
         worst = flags[0]
         return (
             f"Hold up, bud. {worst}. "
-            f"Realistic ARV is closer to ${arv:,} — don't pay for a dream number. 🚨"
+            f"The screening benchmark is closer to ${arv:,} — don't pay for a dream number. 🚨"
         )
     if conf == "medium":
         return (
-            f"Mostly agrees — validated ARV lands around ${arv:,}. "
-            "One source is off, but the cluster holds. 👍"
+            f"Mostly agrees — the screening benchmark lands around ${arv:,}. "
+            "One source is off, but verify the cluster with sold comps. 👍"
         )
-    return f"Best estimate: ${arv:,} ARV. Get comps to tighten it up."
+    return f"Screening estimate: ${arv:,}. Get sold comps before making an offer."
 
 # ---------- Core Analysis ----------
 
@@ -533,7 +548,7 @@ def build_analysis(property_data: Dict[str, Any]) -> Dict[str, Any]:
             "closing_costs": int(closing_costs),
             "carry_costs": carry_costs,
             "total_investment": int(total_investment),
-            "arv": int(float(arv or 0)),
+            "arv": int(eff_arv),
             "commission": int(commission),
             "net_profit": int(net_profit) if net_profit is not None else None,
             "roi_pct": round(roi, 1) if roi is not None else None,
@@ -607,7 +622,7 @@ def quill_take(
         mortgage_note = f" They likely owe ~${n['mortgage']['estimated_balance']:,} (est.), so there's room to negotiate."
     
     return (
-        f"{greeting} {deal_type} alert: ${n['price']:,} ask → ${n['arv']:,} ARV = "
+        f"{greeting} {deal_type} alert: ${n['price']:,} ask → ${n['validated_arv']:,} screening value = "
         f"${n['spread']:,} spread before costs. {vibe}{mortgage_note}"
     )
 
@@ -619,7 +634,27 @@ async def analyze_property(
     check_flood: bool = True,
 ) -> Dict[str, Any]:
     """Full async analysis — includes flood zone lookup."""
-    analysis = build_analysis(property_data)
+    enriched = dict(property_data)
+    live_result: Dict[str, Any] = {"status": "skipped"}
+
+    # Gather live evidence first. The full analysis is deliberately built
+    # only after this finishes so the benchmark, spread, deal type, and P&L
+    # cannot disagree with the live-source panel shown to the user.
+    if HAS_BRIGHTDATA:
+        try:
+            live_result = await _bd_cross_check(enriched)
+            if live_result.get("status") == "ok":
+                enriched["live_zillow_value"] = live_result.get("zestimate")
+                enriched["live_realtor_value"] = live_result.get("cotality")
+                enriched["live_redfin_value"] = live_result.get("redfin_value")
+        except Exception as e:
+            logger.debug(f"Bright Data check failed: {e}")
+            live_result = {"status": "error", "error": str(e)}
+
+    analysis = build_analysis(enriched)
+    analysis["live_zillow"] = live_result
+    if live_result.get("comps"):
+        analysis["comps"] = live_result["comps"]
     
     if check_flood and property_data.get("latitude"):
         flood = await check_flood_zone(
@@ -642,48 +677,12 @@ async def analyze_property(
         "note": "Permit lookup available where county data is reachable",
     }
 
-    # Live Zillow cross-check via Bright Data (free credits)
-    if HAS_BRIGHTDATA and check_flood:
-        try:
-            bd = await _bd_cross_check(property_data)
-            analysis["live_zillow"] = bd
-            if bd["status"] == "ok":
-                # Blend ALL live sources into the value cross-check
-                vc = analysis.get("value_check", {})
-                sources = dict(vc.get("sources", {}))
-                blended = False
-                if bd.get("zestimate"):
-                    sources["live_zillow"] = bd["zestimate"]
-                    blended = True
-                if bd.get("cotality"):
-                    sources["live_realtor"] = bd["cotality"]
-                    blended = True
-                if bd.get("redfin_value") and bd["redfin_value"] > 1000:
-                    # Redfin value is often the LIST price for active listings,
-                    # so only use it when it agrees with the cluster.
-                    sources["redfin"] = bd["redfin_value"]
-                    blended = True
-                if blended:
-                    vc["sources"] = sources
-                    vc["available_sources"] = len(sources)
-                    # Recompute validated ARV with live data
-                    anchor = sources.get("county_appraised")
-                    if anchor:
-                        agreeing = [v for v in sources.values()
-                                    if abs((v - anchor) / anchor * 100) <= 25]
-                        vc["validated_arv"] = int(round((sum(agreeing) / len(agreeing)) / 100) * 100) if agreeing else int(round(anchor / 100) * 100)
-                        vc["confidence"] = "high" if len(agreeing) >= 3 else ("medium" if len(agreeing) >= 2 else "low")
-                    analysis["value_check"] = vc
-                    analysis["value_take"] = quill_value_take(vc)
-                if bd.get("comps"):
-                    analysis["comps"] = bd["comps"]
-        except Exception as e:
-            logger.debug(f"Bright Data check failed: {e}")
-            analysis["live_zillow"] = {"status": "error", "error": str(e)}
-    else:
-        analysis["live_zillow"] = {"status": "skipped"}
-
     analysis["take"] = quill_take(analysis, personality="encouraging")
+    analysis["analysis_basis"] = "screening"
+    analysis["disclaimer"] = (
+        "Automated screening estimate only. Verify sold comps, title, taxes, "
+        "condition, repair scope, and financing before making an offer."
+    )
     analysis["generated_at"] = datetime.now(timezone.utc).isoformat()
     
     return analysis

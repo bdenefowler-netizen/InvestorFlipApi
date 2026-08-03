@@ -1,4 +1,4 @@
-"""Tarrant County Foreclosure Finder — pulls real foreclosure data from public records.
+"""Optional importer for a user-supplied, verified foreclosure CSV.
 
 Sources:
 - Tarrant County tax lien sales (monthly auctions)
@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -18,18 +19,27 @@ from database import PostgresDatabase
 
 logger = logging.getLogger("tarrantrei.foreclosure_finder")
 
-# Sample foreclosure data from Tarrant County
+# Bundled fixture retained for development reference only. Production must point
+# TARRANT_FORECLOSURE_CSV at a separately downloaded, verified county document.
 FORECLOSURE_CSV = Path(__file__).resolve().parent.parent / "data" / "tx_foreclosures.csv"
 
 
 def load_foreclosures_from_csv() -> List[Dict[str, Any]]:
-    """Load foreclosure records from the local CSV file."""
-    if not FORECLOSURE_CSV.exists():
-        logger.warning("Foreclosure CSV not found: %s", FORECLOSURE_CSV)
+    """Load only an explicitly configured foreclosure CSV."""
+    configured = os.environ.get("TARRANT_FORECLOSURE_CSV", "").strip()
+    if not configured:
+        logger.info("TARRANT_FORECLOSURE_CSV is not configured; bundled sample is disabled")
+        return []
+    csv_path = Path(configured).expanduser().resolve()
+    if csv_path == FORECLOSURE_CSV.resolve():
+        logger.warning("Refusing bundled sample foreclosure CSV: %s", csv_path)
+        return []
+    if not csv_path.exists():
+        logger.warning("Configured foreclosure CSV not found: %s", csv_path)
         return []
     
     records = []
-    with open(FORECLOSURE_CSV, "r", encoding="utf-8") as f:
+    with csv_path.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             records.append(row)
@@ -71,7 +81,13 @@ async def import_foreclosures(db: PostgresDatabase) -> Dict[str, Any]:
     """Import Tarrant County foreclosures into the database."""
     records = load_foreclosures_from_csv()
     if not records:
-        return {"fetched": 0, "inserted": 0, "matched": 0, "skipped": 0}
+        return {
+            "fetched": 0,
+            "inserted": 0,
+            "matched": 0,
+            "skipped": True,
+            "reason": "Upload a current verified foreclosure CSV or configure TARRANT_FORECLOSURE_CSV",
+        }
     
     inserted = 0
     matched = 0

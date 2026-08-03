@@ -48,3 +48,10 @@ def test_projection_supports_include_and_exclude_modes():
     assert _project(document, {"_id": 0}) == document
     assert _project(document, {"_id": 0, "id": 1}) == {"id": "p1"}
     assert _project(document, {"owner": 0}) == {"id": "p1", "address": "100 Main"}
+
+
+def test_county_collections_are_queryable():
+    from database import COLLECTION_KEYS
+
+    assert COLLECTION_KEYS["county_records"] == "id"
+    assert COLLECTION_KEYS["county_sync_log"] == "id"

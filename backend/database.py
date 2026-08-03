@@ -26,6 +26,8 @@ COLLECTION_KEYS = {
     "tax_history": "property_id",
     "saved_searches": "id",
     "sync_log": "name",
+    "county_records": "id",
+    "county_sync_log": "id",
 }
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -145,6 +147,7 @@ class PostgresCursor:
         self.sort_field: Optional[str] = None
         self.sort_direction = -1
         self.row_limit: Optional[int] = None
+        self.row_offset = 0
 
     def sort(self, field: str, direction: int) -> "PostgresCursor":
         self.sort_field = field
@@ -155,10 +158,14 @@ class PostgresCursor:
         self.row_limit = limit
         return self
 
+    def skip(self, offset: int) -> "PostgresCursor":
+        self.row_offset = max(0, int(offset))
+        return self
+
     async def to_list(self, length: Optional[int] = None) -> List[Dict[str, Any]]:
         limit = min(filter(None, [self.row_limit, length]), default=None)
         return await self.collection._find(
-            self.query, self.projection, self.sort_field, self.sort_direction, limit
+            self.query, self.projection, self.sort_field, self.sort_direction, limit, self.row_offset
         )
 
     def __aiter__(self) -> AsyncIterator[Dict[str, Any]]:
@@ -192,6 +199,7 @@ class PostgresCollection:
         sort_field: Optional[str],
         sort_direction: int,
         limit: Optional[int],
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         params: List[Any] = []
         where = _compile_query(query, params)
@@ -201,6 +209,9 @@ class PostgresCollection:
         if limit is not None:
             params.append(limit)
             sql += f" LIMIT ${len(params)}"
+        if offset:
+            params.append(offset)
+            sql += f" OFFSET ${len(params)}"
         rows = await (await self._pool()).fetch(sql, *params)
         return [_project(dict(row["data"]), projection) for row in rows]
 
@@ -209,7 +220,7 @@ class PostgresCollection:
         query: Mapping[str, Any],
         projection: Optional[Mapping[str, int]] = None,
     ) -> Optional[Dict[str, Any]]:
-        documents = await self._find(query, projection, None, -1, 1)
+        documents = await self._find(query, projection, None, -1, 1, 0)
         return documents[0] if documents else None
 
     async def count_documents(self, query: Mapping[str, Any]) -> int:
@@ -352,6 +363,18 @@ class PostgresDatabase:
             )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS properties_account_idx ON properties ((data ->> 'account_id'))"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS county_records_address_idx ON county_records ((lower(data ->> 'situs_address')))"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS county_records_address_zip_idx ON county_records ((data ->> 'address_key'), (data ->> 'zip'))"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS county_records_account_idx ON county_records ((data ->> 'account_id'))"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS county_records_updated_idx ON county_records ((data ->> 'updated_at') DESC)"
             )
 
     async def close(self) -> None:

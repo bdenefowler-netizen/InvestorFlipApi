@@ -20,6 +20,7 @@ Include this in server.py:
 
 import json
 import os
+import re
 from fastapi import APIRouter, HTTPException, Body
 from typing import Dict, Any, List, Optional
 
@@ -27,9 +28,7 @@ import httpx
 
 router = APIRouter(prefix="/api")
 
-from saved_searches_routes import router as saved_searches_router
 from bulk_import import router as bulk_import_router
-router.include_router(saved_searches_router, prefix="/saved-searches")
 router.include_router(bulk_import_router)
 
 # ========== Mortgage & Deed Lookup (FREE) ==========
@@ -74,13 +73,21 @@ async def import_from_apify(
     api_key = os.environ.get("APIFY_API_KEY", "").strip()
     if not api_key:
         raise HTTPException(400, "APIFY_API_KEY not configured — add it to Railway env vars")
-    
-    # FORT WORTH ENFORCEMENT: merge scoped defaults under any caller input.
+
+    from importers.apify_import import is_allowed_actor_id
+
+    if not is_allowed_actor_id(actor_id, set(FORT_WORTH_DEFAULTS)):
+        raise HTTPException(
+            403,
+            "Actor is not approved. Add its ID to APIFY_ALLOWED_ACTOR_IDS before running it.",
+        )
+
+    # FORT WORTH ENFORCEMENT: reviewed defaults win over caller input so an
+    # authenticated request cannot accidentally expand a known actor nationwide.
     defaults = FORT_WORTH_DEFAULTS.get(actor_id, {})
     if not defaults and not run_input:
-        raise HTTPException(400, "Unknown actor — pass an explicit Fort Worth-scoped run_input "
-                                 "(location/city + maxItems) or use a known actor ID")
-    run_input = {**defaults, **run_input}
+        raise HTTPException(400, "Configured custom actors require an explicit scoped run_input")
+    run_input = {**run_input, **defaults}
 
     # Start the Apify actor run
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -131,79 +138,59 @@ async def import_from_apify(
                 
                 records = dataset_resp.json()
                 
-                # Import records into properties database
-                from backend.database import get_database
-                db = await get_database()
-                
-                imported = 0
-                for record in records:
-                    try:
-                        # Normalize address
-                        addr_parts = []
-                        for addr_key in ["address", "streetAddress", "street", "fullAddress", "formattedAddress"]:
-                            val = record.get(addr_key, "")
-                            if val:
-                                addr_parts.append(str(val).strip())
-                                break
-                        
-                        city = record.get("city", record.get("addressCity", "Fort Worth"))
-                        state = record.get("state", record.get("addressState", "TX"))
-                        zip_code = str(record.get("zip", record.get("addressZip", record.get("zipCode", ""))))
-                        
-                        full_address = f"{', '.join(addr_parts)}, {city}, {state} {zip_code}"
-                        if not any(addr_parts):
-                            full_address = record.get("situs_address", "")
-                        if not full_address:
+                # Import through the same normalized, Fort Worth-gated shape as
+                # scheduled Apify runs. Unknown/malformed/out-of-area rows never
+                # reach the listing table.
+                from datetime import datetime, timezone
+                from uuid import NAMESPACE_URL, uuid5
+                from database import PostgresDatabase
+                from importers.apify_import import is_fort_worth_area, normalize_record
+
+                db = PostgresDatabase()
+                imported = rejected = 0
+                try:
+                    await db.connect()
+                    for record in records:
+                        prop = normalize_record(record)
+                        if not prop or not is_fort_worth_area(prop.get("city", "")):
+                            rejected += 1
                             continue
-                        
-                        # Build property object
-                        prop = {
-                            "situs_address": full_address,
-                            "city": city,
-                            "state": state,
-                            "zip": zip_code[:5],
-                            "county": "Tarrant",
-                            "price": record.get("price", record.get("listingPrice", 0)),
-                            "beds": record.get("beds", record.get("bedrooms", record.get("bathrooms", None))),
-                            "baths": record.get("baths", record.get("bathrooms", None)),
-                            "sqft": record.get("sqft", record.get("squareFootage", record.get("livingArea", None))),
-                            "year_built": record.get("yearBuilt", record.get("year_built", None)),
-                            "lot_size_sqft": record.get("lotSize", record.get("lotSizeSqFt", None)),
-                            "property_type": record.get("propertyType", record.get("homeType", "")),
-                            "latitude": record.get("latitude", record.get("lat", None)),
-                            "longitude": record.get("longitude", record.get("lng", None)),
-                            "owner_name": record.get("ownerName", record.get("owner_name", "")),
-                            "listing_status": record.get("status", record.get("listingStatus", "Active")),
-                            "listing_type": record.get("listingType", ""),
+                        now = datetime.now(timezone.utc).isoformat()
+                        prop.update({
                             "data_source": f"Apify/{actor_id}",
                             "source_platform": "Apify",
                             "apify_actor": actor_id,
                             "apify_run_id": run_id,
-                            "created_at": None,
-                            "updated_at": None,
-                        }
-                        
-                        # Try case-insensitive match first
-                        import re
-                        existing = await db.properties.find_one({
-                            "situs_address": {"$regex": f"^{re.escape(full_address)}$", "$options": "i"}
+                            "is_live_listing": True,
+                            "listing_last_seen_at": now,
+                            "missed_syncs": 0,
+                            "updated_at": now,
                         })
-                        
+                        existing = await db.properties.find_one({
+                            "situs_address": {
+                                "$regex": f"^{re.escape(prop['situs_address'])}$",
+                                "$options": "i",
+                            },
+                        })
                         if existing:
-                            update_fields = {k: v for k, v in prop.items() if v and v != 0 and k not in ("situs_address", "created_at")}
-                            update_fields["data_source"] = existing.get("data_source", "") + f" + Apify/{actor_id}"
-                            await db.properties.update_one({"id": existing["id"]}, {"$set": update_fields})
+                            updates = {
+                                key: value for key, value in prop.items()
+                                if value not in (None, "", 0) and key != "situs_address"
+                            }
+                            updates["data_source"] = (
+                                str(existing.get("data_source") or "") + f" + Apify/{actor_id}"
+                            ).strip(" +")
+                            await db.properties.update_one({"id": existing["id"]}, {"$set": updates})
                         else:
-                            from datetime import datetime, timezone
-                            from uuid import uuid4
-                            prop["id"] = f"apify-{uuid4().hex[:12]}"
-                            prop["created_at"] = datetime.now(timezone.utc).isoformat()
-                            prop["updated_at"] = prop["created_at"]
+                            prop["id"] = str(uuid5(
+                                NAMESPACE_URL,
+                                f"listing:{prop['situs_address'].upper()}",
+                            ))
+                            prop["created_at"] = now
                             await db.properties.insert_one(prop)
-                        
                         imported += 1
-                    except Exception:
-                        continue
+                finally:
+                    await db.close()
                 
                 return {
                     "status": "succeeded",
@@ -211,6 +198,7 @@ async def import_from_apify(
                     "run_id": run_id,
                     "records_fetched": len(records),
                     "records_imported": imported,
+                    "records_rejected": rejected,
                 }
             
             elif run_status in ("FAILED", "TIMED-OUT", "ABORTED"):
@@ -764,7 +752,7 @@ async def data_sources_status():
 
 # ========== Quill AI Analysis ==========
 
-@router.post("/quill/analyze")
+@router.post("/quill/analyze-basic")
 async def quill_analyze(
     address: str,
     listing_price: Optional[float] = None,

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { adminRequestHeaders } from "@/src/lib/admin";
 
 const API_BASE = process.env.REACT_APP_BACKEND_URL || "";
 
@@ -68,9 +69,10 @@ export default function SerenityArea() {
     setBody("");
 
     try {
+      const headers = await adminRequestHeaders({ "Content-Type": "application/json" });
       await fetch(`${API_BASE}/api/serenity/memories`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(newMemory),
       });
     } catch (err) {

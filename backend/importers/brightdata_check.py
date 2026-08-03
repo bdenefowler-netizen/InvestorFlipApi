@@ -21,7 +21,7 @@ import httpx
 logger = logging.getLogger("brightdata")
 
 MCP_URL = "https://mcp.brightdata.com/mcp"
-API_TOKEN = os.environ.get("BRIGHTDATA_TOKEN", "5809d6b4-75ec-44a2-83b2-dc98972e4727")
+API_TOKEN = os.environ.get("BRIGHTDATA_TOKEN", "").strip()
 GROUPS = "advanced_scraping"
 
 HDRS = {
@@ -35,7 +35,8 @@ class BrightDataMCP:
     """Minimal MCP client for Bright Data (Streamable HTTP)."""
 
     def __init__(self, token: str = API_TOKEN):
-        self.url = f"{MCP_URL}?token={token}&groups={GROUPS}"
+        self.token = token.strip()
+        self.url = f"{MCP_URL}?token={self.token}&groups={GROUPS}"
         self.session_id: Optional[str] = None
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -47,6 +48,8 @@ class BrightDataMCP:
         await self.close()
 
     async def connect(self) -> None:
+        if not self.token:
+            raise RuntimeError("BRIGHTDATA_TOKEN is not configured")
         self._client = httpx.AsyncClient(timeout=90)
         r = await self._client.post(self.url, headers=HDRS, json={
             "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {

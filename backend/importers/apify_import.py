@@ -13,7 +13,7 @@ import os
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid5
 
 import httpx
 
@@ -51,6 +51,36 @@ def get_api_key() -> str:
     return key
 
 
+def _configured_ids(name: str) -> set[str]:
+    return {
+        value.strip()
+        for value in os.environ.get(name, "").split(",")
+        if value.strip()
+    }
+
+
+def is_allowed_actor_id(actor_id: str, built_in_ids: Optional[set[str]] = None) -> bool:
+    """Authorize an actor explicitly through config or the reviewed built-in set."""
+    return actor_id in (_configured_ids("APIFY_ALLOWED_ACTOR_IDS") | (built_in_ids or set()))
+
+
+def is_allowed_run(run: Dict[str, Any]) -> bool:
+    """Only import explicitly approved property actors/tasks.
+
+    An Apify account may contain unrelated actors whose output also happens to
+    contain address/city fields. Importing every successful run can therefore
+    turn unrelated datasets into InvestorFlip listings.
+    """
+    if os.environ.get("APIFY_IMPORT_ALL_RUNS", "false").strip().lower() == "true":
+        return True
+    actor_ids = _configured_ids("APIFY_ALLOWED_ACTOR_IDS")
+    task_ids = _configured_ids("APIFY_ALLOWED_TASK_IDS")
+    return bool(
+        (actor_ids and str(run.get("actorId") or "") in actor_ids)
+        or (task_ids and str(run.get("actorTaskId") or "") in task_ids)
+    )
+
+
 async def fetch_recent_runs(
     client: httpx.AsyncClient,
     token: str,
@@ -74,7 +104,11 @@ async def fetch_recent_runs(
     # Filter to runs with datasets and within lookback
     valid = []
     for r in runs:
-        if r.get("defaultDatasetId") and r.get("startedAt", "") >= since:
+        if (
+            r.get("defaultDatasetId")
+            and r.get("startedAt", "") >= since
+            and is_allowed_run(r)
+        ):
             valid.append(r)
     
     return valid
@@ -124,7 +158,7 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # Map beds/baths/sqft
     beds = record.get("beds") or record.get("bedrooms") or None
     baths = record.get("baths") or record.get("bathrooms") or record.get("bathsFull") or None
-    sqft = record.get("sqft") or record.get("squareFootage") or record.get("livingArea") or record.get("pricePerSqft") or None
+    sqft = record.get("sqft") or record.get("squareFootage") or record.get("livingArea") or None
     
     # HAR.com specific fields
     if not beds and record.get("bedsFull") is not None:
@@ -164,8 +198,26 @@ async def import_apify_runs(
     token = get_api_key()
     if not token:
         return {"error": "APIFY_API_KEY not configured", "imported": 0}
+    if (
+        os.environ.get("APIFY_IMPORT_ALL_RUNS", "false").strip().lower() != "true"
+        and not _configured_ids("APIFY_ALLOWED_ACTOR_IDS")
+        and not _configured_ids("APIFY_ALLOWED_TASK_IDS")
+    ):
+        return {
+            "skipped": True,
+            "reason": (
+                "Configure APIFY_ALLOWED_ACTOR_IDS or APIFY_ALLOWED_TASK_IDS; "
+                "unscoped account-wide imports are disabled"
+            ),
+            "records_imported": 0,
+            "property_ids": [],
+        }
     
-    results = {"runs_found": 0, "runs_imported": 0, "records_fetched": 0, "records_imported": 0, "records_skipped_non_fortworth": 0}
+    results = {
+        "runs_found": 0, "runs_imported": 0, "records_fetched": 0,
+        "records_imported": 0, "records_skipped_non_fortworth": 0,
+        "records_failed": 0, "property_ids": [],
+    }
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         runs = await fetch_recent_runs(client, token, lookback_days)
@@ -205,20 +257,30 @@ async def import_apify_runs(
                                            if v and v != 0 and k not in ("situs_address",)}
                             update_fields["data_source"] = existing.get("data_source", "") + " + Apify"
                             update_fields["apify_run_id"] = run_id
+                            update_fields["is_live_listing"] = True
+                            update_fields["listing_last_seen_at"] = datetime.now(timezone.utc).isoformat()
+                            update_fields["missed_syncs"] = 0
                             await db.properties.update_one(
                                 {"id": existing["id"]},
                                 {"$set": update_fields},
                             )
+                            results["property_ids"].append(existing["id"])
                         else:
-                            prop["id"] = f"apify-{uuid4().hex[:12]}"
+                            prop["id"] = str(uuid5(NAMESPACE_URL, f"listing:{prop['situs_address'].upper()}"))
                             prop["apify_run_id"] = run_id
                             prop["data_source"] = "Apify"
                             prop["created_at"] = datetime.now(timezone.utc).isoformat()
                             prop["updated_at"] = prop["created_at"]
+                            prop["is_live_listing"] = True
+                            prop["listing_last_seen_at"] = prop["created_at"]
+                            prop["missed_syncs"] = 0
                             await db.properties.insert_one(prop)
+                            results["property_ids"].append(prop["id"])
                         
                         imported += 1
-                    except Exception:
+                    except Exception as exc:
+                        results["records_failed"] += 1
+                        logger.debug("Apify record rejected from run %s: %s", run_id, exc)
                         continue
                 
                 results["records_imported"] += imported

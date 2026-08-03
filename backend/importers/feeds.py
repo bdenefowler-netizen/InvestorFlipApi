@@ -321,10 +321,11 @@ async def ingest_listings(
     listings: Iterable[FeedListing],
     classify_owner_fn,
     compute_scores_fn,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     inserted = 0
     matched = 0
     skipped = 0
+    property_ids: List[str] = []
     new_docs: List[Dict[str, Any]] = []
     for L in listings:
         if not L.situs_address:
@@ -338,6 +339,9 @@ async def ingest_listings(
                 "listing_type": L.listing_type,
                 "price": L.price or match.get("price", 0),
                 "data_source": f"{match.get('data_source', '')} + {L.feed_source}",
+                "is_live_listing": True,
+                "listing_last_seen_at": datetime.now(timezone.utc).isoformat(),
+                "missed_syncs": 0,
             }
             if L.beds: updates["beds"] = L.beds
             if L.baths: updates["baths"] = L.baths
@@ -348,6 +352,7 @@ async def ingest_listings(
             combined = {**match, **updates}
             updates.update(compute_scores(combined))
             await db.properties.update_one({"id": match["id"]}, {"$set": updates})
+            property_ids.append(match["id"])
             matched += 1
             continue
 
@@ -384,6 +389,10 @@ async def ingest_listings(
             "roi_status": "unknown - ARV, repairs, holding, and selling costs required",
             "legal_description": L.extra.get("legal", ""),
             "listing_type": L.listing_type,
+            "listing_status": L.extra.get("status_label") or L.listing_type,
+            "is_live_listing": True,
+            "listing_last_seen_at": datetime.now(timezone.utc).isoformat(),
+            "missed_syncs": 0,
             "owner_name": owner_name,
             "owner_type": owner_type,
             "owner_mailing_address": "",
@@ -406,11 +415,17 @@ async def ingest_listings(
         ))
         prop.update(compute_scores(prop))
         new_docs.append(prop)
+        property_ids.append(prop["id"])
         inserted += 1
 
     if new_docs:
         await db.properties.insert_many(new_docs)
-    return {"inserted": inserted, "matched": matched, "skipped": skipped}
+    return {
+        "inserted": inserted,
+        "matched": matched,
+        "skipped": skipped,
+        "property_ids": property_ids,
+    }
 
 
 async def run_feed_sync(
@@ -420,7 +435,11 @@ async def run_feed_sync(
     only_feed: Optional[str] = None,
     limit_per_feed: int = 50,
 ) -> Dict[str, Any]:
-    results: Dict[str, Any] = {"by_feed": {}, "totals": {"inserted": 0, "matched": 0, "skipped": 0}}
+    results: Dict[str, Any] = {
+        "by_feed": {},
+        "totals": {"inserted": 0, "matched": 0, "skipped": 0},
+        "property_ids": [],
+    }
     for feed in FEEDS:
         if only_feed and feed.name.lower() != only_feed.lower():
             continue
@@ -433,6 +452,7 @@ async def run_feed_sync(
         counts = await ingest_listings(db, listings, classify_owner_fn, compute_scores_fn)
         counts["fetched"] = len(listings)
         results["by_feed"][feed.name] = counts
+        results["property_ids"].extend(counts.get("property_ids") or [])
         for k in ("inserted", "matched", "skipped"):
             results["totals"][k] += counts[k]
     return results
@@ -446,7 +466,7 @@ async def ingest_csv_text(
     listing_type: str,
     classify_owner_fn,
     compute_scores_fn,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     reader = csv.DictReader(io.StringIO(csv_text))
     listings: List[FeedListing] = []
     for row in reader:

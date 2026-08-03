@@ -29,6 +29,10 @@ def test_bank_classifier_precedes_corporation_classifier():
 def test_synthetic_sources_are_detected_without_hiding_real_tax_matches():
     assert is_synthetic_property({"data_source": "Tarrant County Tax Roll - seeded sample"})
     assert is_synthetic_property({"data_source": "Demo Seed Data - NOT LIVE"})
+    assert is_synthetic_property({"data_source": "Tarrant County Foreclosure Records"})
+    assert not is_synthetic_property({
+        "data_source": "OpenWeb Ninja + Tarrant County Foreclosure Records",
+    })
     assert not is_synthetic_property({"data_source": "RapidAPI listings", "tax_roll_source": "Tarrant County"})
 
 

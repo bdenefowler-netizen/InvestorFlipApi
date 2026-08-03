@@ -52,9 +52,8 @@ the PropertyReach address-suggestion integration. Legacy `OPENWEB_NINJA_API_KEY`
 `OPENWEB_NINJA_KEY` variables remain supported as fallbacks, but the explicit names
 above prevent two product keys from being mixed up.
 
-CakeMLS is available as an address-based MLS enrichment fallback through RapidAPI.
-It uses the same RapidAPI account key and is opt-in so opening property details does
-not consume CakeMLS credits unexpectedly:
+CakeMLS is available as an address-based MLS enrichment provider through RapidAPI.
+It uses the same RapidAPI account key and is enabled by default when that key exists:
 
 ```text
 RAPIDAPI_KEY=<secret copied from RapidAPI.com>
@@ -65,31 +64,43 @@ The same `RAPIDAPI_KEY` also powers `us-real-estate-listings` for live listings,
 tax history, and `/location-suggest`. Location suggestions are used automatically
 when the PropertyReach suggestion provider is unavailable.
 
-Realtor Search agent-profile enrichment is also opt-in. It only runs when a
+Realtor Search agent-profile enrichment is also enabled by default. It only runs when a
 property provider supplies a valid Realtor.com `/realestateagents/` profile URL:
 
 ```text
 RAPIDAPI_REALTOR_SEARCH_ENABLED=true
 ```
 
-Realty in US agent listings are opt-in and use a listing provider's
+Realty in US agent listings are enabled by default and use a listing provider's
 `fulfillmentId` to populate the mobile app's “More listings by this agent” section:
 
 ```text
 RAPIDAPI_REALTY_US_ENABLED=true
 ```
 
+Set any of the three `RAPIDAPI_*_ENABLED` variables to `false` to disable that
+specific enrichment provider. Listing providers are queried independently; a
+failure or empty response from one does not erase results from the others.
+
 ### Provider route map
 
 | Provider | Method and endpoint | InvestorFlip trigger |
 | --- | --- | --- |
 | OpenWeb Ninja Real-Time Real Estate | `GET /realtime-real-estate-data/zillow/search` | Live sync |
-| OpenWeb Ninja Real-Time Zillow | `GET /realtime-zillow-data/search` | Live-sync fallback |
+| OpenWeb Ninja Real-Time Zillow | `GET /realtime-zillow-data/search` | Every live sync |
+| RapidAPI Real-Time Real Estate | `GET /search` with endpoint fallbacks | Every live sync |
 | CakeMLS | `POST cakemls.p.rapidapi.com/api/mls/` | Property detail |
 | Realtor Search | `GET realtor-search.p.rapidapi.com/agents/detail-url` | Detail with an agent URL |
 | Realty in US | `GET realty-us.p.rapidapi.com/agents/v2/listings` | Detail with a fulfillment ID |
 | US Real Estate Listings | `GET /for-sale`, `/location-suggest`, `/taxHistory` | Sync, search, and tax |
 | US Real Estate Data 1 | `GET /properties/lookup`, `/properties/{zpid}` | Detail fallback |
+| ForeclosureListingsUSA | Fort Worth page scraper | Every live sync |
+| Apify | Recent successful actor datasets | Every live sync when configured |
+
+The mobile **Add** tab can also send `.csv`, `.xls`, and `.xlsx` files to
+`POST /api/intake/upload`, or a recognized property-page URL to
+`POST /api/intake/link`. Both paths reject addressless records, merge existing
+houses by address, and run the same county/detail enrichment pipeline.
 
 `GET /api/live/status` reports the configured/enabled state and route mapping
 without returning any API-key value.
@@ -98,3 +109,41 @@ Scores are explicitly preliminary. County appraisals and automated estimates are
 recorded as screening benchmarks, not ARV. Owner equity stays unknown without a
 mortgage balance, and ROI stays unknown until ARV, repairs, holding costs, and selling
 costs are available.
+
+## Production safety variables
+
+Set these on the Railway **InvestorFlipApi** service before triggering imports or
+Quill from the mobile app:
+
+```text
+INVESTORFLIP_ADMIN_KEY=<a new long random secret>
+ENABLE_API_BACKGROUND_SYNC=false
+BRIGHTDATA_TOKEN=<optional current Bright Data token>
+APIFY_API_KEY=<optional Apify account token>
+APIFY_ALLOWED_ACTOR_IDS=<comma-separated approved property actor IDs>
+APIFY_ALLOWED_TASK_IDS=<comma-separated approved property task IDs>
+COUNTY_TAD_RECORDS_PER_RUN=20000
+TARRANT_FORECLOSURE_CSV=<optional path to a current, independently verified CSV>
+CORS_ALLOWED_ORIGINS=<optional comma-separated Expo web origins; native Android does not need it>
+```
+
+Only one Apify allowlist variable is required. Account-wide Apify imports are blocked
+unless `APIFY_IMPORT_ALL_RUNS=true` is set deliberately. Railway cron is the production
+scheduler; leave `ENABLE_API_BACKGROUND_SYNC=false` to prevent duplicate work when the
+API restarts or scales.
+
+After setting `INVESTORFLIP_ADMIN_KEY`, enter that same value once in the mobile app's
+**Settings → Private Operations** field. It is stored in the device's secure storage
+and attached only to imports, paid-provider pulls, enrichment, and Quill operations.
+Never put provider API keys directly in Expo configuration or frontend source code.
+
+County records are stored separately from live listings. TAD and tax-roll records can
+be searched in the **County** tab or exported without the former 50,000-row cutoff;
+the CSV includes normalized columns plus the complete raw TAD/tax-roll JSON. County
+facts enrich a listing only on an exact account match or one unambiguous address plus
+ZIP/city match.
+
+The repository's old 20-row foreclosure CSV is a development fixture and is never
+imported in production. Existing rows carrying its old source label are hidden as
+synthetic. A current Clerk/trustee-sale file can be uploaded through the app's **Add**
+tab, or mounted on Railway and referenced with `TARRANT_FORECLOSURE_CSV`.

@@ -1,4 +1,6 @@
 // Feeds + export API helpers
+import { adminRequestHeaders } from "@/src/lib/admin";
+
 const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || "https://investorflipapi-production-4970.up.railway.app").replace(/\/$/, "");
 const API = `${BASE}/api`;
 
@@ -18,7 +20,8 @@ export type SyncResult = {
 export async function syncFeeds(only?: string, limit = 50): Promise<SyncResult> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (only) params.set("only", only);
-  const r = await fetch(`${API}/feeds/sync?${params.toString()}`, { method: "POST" });
+  const headers = await adminRequestHeaders();
+  const r = await fetch(`${API}/feeds/sync?${params.toString()}`, { method: "POST", headers });
   if (!r.ok) throw new Error("sync failed");
   return r.json();
 }

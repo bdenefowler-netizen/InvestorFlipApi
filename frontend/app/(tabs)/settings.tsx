@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Linking, Platform } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Linking, Platform, TextInput } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 import { getFeedsStatus, syncFeeds, exportUrl, type FeedStatus, type SyncResult } from "@/src/lib/feeds";
+import { getStoredAdminKey, saveAdminKey } from "@/src/lib/admin";
 
 function Row({ icon, label, value }: { icon: any; label: string; value: string }) {
   return (
@@ -22,20 +23,38 @@ export default function SettingsScreen() {
   const [feeds, setFeeds] = useState<FeedStatus[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<SyncResult | null>(null);
+  const [adminKey, setAdminKey] = useState("");
+  const [adminSaved, setAdminSaved] = useState(false);
+  const [operationError, setOperationError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try { const d = await getFeedsStatus(); setFeeds(d.feeds); } catch {}
   }, []);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    getStoredAdminKey().then((key) => {
+      setAdminKey(key);
+      setAdminSaved(Boolean(key));
+    });
+  }, []);
+
+  const persistAdminKey = async () => {
+    const saved = await saveAdminKey(adminKey);
+    setAdminSaved(saved && Boolean(adminKey.trim()));
+    setOperationError(saved ? null : "The admin key could not be stored securely.");
+  };
 
   const runSync = async (only?: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setSyncing(true);
+    setOperationError(null);
     try {
       const r = await syncFeeds(only, 50);
       setLastSync(r);
       await load();
-    } catch {}
+    } catch (error: any) {
+      setOperationError(error?.message || "The sync could not be started.");
+    }
     finally { setSyncing(false); }
   };
 
@@ -56,6 +75,28 @@ export default function SettingsScreen() {
         <Text style={styles.title}>Settings</Text>
       </View>
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxxl }}>
+        <View style={styles.card}>
+          <Text style={styles.section}>PRIVATE OPERATIONS</Text>
+          <Text style={styles.adminHelp}>
+            Enter the same value as Railway’s INVESTORFLIP_ADMIN_KEY. It stays in this device’s secure storage and protects paid pulls, imports, and Quill analysis.
+          </Text>
+          <TextInput
+            value={adminKey}
+            onChangeText={(value) => { setAdminKey(value); setAdminSaved(false); }}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="Railway admin key"
+            placeholderTextColor={colors.muted}
+            style={styles.adminInput}
+          />
+          <Pressable onPress={persistAdminKey} style={styles.adminButton}>
+            <Ionicons name={adminSaved ? "checkmark-circle" : "lock-closed"} size={16} color="#fff" />
+            <Text style={styles.adminButtonText}>{adminSaved ? "Key Saved" : "Save Securely"}</Text>
+          </Pressable>
+          {operationError ? <Text style={styles.operationError}>{operationError}</Text> : null}
+        </View>
+
         {/* Feeds */}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
@@ -173,6 +214,11 @@ const styles = StyleSheet.create({
   },
   cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.md },
   section: { fontSize: 11, fontWeight: "800", letterSpacing: 1.2, color: colors.muted },
+  adminHelp: { color: colors.muted, fontSize: 11, lineHeight: 16, marginTop: 8, marginBottom: 10 },
+  adminInput: { minHeight: 46, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.md, paddingHorizontal: 12, color: colors.onSurface, backgroundColor: colors.surface },
+  adminButton: { marginTop: 9, minHeight: 42, borderRadius: radius.md, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7 },
+  adminButtonText: { color: "#fff", fontSize: 12, fontWeight: "800" },
+  operationError: { color: colors.error, fontSize: 11, lineHeight: 16, marginTop: 8 },
   row: { flexDirection: "row", alignItems: "flex-start", marginBottom: spacing.md, gap: spacing.md },
   rowIcon: {
     width: 28, height: 28, borderRadius: 14,

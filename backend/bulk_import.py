@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from database import PostgresDatabase
 
-router = APIRouter(prefix="/api/import/bulk", tags=["bulk-import"])
+router = APIRouter(prefix="/import/bulk", tags=["bulk-import"])
 
 
 class BulkImportResult(BaseModel):

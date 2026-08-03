@@ -508,7 +508,7 @@ export default function PropertyDetail() {
               <View style={{ alignItems: "center", paddingVertical: 20 }}>
                 <ActivityIndicator color={colors.brandPrimary} />
                 <Text style={{ color: colors.muted, marginTop: 10, fontSize: 12 }}>
-                  Quill’s crunching the numbers…{"\n"}cross-checking Zillow, Realtor & Redfin live
+                  Quill’s crunching the numbers…{"\n"}building a screening estimate from available sources
                 </Text>
               </View>
             ) : quillError ? (
@@ -528,7 +528,7 @@ export default function PropertyDetail() {
           </View>
           {!quill && !aiLoading && !quillError ? (
             <Text style={styles.sourceNote}>
-              Verdict + verified ARV + max offer. Live cross-check: Zillow · Realtor · Redfin · county.
+              Screening estimate + deal math. Verify sold comps, title, taxes, and condition before offering.
             </Text>
           ) : null}
         </View>
@@ -715,9 +715,9 @@ function QuillReport({ quill }: { quill: QuillAnalysis }) {
         <MoneyRow k="Total investment" v={`$${(pnl?.total_investment || 0).toLocaleString()}`} strong />
       </View>
 
-      {/* Verified ARV */}
+      {/* Screening benchmark */}
       <View>
-        <Text style={styles.subTitle}>VERIFIED ARV · {vc?.confidence?.toUpperCase() || "?"} CONFIDENCE</Text>
+        <Text style={styles.subTitle}>SCREENING VALUE · {vc?.confidence?.toUpperCase() || "?"} CONFIDENCE</Text>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
           <Text style={{ fontSize: 28, fontWeight: "900", color: colors.brandPrimary, ...tabularNums }}>
             {vc?.validated_arv ? `$${vc.validated_arv.toLocaleString()}` : "—"}
@@ -733,6 +733,9 @@ function QuillReport({ quill }: { quill: QuillAnalysis }) {
             ))}
           </View>
         ) : null}
+        <Text style={{ fontSize: 11, color: colors.muted, lineHeight: 16, marginTop: 8 }}>
+          Automated estimate—not a verified appraisal or comp report. Confirm sold comps before offering.
+        </Text>
       </View>
 
       {/* Profit */}
