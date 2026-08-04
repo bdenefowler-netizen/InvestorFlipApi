@@ -10,7 +10,6 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 
@@ -47,6 +46,7 @@ export default function AddScreen() {
   };
 
   const pickFile = async () => {
+    const DocumentPicker = await import("expo-document-picker");
     const picked = await DocumentPicker.getDocumentAsync({
       type: [
         "text/csv",
