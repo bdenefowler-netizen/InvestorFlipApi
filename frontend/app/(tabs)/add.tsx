@@ -16,15 +16,13 @@ import { useRouter } from "expo-router";
 import {
   addPropertyLink,
   syncAllListingSources,
-  uploadPropertyFile,
   type AllSourceSyncResult,
   type LinkIntakeResult,
-  type UploadIntakeResult,
 } from "@/src/lib/api";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 
 
-type Busy = "sync" | "upload" | "link" | null;
+type Busy = "sync" | "link" | null;
 
 function ResultBox({ children, error = false }: { children: React.ReactNode; error?: boolean }) {
   return <View style={[styles.result, error && styles.resultError]}>{children}</View>;
@@ -35,7 +33,6 @@ export default function AddScreen() {
   const [link, setLink] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
-  const [uploadResult, setUploadResult] = useState<UploadIntakeResult | null>(null);
   const [linkResult, setLinkResult] = useState<LinkIntakeResult | null>(null);
   const [syncResult, setSyncResult] = useState<AllSourceSyncResult | null>(null);
 
@@ -43,31 +40,6 @@ export default function AddScreen() {
     setBusy(kind);
     setError(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-  };
-
-  const pickFile = async () => {
-    const DocumentPicker = await import("expo-document-picker");
-    const picked = await DocumentPicker.getDocumentAsync({
-      type: [
-        "text/csv",
-        "application/vnd.ms-excel",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      ],
-      copyToCacheDirectory: true,
-      multiple: false,
-    });
-    if (picked.canceled || !picked.assets[0]) return;
-    begin("upload");
-    setUploadResult(null);
-    try {
-      const result = await uploadPropertyFile(picked.assets[0]);
-      setUploadResult(result);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    } catch (e: any) {
-      setError(e?.message || "The spreadsheet could not be imported.");
-    } finally {
-      setBusy(null);
-    }
   };
 
   const addLink = async () => {
@@ -145,30 +117,13 @@ export default function AddScreen() {
             <View style={styles.icon}><Ionicons name="document-attach-outline" size={19} color={colors.brandPrimary} /></View>
             <View style={styles.cardHeading}>
               <Text style={styles.cardTitle}>Upload a spreadsheet</Text>
-              <Text style={styles.cardText}>CSV or Excel, up to 250 rows. An Address column is required; every other column is preserved.</Text>
+              <Text style={styles.cardText}>Temporarily unavailable in this Android recovery build. Property links and live-source pulls still import and enrich normally.</Text>
             </View>
           </View>
-          <Pressable disabled={busy !== null} onPress={pickFile} style={[styles.secondaryButton, busy && styles.disabled]}>
-            {busy === "upload" ? <ActivityIndicator color={colors.brandPrimary} /> : <Ionicons name="folder-open-outline" size={18} color={colors.brandPrimary} />}
-            <Text style={styles.secondaryButtonText}>{busy === "upload" ? "Importing and enriching…" : "Choose CSV or Excel"}</Text>
-          </Pressable>
-          {uploadResult ? (
-            <ResultBox>
-              <Text style={styles.resultTitle}>{uploadResult.filename}</Text>
-              <Text style={[styles.resultMetric, tabularNums]}>{uploadResult.accepted} accepted · {uploadResult.rejected} rejected</Text>
-              <Text style={styles.resultText}>
-                {uploadResult.inserted} new · {uploadResult.updated} updated · {uploadResult.duplicates_merged} duplicates merged
-              </Text>
-              <Text style={styles.resultText}>
-                County matched {uploadResult.enrichment.county.enriched} · Details found {uploadResult.enrichment.details.found}/{uploadResult.enrichment.details.attempted}
-              </Text>
-              {uploadResult.property_ids.length === 1 ? (
-                <Pressable onPress={() => router.push(`/property/${uploadResult.property_ids[0]}`)} style={styles.openButton}>
-                  <Text style={styles.openButtonText}>Open Property</Text><Ionicons name="arrow-forward" size={15} color="#fff" />
-                </Pressable>
-              ) : null}
-            </ResultBox>
-          ) : null}
+          <View style={[styles.secondaryButton, styles.disabled]}>
+            <Ionicons name="construct-outline" size={18} color={colors.brandPrimary} />
+            <Text style={styles.secondaryButtonText}>Upload returns after startup verification</Text>
+          </View>
         </View>
 
         <View style={styles.card}>
