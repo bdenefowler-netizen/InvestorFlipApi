@@ -23,7 +23,10 @@ from database import PostgresDatabase
 COUNTY_SOURCE_TAD = "Tarrant Appraisal District (TAD)"
 COUNTY_SOURCE_TAX = "Tarrant County Tax Roll"
 DEFAULT_TAD_BATCH_SIZE = 500
-DEFAULT_TAD_RECORDS_PER_RUN = 20000
+DEFAULT_TAD_RECORDS_PER_RUN = 5000
+VOLATILE_RECORD_FIELDS = {
+    "updated_at", "tad_updated_at", "tax_roll_updated_at",
+}
 
 
 def utc_now() -> str:
@@ -105,6 +108,41 @@ def _without_blanks(document: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _store_raw_payloads() -> bool:
+    """Raw county payloads are opt-in because they make Postgres grow rapidly.
+
+    Every field needed by the app/export is mapped onto the canonical county
+    record.  The official source URL/file remains the audit trail.  Operators
+    who have provisioned enough storage can explicitly retain the full source
+    row with ``COUNTY_STORE_RAW_PAYLOADS=true``.
+    """
+    return os.environ.get("COUNTY_STORE_RAW_PAYLOADS", "false").strip().lower() == "true"
+
+
+def _stable_record(record: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return the meaningful portion used to avoid no-op snapshot rewrites."""
+    return {
+        key: value for key, value in record.items()
+        if key not in VOLATILE_RECORD_FIELDS
+    }
+
+
+def _merge_unique(existing: Any, incoming: Any) -> List[str]:
+    def items(value: Any) -> List[Any]:
+        if value in (None, ""):
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return list(value)
+        return [value]
+
+    values: List[str] = []
+    for item in [*items(existing), *items(incoming)]:
+        text = _text(item)
+        if text and text not in values:
+            values.append(text)
+    return values
+
+
 def _owner_signals(owner_name: str, mailing_state: str, situs_address: str, mailing_address: str) -> Dict[str, bool]:
     owner_upper = owner_name.upper()
     trust = any(marker in owner_upper for marker in ("TRUST", "TRUSTEE", "ESTATE", "HEIRS"))
@@ -122,7 +160,9 @@ def _owner_signals(owner_name: str, mailing_state: str, situs_address: str, mail
     }
 
 
-def county_record_from_tad(raw: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+def county_record_from_tad(
+    raw: Mapping[str, Any], *, include_raw: Optional[bool] = None,
+) -> Optional[Dict[str, Any]]:
     street = _text(raw.get("SITUS_ADDR"))
     city = _text(raw.get("CITY")) or "Fort Worth"
     state = _text(raw.get("STATE")) or "TX"
@@ -173,15 +213,20 @@ def county_record_from_tad(raw: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
         "improvement_value": _number(raw.get("IMPR_VALUE")),
         "school_district": _text(raw.get("SCHOOL")),
         "has_tad": True,
+        "source_names": [COUNTY_SOURCE_TAD],
         "tad_updated_at": utc_now(),
-        "tad_raw": dict(raw),
         "updated_at": utc_now(),
     }
+    keep_raw = include_raw if include_raw is not None else _store_raw_payloads()
+    if keep_raw:
+        record["tad_raw"] = dict(raw)
     record.update(_owner_signals(owner_name, mailing_state, address, mailing_address))
     return _without_blanks(record)
 
 
-def county_record_from_tax_roll(record: Mapping[str, Any], source_name: str) -> Optional[Dict[str, Any]]:
+def county_record_from_tax_roll(
+    record: Mapping[str, Any], source_name: str, *, include_raw: Optional[bool] = None,
+) -> Optional[Dict[str, Any]]:
     from importers.tax_roll import build_situs_address
 
     address = build_situs_address(record)
@@ -231,11 +276,18 @@ def county_record_from_tax_roll(record: Mapping[str, Any], source_name: str) -> 
         "owner_exemption_codes": _text(record.get("owner_exemption_codes")),
         "tad_litigation_flag": _text(record.get("tad_litigation_flag")),
         "has_tax_roll": True,
+        "source_names": [source_name],
         "tax_roll_source": source_name,
         "tax_roll_updated_at": utc_now(),
-        "tax_roll_raw": dict(record),
         "updated_at": utc_now(),
     }
+    if current_due > 0 or prior_due > 0:
+        county["opportunity_signal_keys"] = ["tax_lien"]
+        county["opportunity_signals"] = ["Tax lien / delinquency"]
+        county["signal_sources"] = {"tax_lien": [source_name]}
+    keep_raw = include_raw if include_raw is not None else _store_raw_payloads()
+    if keep_raw:
+        county["tax_roll_raw"] = dict(record)
     county.update(_owner_signals(owner_name, owner_state, address, mailing_address))
     return _without_blanks(county)
 
@@ -270,12 +322,31 @@ async def upsert_county_records(db: PostgresDatabase, records: Iterable[Mapping[
     for document in incoming:
         previous = existing_by_id.get(str(document["id"]), {})
         merged = {**previous, **document}
+        merged["source_names"] = _merge_unique(
+            previous.get("source_names"), document.get("source_names")
+        )
+        merged["opportunity_signal_keys"] = _merge_unique(
+            previous.get("opportunity_signal_keys"), document.get("opportunity_signal_keys")
+        )
+        merged["opportunity_signals"] = _merge_unique(
+            previous.get("opportunity_signals"), document.get("opportunity_signals")
+        )
+        signal_sources = dict(previous.get("signal_sources") or {})
+        for signal, sources in dict(document.get("signal_sources") or {}).items():
+            signal_sources[signal] = _merge_unique(signal_sources.get(signal), sources)
+        if signal_sources:
+            merged["signal_sources"] = signal_sources
         # The tax-roll master contains only a street, while TAD supplies the
         # complete city/state address. Never replace the richer display value.
         if len(_text(previous.get("situs_address"))) > len(_text(document.get("situs_address"))):
             merged["situs_address"] = previous["situs_address"]
             merged["address_key"] = previous.get("address_key") or merged.get("address_key")
         merged.update(completeness(merged))
+        # TAD is a snapshot. Re-reading an unchanged row should not create a new
+        # JSONB tuple (and associated index/TOAST churn) just to refresh a
+        # timestamp. Source-level freshness is recorded in county_sync_log.
+        if previous and _stable_record(previous) == _stable_record(merged):
+            continue
         prepared.append(merged)
     if prepared:
         await db.county_records.upsert_many(prepared)

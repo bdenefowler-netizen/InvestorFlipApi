@@ -51,7 +51,9 @@ def test_projection_supports_include_and_exclude_modes():
 
 
 def test_county_collections_are_queryable():
-    from database import COLLECTION_KEYS
+    from database import COLLECTION_KEYS, GIN_INDEX_COLLECTIONS
 
     assert COLLECTION_KEYS["county_records"] == "id"
     assert COLLECTION_KEYS["county_sync_log"] == "id"
+    assert "properties" in GIN_INDEX_COLLECTIONS
+    assert "county_records" not in GIN_INDEX_COLLECTIONS

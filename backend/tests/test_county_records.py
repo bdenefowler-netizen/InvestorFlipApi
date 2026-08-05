@@ -1,3 +1,5 @@
+import asyncio
+
 from importers.county_records import (
     choose_county_candidate,
     completeness,
@@ -6,6 +8,7 @@ from importers.county_records import (
     county_record_from_tax_roll,
     county_record_id,
     normalize_account_id,
+    upsert_county_records,
 )
 from export_safety import spreadsheet_safe
 
@@ -17,7 +20,7 @@ def test_account_ids_merge_even_when_one_source_has_leading_zeroes():
     )
 
 
-def test_tad_record_keeps_raw_fields_and_rejects_blank_addresses():
+def test_tad_record_can_keep_raw_fields_and_rejects_blank_addresses():
     raw = {
         "TAXPIN": "39545-22-14",
         "ACCOUNT": "07209703",
@@ -33,7 +36,7 @@ def test_tad_record_keeps_raw_fields_and_rejects_blank_addresses():
         "APPRAISEDV": 347891,
         "CUSTOM_SOURCE_FIELD": "preserved",
     }
-    record = county_record_from_tad(raw)
+    record = county_record_from_tad(raw, include_raw=True)
     assert record is not None
     assert record["situs_address"].startswith("2401 KELTON ST")
     assert record["year_built"] == 2000
@@ -41,7 +44,7 @@ def test_tad_record_keeps_raw_fields_and_rejects_blank_addresses():
     assert county_record_from_tad({"ACCOUNT": "1", "SITUS_ADDR": ""}) is None
 
 
-def test_tax_roll_record_preserves_debt_and_full_raw_record():
+def test_tax_roll_record_preserves_debt_signals_and_can_keep_raw_record():
     raw = {
         "account_id": "00007209703",
         "street_number": "2401",
@@ -58,12 +61,78 @@ def test_tax_roll_record_preserves_debt_and_full_raw_record():
         "prior_amount_due": 250,
         "legal_description": "LOT 14",
     }
-    record = county_record_from_tax_roll(raw, "Tarrant County Tax Roll (test.zip)")
+    record = county_record_from_tax_roll(
+        raw, "Tarrant County Tax Roll (test.zip)", include_raw=True,
+    )
     assert record is not None
     assert record["tax_delinquent"] is True
     assert record["tax_roll_market_value"] == 347891
     assert record["prior_tax_amount_due"] == 250
     assert record["tax_roll_raw"]["legal_description"] == "LOT 14"
+    assert record["opportunity_signal_keys"] == ["tax_lien"]
+    assert record["signal_sources"]["tax_lien"] == ["Tarrant County Tax Roll (test.zip)"]
+
+
+def test_county_records_do_not_store_raw_payloads_by_default(monkeypatch):
+    monkeypatch.delenv("COUNTY_STORE_RAW_PAYLOADS", raising=False)
+    tad = county_record_from_tad({"ACCOUNT": "1", "SITUS_ADDR": "100 MAIN ST"})
+    tax = county_record_from_tax_roll({
+        "account_id": "1", "street_number": "100", "street_name": "MAIN ST",
+    }, "Tax source")
+    assert "tad_raw" not in tad
+    assert "tax_roll_raw" not in tax
+
+
+def test_tad_and_tax_signals_stack_on_one_canonical_county_record():
+    class Cursor:
+        def __init__(self, values):
+            self.values = values
+
+        async def to_list(self, length=None):
+            return list(self.values)[:length]
+
+    class MemoryCollection:
+        def __init__(self):
+            self.records = {}
+            self.write_calls = 0
+
+        def find(self, query, projection=None):
+            ids = set(query.get("id", {}).get("$in", []))
+            return Cursor([value for key, value in self.records.items() if key in ids])
+
+        async def upsert_many(self, documents):
+            self.write_calls += 1
+            for document in documents:
+                self.records[document["id"]] = dict(document)
+
+    class FakeDatabase:
+        county_records = MemoryCollection()
+
+    database = FakeDatabase()
+    tad = county_record_from_tad({
+        "ACCOUNT": "0001", "SITUS_ADDR": "100 MAIN ST",
+        "CITY": "FORT WORTH", "STATE": "TX",
+    })
+    tax = county_record_from_tax_roll({
+        "account_id": "1", "street_number": "100", "street_name": "MAIN ST",
+        "prior_amount_due": 250,
+    }, "Tarrant County Tax Roll (snapshot.zip)")
+
+    asyncio.run(upsert_county_records(database, [tad]))
+    asyncio.run(upsert_county_records(database, [tax]))
+    merged = next(iter(database.county_records.records.values()))
+
+    assert len(database.county_records.records) == 1
+    assert merged["source_names"] == [
+        "Tarrant Appraisal District (TAD)",
+        "Tarrant County Tax Roll (snapshot.zip)",
+    ]
+    assert merged["opportunity_signal_keys"] == ["tax_lien"]
+
+    # A repeat of the same snapshot changes only timestamps and must not write
+    # another JSONB tuple.
+    asyncio.run(upsert_county_records(database, [tax]))
+    assert database.county_records.write_calls == 2
 
 
 def test_completeness_reports_missing_fields_instead_of_blank_cells():

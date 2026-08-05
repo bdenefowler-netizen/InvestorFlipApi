@@ -179,6 +179,17 @@ async def run(args: argparse.Namespace) -> None:
             print(json.dumps(result, indent=2))
             return result
 
+        cursor = await db.sync_log.find_one({"name": "tax_roll_cursor"}) or {}
+        if args.force or cursor.get("source_url") != source_url:
+            start_record = 0
+        else:
+            start_record = max(0, int(cursor.get("next_record") or 0))
+        record_limit = args.max_records
+        if args.apply and record_limit is None:
+            # A bounded chunk prevents a transient source/database failure from
+            # replaying an entire county snapshot and exhausting PostgreSQL.
+            record_limit = max(1, int(os.environ.get("TAX_ROLL_RECORDS_PER_RUN", "5000")))
+
         with tempfile.TemporaryDirectory(prefix="investorflip-taxroll-") as temp_dir:
             zip_path = Path(temp_dir) / "tarrant-tax-roll.zip"
             download_result = await download_zip(source_url, zip_path)
@@ -188,23 +199,42 @@ async def run(args: argparse.Namespace) -> None:
                 zip_path=zip_path,
                 layout=layout,
                 dry_run=not args.apply,
-                max_records=args.max_records,
+                max_records=record_limit,
+                start_record=start_record,
             )
             if args.apply:
                 sync_id = str(uuid.uuid4())
+                snapshot_complete = bool(match_result["snapshot_complete"])
+                next_record = 0 if snapshot_complete else match_result["next_record"]
+                now = datetime.now(timezone.utc).isoformat()
+                await db.sync_log.update_one(
+                    {"name": "tax_roll_cursor"},
+                    {"$set": {
+                        "name": "tax_roll_cursor",
+                        "source_url": source_url,
+                        "next_record": next_record,
+                        "last_start_record": match_result["start_record"],
+                        "last_scanned": match_result["scanned_master_records"],
+                        "snapshot_complete": snapshot_complete,
+                        "updated_at": now,
+                    }},
+                    upsert=True,
+                )
                 sync_document = {
                     "id": sync_id,
                     "sync_type": "tax_roll",
                     "source": "Tarrant County Tax Roll",
                     "source_url": source_url,
                     "source_file": Path(urlparse(source_url).path).name,
-                    "status": "success",
+                    "status": "success" if snapshot_complete else "partial",
                     "matched_tax_records": match_result["matched_tax_records"],
                     "properties_enriched": match_result["properties_enriched"],
                     "county_records_written": match_result["county_records_written"],
                     "county_records_rejected_blank": match_result["county_records_rejected_blank"],
-                    "county_snapshot_scope": "all_addressable",
-                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "county_snapshot_scope": "all_addressable" if snapshot_complete else "partial",
+                    "start_record": match_result["start_record"],
+                    "next_record": next_record,
+                    "created_at": now,
                 }
                 await db.live_sync_log.insert_one(sync_document)
                 await db.county_sync_log.insert_one({
@@ -218,6 +248,7 @@ async def run(args: argparse.Namespace) -> None:
                 "ok": True,
                 "source_url": source_url,
                 "mode": "apply" if args.apply else "dry-run",
+                "partial": not match_result["snapshot_complete"],
                 "temporary_file_deleted_after_run": True,
                 "download": download_result,
                 "archive": archive_result,

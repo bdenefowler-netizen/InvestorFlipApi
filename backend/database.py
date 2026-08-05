@@ -29,6 +29,12 @@ COLLECTION_KEYS = {
     "county_records": "id",
     "county_sync_log": "id",
 }
+# Full-document GIN indexes are valuable for the flexible property search but
+# are disproportionately expensive for county snapshots.  A county row may
+# contain a large source payload, and indexing every raw key/value can consume
+# more space than the row itself.  County lookups use the targeted expression
+# indexes created in ``_initialize`` instead.
+GIN_INDEX_COLLECTIONS = {"properties"}
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -352,9 +358,10 @@ class PostgresDatabase:
                         updated_at timestamptz NOT NULL DEFAULT now()
                     )
                 """)
-                await connection.execute(
-                    f'CREATE INDEX IF NOT EXISTS "{name}_data_gin" ON {_table(name)} USING gin (data)'
-                )
+                if name in GIN_INDEX_COLLECTIONS:
+                    await connection.execute(
+                        f'CREATE INDEX IF NOT EXISTS "{name}_data_gin" ON {_table(name)} USING gin (data)'
+                    )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS properties_updated_at_idx ON properties ((data ->> 'updated_at') DESC)"
             )

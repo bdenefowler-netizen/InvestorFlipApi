@@ -279,7 +279,8 @@ async def import_matches(
     dry_run: bool = False,
     max_records: Optional[int] = None,
     include_county_records: bool = True,
-) -> Dict[str, int]:
+    start_record: int = 0,
+) -> Dict[str, Any]:
     targets = await load_live_targets(db)
     if not targets and not include_county_records:
         raise RuntimeError("No live Fort Worth listings found in PostgreSQL. Sync live listings first.")
@@ -290,7 +291,9 @@ async def import_matches(
     expected_size = int(master.get("record_size", 741))
     source_name = f"Tarrant County Tax Roll ({zip_path.name})"
 
+    start_record = max(0, int(start_record or 0))
     scanned = malformed = matched_records = matched_properties = 0
+    snapshot_complete = True
     county_records_written = county_records_rejected = 0
     tax_records: List[Dict[str, Any]] = []
     property_updates: List[tuple[str, Dict[str, Any]]] = []
@@ -309,7 +312,12 @@ async def import_matches(
     with zipfile.ZipFile(zip_path, "r") as archive:
         if member not in archive.namelist():
             raise FileNotFoundError(f"{member!r} is not present in {zip_path.name}")
-        for line in iter_member_lines(archive, member):
+        for record_index, line in enumerate(iter_member_lines(archive, member)):
+            if record_index < start_record:
+                continue
+            if max_records is not None and scanned >= max_records:
+                snapshot_complete = False
+                break
             scanned += 1
             if len(line) != expected_size:
                 malformed += 1
@@ -333,8 +341,6 @@ async def import_matches(
                     county_records_rejected += 1
 
             if not matches:
-                if max_records and scanned >= max_records:
-                    break
                 continue
 
             property_ids = [item["id"] for item in matches]
@@ -350,9 +356,6 @@ async def import_matches(
                 for item in matches:
                     enrichment = property_enrichment(document, item.get("property"))
                     property_updates.append((item["id"], enrichment))
-
-            if max_records and scanned >= max_records:
-                break
 
     await flush_county_batch()
 
@@ -377,6 +380,9 @@ async def import_matches(
         "properties_enriched": properties_enriched,
         "county_records_written": county_records_written,
         "county_records_rejected_blank": county_records_rejected,
+        "start_record": start_record,
+        "next_record": start_record + scanned,
+        "snapshot_complete": snapshot_complete,
     }
 
 

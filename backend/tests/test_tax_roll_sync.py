@@ -1,8 +1,11 @@
 """Tests for Fort Worth scoping and official tax-roll link discovery."""
 
+import asyncio
+import zipfile
+
 import pytest
 
-from importers.tax_roll import is_fort_worth_texas_property, property_enrichment
+from importers.tax_roll import import_matches, is_fort_worth_texas_property, property_enrichment
 from importers.tax_roll_sync import select_latest_tax_roll_url, validate_tax_roll_url
 
 
@@ -59,3 +62,50 @@ def test_tax_enrichment_reclassifies_owner_and_recomputes_screening():
     assert result["value_spread"] == 50000
     assert result["equity_estimate"] is None
     assert result["score_confidence"] == "low"
+
+
+def test_tax_roll_import_window_resumes_without_replaying_rows(tmp_path):
+    class EmptyCursor:
+        def __aiter__(self):
+            async def values():
+                if False:
+                    yield None
+            return values()
+
+    class EmptyProperties:
+        def find(self, *_args, **_kwargs):
+            return EmptyCursor()
+
+    class FakeDatabase:
+        properties = EmptyProperties()
+
+    archive_path = tmp_path / "tax.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("Master.dat", "001100MAIN\n002200OAK \n003300ELM \n")
+    layout = {
+        "master": {
+            "member": "Master.dat",
+            "record_size": 10,
+            "fields": {
+                "account_id": {"start": 0, "end": 3},
+                "street_number": {"start": 3, "end": 6},
+                "street_name": {"start": 6, "end": 10},
+            },
+        }
+    }
+
+    first = asyncio.run(import_matches(
+        FakeDatabase(), archive_path, layout, dry_run=True,
+        start_record=0, max_records=1,
+    ))
+    second = asyncio.run(import_matches(
+        FakeDatabase(), archive_path, layout, dry_run=True,
+        start_record=first["next_record"], max_records=1,
+    ))
+
+    assert first["start_record"] == 0
+    assert first["next_record"] == 1
+    assert first["snapshot_complete"] is False
+    assert second["start_record"] == 1
+    assert second["next_record"] == 2
+    assert second["snapshot_complete"] is False
