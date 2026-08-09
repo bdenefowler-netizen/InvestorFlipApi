@@ -19,7 +19,7 @@ import uuid
 import logging
 import asyncio
 from dataclasses import dataclass, asdict, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Iterable
 
@@ -28,6 +28,16 @@ from database import PostgresDatabase
 from investor_logic import compute_scores, derive_owner_signals
 
 logger = logging.getLogger("tarrantrei.feeds")
+ACTIVE_FORECLOSURE_STATUSES = {
+    "active",
+    "auction",
+    "bank owned",
+    "coming soon",
+    "for sale",
+    "posted",
+    "pre-foreclosure",
+    "scheduled",
+}
 
 # ---------- Common record ----------
 @dataclass
@@ -293,6 +303,48 @@ def _money(v: str) -> int:
         return 0
 
 
+def _parse_date(value: Any) -> Optional[date]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d{10,13}", text):
+        timestamp = int(text)
+        if timestamp > 9_999_999_999:
+            timestamp = timestamp // 1000
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).date()
+    text = re.sub(r"\s+", " ", text)
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+def _listing_sale_date(listing: FeedListing) -> Optional[date]:
+    for key in ("sale_date", "auction_date", "tax_sale_date"):
+        parsed = _parse_date(listing.extra.get(key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _is_current_foreclosure_listing(listing: FeedListing, today: Optional[date] = None) -> bool:
+    if listing.listing_type not in {"Foreclosure", "REO"}:
+        return True
+    today = today or datetime.now(timezone.utc).date()
+    sale_date = _listing_sale_date(listing)
+    if sale_date and sale_date < today:
+        return False
+    status = str(listing.extra.get("status") or listing.extra.get("status_label") or "").strip().lower()
+    if status and status not in ACTIVE_FORECLOSURE_STATUSES:
+        return False
+    return True
+
+
 # Registry
 FEEDS: List[FeedSource] = [
     ForeclosureFinderFeed(),
@@ -307,6 +359,19 @@ def _normalize_addr(s: str) -> str:
 
 async def cross_match_tax_roll(db: PostgresDatabase, listing: FeedListing) -> Optional[Dict[str, Any]]:
     """Try to find this listing's parcel in our Master.dat data by address+zip."""
+    if listing.parcel_id:
+        match = await db.properties.find_one({"account_id": listing.parcel_id}, {"_id": 0})
+        if match:
+            return match
+        trimmed = listing.parcel_id.lstrip("0")
+        if trimmed and trimmed != listing.parcel_id:
+            match = await db.properties.find_one({"account_id": trimmed}, {"_id": 0})
+            if match:
+                return match
+
+    if not listing.situs_address:
+        return None
+
     addr_re = re.escape(listing.situs_address.split(",")[0].strip())
     q = {"$and": [
         {"situs_address": {"$regex": f"^{addr_re}", "$options": "i"}},
@@ -328,7 +393,7 @@ async def ingest_listings(
     property_ids: List[str] = []
     new_docs: List[Dict[str, Any]] = []
     for L in listings:
-        if not L.situs_address:
+        if not _is_current_foreclosure_listing(L):
             skipped += 1
             continue
 
@@ -342,6 +407,7 @@ async def ingest_listings(
                 "is_live_listing": True,
                 "listing_last_seen_at": datetime.now(timezone.utc).isoformat(),
                 "missed_syncs": 0,
+                "feed_extra": L.extra,
             }
             if L.beds: updates["beds"] = L.beds
             if L.baths: updates["baths"] = L.baths
@@ -354,6 +420,10 @@ async def ingest_listings(
             await db.properties.update_one({"id": match["id"]}, {"$set": updates})
             property_ids.append(match["id"])
             matched += 1
+            continue
+
+        if not L.situs_address:
+            skipped += 1
             continue
 
         # Net-new property doc
@@ -428,6 +498,32 @@ async def ingest_listings(
     }
 
 
+async def cleanup_expired_feed_records(db: PostgresDatabase, feed_name: str) -> int:
+    today = datetime.now(timezone.utc).date()
+    deleted_ids: List[str] = []
+    cursor = db.properties.find(
+        {
+            "data_source": {"$regex": re.escape(feed_name), "$options": "i"},
+            "ingested_at": {"$exists": True},
+            "feed_extra": {"$exists": True},
+        },
+        {"_id": 0, "id": 1, "feed_extra": 1},
+    )
+    async for doc in cursor:
+        extra = doc.get("feed_extra") or {}
+        sale_date = None
+        for key in ("sale_date", "auction_date", "tax_sale_date"):
+            sale_date = _parse_date(extra.get(key))
+            if sale_date:
+                break
+        if sale_date and sale_date < today:
+            deleted_ids.append(doc["id"])
+    if not deleted_ids:
+        return 0
+    result = await db.properties.delete_many({"id": {"$in": deleted_ids}})
+    return int(result.deleted_count)
+
+
 async def run_feed_sync(
     db: PostgresDatabase,
     classify_owner_fn,
@@ -437,7 +533,7 @@ async def run_feed_sync(
 ) -> Dict[str, Any]:
     results: Dict[str, Any] = {
         "by_feed": {},
-        "totals": {"inserted": 0, "matched": 0, "skipped": 0},
+        "totals": {"inserted": 0, "matched": 0, "skipped": 0, "deleted_expired": 0},
         "property_ids": [],
     }
     for feed in FEEDS:
@@ -449,12 +545,15 @@ async def run_feed_sync(
             logger.exception("Feed %s fetch error", feed.name)
             results["by_feed"][feed.name] = {"error": str(e), "inserted": 0, "matched": 0, "skipped": 0, "fetched": 0}
             continue
+        deleted_expired = await cleanup_expired_feed_records(db, feed.name)
         counts = await ingest_listings(db, listings, classify_owner_fn, compute_scores_fn)
         counts["fetched"] = len(listings)
+        counts["deleted_expired"] = deleted_expired
         results["by_feed"][feed.name] = counts
         results["property_ids"].extend(counts.get("property_ids") or [])
         for k in ("inserted", "matched", "skipped"):
             results["totals"][k] += counts[k]
+        results["totals"]["deleted_expired"] += deleted_expired
     return results
 
 
