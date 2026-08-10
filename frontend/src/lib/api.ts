@@ -6,6 +6,8 @@ const API = `${BASE}/api`;
 
 export type Property = {
   id: string;
+  account_id?: string | null;
+  parcel_id?: string | null;
   situs_address: string;
   city: string;
   state: string;
@@ -89,6 +91,7 @@ export type Property = {
   opportunity_signals?: string[];
   opportunity_evidence?: string[];
   raw_source_excerpt?: unknown;
+  feed_extra?: Record<string, unknown> | null;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {

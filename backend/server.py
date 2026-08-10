@@ -56,7 +56,7 @@ from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import httpx
 from importers import feeds as feeds_mod
 from add_all_routes import router as all_router
@@ -1799,12 +1799,28 @@ async def classify(name: str):
 
 
 # ---------- Existing Feed Sync, Upload, Export ----------
+def _parse_query_date(value: Optional[str], field_name: str) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(400, f"{field_name} must be YYYY-MM-DD") from exc
+
+
 @api_router.post("/feeds/sync")
-async def feeds_sync(only: Optional[str] = None, limit: int = 50):
+async def feeds_sync(
+    only: Optional[str] = None,
+    limit: int = 50,
+    sale_date_from: Optional[str] = None,
+):
+    parsed_sale_date_from = _parse_query_date(sale_date_from, "sale_date_from")
     result = await feeds_mod.run_feed_sync(
         db, classify_owner, compute_scores,
         only_feed=only, limit_per_feed=limit,
+        sale_date_from=parsed_sale_date_from,
     )
+    result["enrichment"] = await _enrich_imported_properties(result.get("property_ids") or [])
     return result
 
 
@@ -1822,16 +1838,20 @@ async def feeds_upload_csv(
     file: UploadFile = File(...),
     feed_source: str = Form("CSV Upload"),
     listing_type: str = Form("Foreclosure"),
+    sale_date_from: Optional[str] = Form(None),
 ):
     raw = await file.read()
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         text = raw.decode("latin1")
+    parsed_sale_date_from = _parse_query_date(sale_date_from, "sale_date_from")
     counts = await feeds_mod.ingest_csv_text(
         db, text, feed_source, listing_type, classify_owner, compute_scores,
+        sale_date_from=parsed_sale_date_from,
     )
-    return {"ok": True, "feed_source": feed_source, "listing_type": listing_type, **counts}
+    enrichment = await _enrich_imported_properties(counts.get("property_ids") or [])
+    return {"ok": True, "feed_source": feed_source, "listing_type": listing_type, **counts, "enrichment": enrichment}
 
 
 async def _enrich_imported_properties(property_ids: List[str]) -> Dict[str, Any]:

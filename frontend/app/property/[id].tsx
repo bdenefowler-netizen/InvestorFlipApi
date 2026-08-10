@@ -48,6 +48,11 @@ function maybeDate(value?: string | null): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
 
+function extraString(extra: Record<string, unknown> | null | undefined, key: string): string {
+  const value = extra?.[key];
+  return typeof value === "string" ? value : "";
+}
+
 function ComparisonRow({
   label,
   tad,
@@ -240,6 +245,20 @@ export default function PropertyDetail() {
   const enrichedAddress = enrich?.found && enrich.rapidapi_address
     ? `${enrich.rapidapi_address}, ${enrich.rapidapi_city}, ${enrich.rapidapi_state} ${enrich.rapidapi_zip}`
     : null;
+  const fclosureUrl = extraString(prop.feed_extra, "source_url").includes("fclosure.com")
+    ? extraString(prop.feed_extra, "source_url")
+    : "";
+  const saleDate = extraString(prop.feed_extra, "sale_date") || extraString(prop.feed_extra, "auction_date");
+  const openRecordsWorkspace = (url?: string) => {
+    router.push({
+      pathname: "/tarrant-search",
+      params: {
+        address: prop.situs_address || "",
+        account: prop.account_id || prop.parcel_id || "",
+        ...(url ? { url } : {}),
+      },
+    });
+  };
 
   return (
     <View style={styles.safe}>
@@ -371,6 +390,37 @@ export default function PropertyDetail() {
                   : "—"
               }
             />
+          </View>
+          <View style={[styles.card, styles.recordsCard]} testID="section-official-records">
+            <View style={styles.recordsHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.recordsTitle}>Official Records</Text>
+                <Text style={styles.recordsMeta} numberOfLines={2}>
+                  {saleDate ? `Auction ${maybeDate(saleDate)} · ` : ""}Use Tarrant Public Search to verify filings.
+                </Text>
+              </View>
+              <Ionicons name="document-text-outline" size={22} color={colors.brandPrimary} />
+            </View>
+            <View style={styles.recordsActions}>
+              <Pressable
+                onPress={() => openRecordsWorkspace()}
+                style={styles.recordsPrimary}
+                testID="property-tarrant-search"
+              >
+                <Ionicons name="search" size={15} color={colors.onBrandPrimary} />
+                <Text style={styles.recordsPrimaryText}>Tarrant Search</Text>
+              </Pressable>
+              {fclosureUrl ? (
+                <Pressable
+                  onPress={() => openRecordsWorkspace(fclosureUrl)}
+                  style={styles.recordsSecondary}
+                  testID="property-fclosure-detail"
+                >
+                  <Ionicons name="home-outline" size={15} color={colors.onSurface} />
+                  <Text style={styles.recordsSecondaryText}>Fclosure Detail</Text>
+                </Pressable>
+              ) : null}
+            </View>
           </View>
           {prop.listing_description ? (
             <View style={[styles.card, styles.descriptionCard]}>
@@ -865,6 +915,38 @@ const styles = StyleSheet.create({
   photoThumbSelected: { borderColor: colors.brandPrimary },
   photoThumb: { width: "100%", height: "100%" },
   descriptionCard: { marginTop: spacing.sm },
+  recordsCard: { marginTop: spacing.sm },
+  recordsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+  recordsTitle: { fontSize: 15, fontWeight: "800", color: colors.onSurface },
+  recordsMeta: { fontSize: 11, color: colors.muted, marginTop: 3, lineHeight: 16 },
+  recordsActions: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
+  recordsPrimary: {
+    flex: 1,
+    height: 40,
+    borderRadius: radius.md,
+    backgroundColor: colors.brandPrimary,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+  recordsPrimaryText: { color: colors.onBrandPrimary, fontSize: 12, fontWeight: "800" },
+  recordsSecondary: {
+    flex: 1,
+    height: 40,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceTertiary,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+  recordsSecondaryText: { color: colors.onSurface, fontSize: 12, fontWeight: "800" },
   descriptionLabel: {
     fontSize: 10,
     color: colors.muted,

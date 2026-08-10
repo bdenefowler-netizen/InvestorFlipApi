@@ -15,6 +15,7 @@ import re
 import csv
 import io
 import json
+import html
 import uuid
 import logging
 import asyncio
@@ -37,6 +38,8 @@ ACTIVE_FORECLOSURE_STATUSES = {
     "posted",
     "pre-foreclosure",
     "scheduled",
+    "scheduled for auction",
+    "scheduled for online auction",
 }
 
 # ---------- Common record ----------
@@ -70,6 +73,10 @@ class FeedSource:
 
 FORECLOSURE_FINDER_HOST = "foreclosure-finder1.p.rapidapi.com"
 FORT_WORTH_CENTER_ZIP = "76102"
+FCLOSURE_BASE_URL = "https://fclosure.com"
+FCLOSURE_FORT_WORTH_URL = f"{FCLOSURE_BASE_URL}/foreclosures/cities/fort-worth"
+TARRANT_PUBLIC_SEARCH_URL = "https://tarrant.tx.publicsearch.us/"
+LGBS_API_BASE = "https://taxsales.lgbs.com/api/property_sales/"
 
 
 def _first_dict_list(payload: Any) -> List[Dict[str, Any]]:
@@ -293,6 +300,229 @@ class TexasForeclosureFeed(FeedSource):
         return out
 
 
+def _lgbs_listing(item: Dict[str, Any]) -> Optional[FeedListing]:
+    street = str(item.get("prop_address_one") or "").strip()
+    if item.get("prop_address_two"):
+        street = f"{street} {str(item.get('prop_address_two')).strip()}".strip()
+    city = str(item.get("prop_city") or "Fort Worth").strip() or "Fort Worth"
+    state = str(item.get("prop_state") or item.get("state") or "TX").strip().upper() or "TX"
+    zip_code = str(item.get("prop_zipcode") or "").strip()[:5]
+    if not street:
+        return None
+
+    full_address = f"{street}, {city}, {state} {zip_code}".strip()
+    sale_date = item.get("sale_date_only") or item.get("sale_date")
+    status = str(item.get("status") or "").strip()
+    return FeedListing(
+        feed_source="LGBS Tax Sales",
+        listing_type="Foreclosure",
+        situs_address=full_address,
+        city=city,
+        state=state,
+        zip=zip_code,
+        price=_money(item.get("minimum_bid") or "0"),
+        market_value=_money(item.get("value") or "0"),
+        owner_name="Tax Sale",
+        parcel_id=str(item.get("account_nbr") or ""),
+        extra={
+            "sale_date": sale_date,
+            "auction_date": sale_date,
+            "status": status,
+            "status_label": status,
+            "cause_number": item.get("cause_nbr"),
+            "sale_number": item.get("sale_nbr"),
+            "sale_type": item.get("sale_type"),
+            "minimum_bid": item.get("minimum_bid"),
+            "appraised_value": item.get("value"),
+            "county_sale_list": item.get("county_sale_list"),
+            "source_url": LGBS_API_BASE,
+            "source_uid": item.get("uid"),
+        },
+    )
+
+
+class LGBSTaxSalesFeed(FeedSource):
+    """Pull Tarrant County tax-sale rows from the public LGBS tax sales API."""
+    name = "LGBS Tax Sales"
+
+    async def fetch(self, limit: int = 200, **params) -> List[FeedListing]:
+        out: List[FeedListing] = []
+        page_size = min(max(limit, 1), 100)
+        offset = 0
+        request_params = {
+            "state": "TX",
+            "county": "TARRANT COUNTY",
+            "sale_type": "SALE",
+            "ordering": "-sale_date,street_name,address_full,uid",
+            "limit": page_size,
+        }
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            while len(out) < limit:
+                response = await client.get(LGBS_API_BASE, params={**request_params, "offset": offset})
+                if response.status_code >= 400:
+                    logger.info("LGBS Tax Sales → %s", response.status_code)
+                    break
+                payload = response.json()
+                rows = payload.get("results") or []
+                if not rows:
+                    break
+                for item in rows:
+                    listing = _lgbs_listing(item)
+                    if listing:
+                        out.append(listing)
+                    if len(out) >= limit:
+                        break
+                if not payload.get("next") or len(rows) < page_size:
+                    break
+                offset += len(rows)
+        return out
+
+
+FCLOSURE_ROW_RE = re.compile(
+    r'"href":"(?P<href>/property/[^"]+)".{0,2000}?'
+    r'"children":"(?P<address>[^"]+)".{0,500}?'
+    r'"children":"(?P<location>Fort Worth,\s*TX,\s*\d{5})".{0,700}?'
+    r'"children":"(?P<sale>[A-Z][a-z]{2}\s+\d{1,2})".{0,500}?'
+    r'"children":"(?P<beds_baths>(?:\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?|—))".{0,500}?'
+    r'"children":"(?P<market>\$?\$?[0-9,]+|—)".{0,500}?'
+    r'"children":"(?P<equity>[+\-]?\$?\$?[0-9,]+|—)"',
+    re.DOTALL,
+)
+
+
+def _fclosure_page_year(text: str) -> int:
+    match = re.search(r'"dateModified":"(\d{4})-\d{2}-\d{2}"', text)
+    if match:
+        return int(match.group(1))
+    match = re.search(r'<time[^>]+dateTime="(\d{4})-\d{2}-\d{2}"', text)
+    if match:
+        return int(match.group(1))
+    return datetime.now(timezone.utc).year
+
+
+def _fclosure_sale_date(label: str, year: int) -> Optional[date]:
+    label = re.sub(r"\s+", " ", str(label or "").strip())
+    if not label:
+        return None
+    try:
+        return datetime.strptime(f"{label} {year}", "%b %d %Y").date()
+    except ValueError:
+        return None
+
+
+def _fclosure_address_parts(address: str, location: str) -> Dict[str, str]:
+    address = re.sub(r"\s+", " ", html.unescape(address or "")).strip(" ,")
+    location = re.sub(r"\s+", " ", html.unescape(location or "")).strip(" ,")
+    zip_match = re.search(r"\b(\d{5})(?:-\d{4})?\b", f"{address} {location}")
+    zip_code = zip_match.group(1) if zip_match else ""
+    street = re.split(r",?\s*Fort Worth\b", address, maxsplit=1, flags=re.I)[0].strip(" ,")
+    full_address = f"{street}, Fort Worth, TX {zip_code}".strip()
+    return {
+        "street": street,
+        "city": "Fort Worth",
+        "state": "TX",
+        "zip": zip_code,
+        "full_address": full_address,
+    }
+
+
+def _fclosure_listing_from_match(match: re.Match[str], year: int) -> Optional[FeedListing]:
+    address = html.unescape(match.group("address")).strip()
+    location = html.unescape(match.group("location")).strip()
+    parts = _fclosure_address_parts(address, location)
+    if not parts["street"] or not parts["zip"]:
+        return None
+
+    sale_date = _fclosure_sale_date(match.group("sale"), year)
+    beds_baths = html.unescape(match.group("beds_baths")).strip()
+    beds = 0
+    baths = 0.0
+    if "/" in beds_baths:
+        bed_text, bath_text = [part.strip() for part in beds_baths.split("/", 1)]
+        beds = _feed_int(bed_text)
+        baths = _feed_float(bath_text)
+
+    href = html.unescape(match.group("href")).strip()
+    market_value = _money(match.group("market").replace("$$", "$"))
+    equity = html.unescape(match.group("equity")).replace("$$", "$").strip()
+    return FeedListing(
+        feed_source="Fclosure",
+        listing_type="Foreclosure",
+        situs_address=parts["full_address"],
+        city=parts["city"],
+        state=parts["state"],
+        zip=parts["zip"],
+        market_value=market_value,
+        beds=beds,
+        baths=baths,
+        owner_name="Notice of Trustee's Sale",
+        parcel_id="",
+        extra={
+            "sale_date": sale_date.isoformat() if sale_date else "",
+            "auction_date": sale_date.isoformat() if sale_date else "",
+            "status": "Scheduled for Auction",
+            "status_label": "Scheduled for Auction",
+            "source_url": f"{FCLOSURE_BASE_URL}{href}",
+            "official_search_url": TARRANT_PUBLIC_SEARCH_URL,
+            "source_page": FCLOSURE_FORT_WORTH_URL,
+            "sale_date_label": match.group("sale"),
+            "market_value": match.group("market").replace("$$", "$"),
+            "equity_estimate": equity,
+            "beds_baths": beds_baths,
+        },
+    )
+
+
+def _fclosure_listings_from_html(
+    text: str,
+    limit: int = 200,
+    sale_date_from: Optional[date] = None,
+) -> List[FeedListing]:
+    normalized = html.unescape(text or "")
+    normalized = normalized.replace(r"\/", "/").replace(r"\"", '"').replace("$$", "$")
+    year = _fclosure_page_year(normalized)
+    listings: List[FeedListing] = []
+    seen = set()
+    for match in FCLOSURE_ROW_RE.finditer(normalized):
+        listing = _fclosure_listing_from_match(match, year)
+        if not listing:
+            continue
+        identity = _normalize_addr(listing.situs_address)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if sale_date_from:
+            sale_date = _listing_sale_date(listing)
+            if not sale_date or sale_date < sale_date_from:
+                continue
+        listings.append(listing)
+        if len(listings) >= limit:
+            break
+    return listings
+
+
+class FclosureFeed(FeedSource):
+    """Pull Fort Worth trustee-sale rows from Fclosure's public city page."""
+    name = "Fclosure"
+
+    async def fetch(self, limit: int = 200, **params) -> List[FeedListing]:
+        sale_date_from = params.get("sale_date_from")
+        headers = {
+            "User-Agent": "InvestorFlip/1.0 (+https://fclosure.com/foreclosures/cities/fort-worth)",
+            "Accept": "text/html,application/xhtml+xml",
+        }
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers) as client:
+            response = await client.get(FCLOSURE_FORT_WORTH_URL)
+        if response.status_code >= 400:
+            logger.info("Fclosure Fort Worth → %s", response.status_code)
+            return []
+        return _fclosure_listings_from_html(
+            response.text,
+            limit=limit,
+            sale_date_from=sale_date_from if isinstance(sale_date_from, date) else None,
+        )
+
+
 def _money(v: str) -> int:
     v = re.sub(r"[^0-9.]", "", str(v) or "")
     if not v:
@@ -332,12 +562,18 @@ def _listing_sale_date(listing: FeedListing) -> Optional[date]:
     return None
 
 
-def _is_current_foreclosure_listing(listing: FeedListing, today: Optional[date] = None) -> bool:
+def _is_current_foreclosure_listing(
+    listing: FeedListing,
+    today: Optional[date] = None,
+    sale_date_from: Optional[date] = None,
+) -> bool:
     if listing.listing_type not in {"Foreclosure", "REO"}:
         return True
     today = today or datetime.now(timezone.utc).date()
     sale_date = _listing_sale_date(listing)
     if sale_date and sale_date < today:
+        return False
+    if sale_date_from and (not sale_date or sale_date < sale_date_from):
         return False
     status = str(listing.extra.get("status") or listing.extra.get("status_label") or "").strip().lower()
     if status and status not in ACTIVE_FORECLOSURE_STATUSES:
@@ -348,6 +584,8 @@ def _is_current_foreclosure_listing(listing: FeedListing, today: Optional[date] 
 # Registry
 FEEDS: List[FeedSource] = [
     ForeclosureFinderFeed(),
+    FclosureFeed(),
+    LGBSTaxSalesFeed(),
     TexasForeclosureFeed(),
 ]
 
@@ -386,6 +624,7 @@ async def ingest_listings(
     listings: Iterable[FeedListing],
     classify_owner_fn,
     compute_scores_fn,
+    sale_date_from: Optional[date] = None,
 ) -> Dict[str, Any]:
     inserted = 0
     matched = 0
@@ -393,7 +632,7 @@ async def ingest_listings(
     property_ids: List[str] = []
     new_docs: List[Dict[str, Any]] = []
     for L in listings:
-        if not _is_current_foreclosure_listing(L):
+        if not _is_current_foreclosure_listing(L, sale_date_from=sale_date_from):
             skipped += 1
             continue
 
@@ -530,6 +769,7 @@ async def run_feed_sync(
     compute_scores_fn,
     only_feed: Optional[str] = None,
     limit_per_feed: int = 50,
+    sale_date_from: Optional[date] = None,
 ) -> Dict[str, Any]:
     results: Dict[str, Any] = {
         "by_feed": {},
@@ -540,13 +780,19 @@ async def run_feed_sync(
         if only_feed and feed.name.lower() != only_feed.lower():
             continue
         try:
-            listings = await feed.fetch(limit=limit_per_feed)
+            listings = await feed.fetch(limit=limit_per_feed, sale_date_from=sale_date_from)
         except Exception as e:
             logger.exception("Feed %s fetch error", feed.name)
             results["by_feed"][feed.name] = {"error": str(e), "inserted": 0, "matched": 0, "skipped": 0, "fetched": 0}
             continue
         deleted_expired = await cleanup_expired_feed_records(db, feed.name)
-        counts = await ingest_listings(db, listings, classify_owner_fn, compute_scores_fn)
+        counts = await ingest_listings(
+            db,
+            listings,
+            classify_owner_fn,
+            compute_scores_fn,
+            sale_date_from=sale_date_from,
+        )
         counts["fetched"] = len(listings)
         counts["deleted_expired"] = deleted_expired
         results["by_feed"][feed.name] = counts
@@ -565,6 +811,7 @@ async def ingest_csv_text(
     listing_type: str,
     classify_owner_fn,
     compute_scores_fn,
+    sale_date_from: Optional[date] = None,
 ) -> Dict[str, Any]:
     reader = csv.DictReader(io.StringIO(csv_text))
     listings: List[FeedListing] = []
@@ -589,7 +836,13 @@ async def ingest_csv_text(
             parcel_id=row.get("parcel_id") or row.get("account_id", ""),
             extra={k: v for k, v in row.items() if k not in {"address", "city", "state", "zip"}},
         ))
-    return await ingest_listings(db, listings, classify_owner_fn, compute_scores_fn)
+    return await ingest_listings(
+        db,
+        listings,
+        classify_owner_fn,
+        compute_scores_fn,
+        sale_date_from=sale_date_from,
+    )
 
 
 # ---------- Export ----------

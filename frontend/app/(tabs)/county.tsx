@@ -164,10 +164,22 @@ export default function CountyRecordsScreen() {
             <Text style={styles.eyebrow}>TARRANT COUNTY PUBLIC RECORDS</Text>
             <Text style={styles.title}>County Records</Text>
           </View>
-          <Pressable style={styles.exportButton} onPress={() => Linking.openURL(countyRecordsCsvUrl(source))}>
-            <Ionicons name="download-outline" size={17} color={colors.onBrandPrimary} />
-            <Text style={styles.exportText}>CSV</Text>
-          </Pressable>
+          <View style={styles.titleActions}>
+            <Pressable
+              style={styles.officialButton}
+              onPress={() => router.push({
+                pathname: "/tarrant-search",
+                params: search ? { address: search } : {},
+              })}
+              testID="county-official-search"
+            >
+              <Ionicons name="search" size={16} color={colors.onSurface} />
+            </Pressable>
+            <Pressable style={styles.exportButton} onPress={() => Linking.openURL(countyRecordsCsvUrl(source))}>
+              <Ionicons name="download-outline" size={17} color={colors.onBrandPrimary} />
+              <Text style={styles.exportText}>CSV</Text>
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.statsRow}>
@@ -253,6 +265,8 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   eyebrow: { fontSize: 9, fontWeight: "800", letterSpacing: 1.1, color: colors.muted },
   title: { fontSize: 24, fontWeight: "800", color: colors.onSurface, marginTop: 2 },
+  titleActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  officialButton: { width: 38, height: 38, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
   exportButton: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.brandPrimary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md },
   exportText: { color: colors.onBrandPrimary, fontWeight: "800", fontSize: 12 },
   statsRow: { flexDirection: "row", gap: 7, marginTop: spacing.md },

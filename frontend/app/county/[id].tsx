@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 
 import { getCountyRecord, type CountyRecord } from "@/src/lib/api";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
@@ -40,6 +41,7 @@ function RawSection({ title, data }: { title: string; data?: Record<string, unkn
 
 export default function CountyRecordDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
   const [record, setRecord] = useState<CountyRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,6 +69,20 @@ export default function CountyRecordDetail() {
               <Text style={styles.quality}>{record.completeness_score ?? 0}% complete</Text>
               {record.tax_delinquent ? <Text style={styles.delinquent}>TAX DUE</Text> : null}
             </View>
+            <Pressable
+              style={styles.officialButton}
+              onPress={() => router.push({
+                pathname: "/tarrant-search",
+                params: {
+                  address: record.situs_address || "",
+                  account: record.account_id || record.parcel_id || "",
+                },
+              })}
+              testID="county-detail-official-search"
+            >
+              <Ionicons name="search" size={15} color={colors.onBrandPrimary} />
+              <Text style={styles.officialButtonText}>Search official records</Text>
+            </Pressable>
           </View>
 
           <View style={styles.section}>
@@ -128,6 +144,8 @@ const styles = StyleSheet.create({
   qualityRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: spacing.md },
   quality: { color: colors.onBrandPrimary, backgroundColor: "rgba(255,255,255,0.14)", paddingHorizontal: 9, paddingVertical: 5, borderRadius: radius.pill, fontSize: 10, fontWeight: "800" },
   delinquent: { color: "#FFFFFF", backgroundColor: colors.error, paddingHorizontal: 9, paddingVertical: 5, borderRadius: radius.pill, fontSize: 10, fontWeight: "900" },
+  officialButton: { height: 42, borderRadius: radius.md, backgroundColor: "rgba(255,255,255,0.16)", borderWidth: 1, borderColor: "rgba(255,255,255,0.24)", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, marginTop: spacing.md },
+  officialButtonText: { color: colors.onBrandPrimary, fontSize: 12, fontWeight: "800" },
   section: { backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, borderRadius: radius.lg, overflow: "hidden" },
   sectionTitle: { fontSize: 11, color: colors.muted, fontWeight: "900", letterSpacing: 0.8, textTransform: "uppercase", paddingHorizontal: spacing.lg, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   field: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.md, paddingHorizontal: spacing.lg, paddingVertical: 11, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
