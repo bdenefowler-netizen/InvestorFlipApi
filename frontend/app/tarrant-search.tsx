@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { WebView } from "react-native-webview";
+import * as WebBrowser from "expo-web-browser";
 
 import { colors, radius, spacing } from "@/src/theme/tokens";
 
@@ -25,15 +25,21 @@ export default function TarrantSearchScreen() {
   const initialUrl = safeUrl(asText(params.url) || TARRANT_PUBLIC_SEARCH_URL);
   const [address, setAddress] = useState(initialAddress);
   const [currentUrl, setCurrentUrl] = useState(initialUrl);
-  const [loading, setLoading] = useState(true);
 
   const title = useMemo(() => (
     currentUrl.includes("fclosure.com") ? "Fclosure detail" : "Tarrant public search"
   ), [currentUrl]);
 
-  const openOfficialSearch = () => {
-    setLoading(true);
-    setCurrentUrl(TARRANT_PUBLIC_SEARCH_URL);
+  const openInApp = async (url: string) => {
+    setCurrentUrl(url);
+    try {
+      await WebBrowser.openBrowserAsync(url, {
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
+        controlsColor: colors.brandPrimary,
+      });
+    } catch {
+      await Linking.openURL(url);
+    }
   };
 
   return (
@@ -68,34 +74,30 @@ export default function TarrantSearchScreen() {
         {account ? <Text selectable style={styles.metaText}>Account / parcel: {account}</Text> : null}
 
         <View style={styles.actions}>
-          <Pressable onPress={openOfficialSearch} style={styles.primaryAction} testID="records-tarrant-search">
+          <Pressable onPress={() => openInApp(TARRANT_PUBLIC_SEARCH_URL)} style={styles.primaryAction} testID="records-tarrant-search">
             <Ionicons name="search" size={15} color={colors.onBrandPrimary} />
             <Text style={styles.primaryActionText}>Tarrant Search</Text>
           </Pressable>
-          <Pressable onPress={() => Linking.openURL(TARRANT_PUBLIC_SEARCH_URL)} style={styles.secondaryAction}>
+          <Pressable onPress={() => openInApp(currentUrl)} style={styles.secondaryAction}>
             <Ionicons name="open-outline" size={15} color={colors.onSurface} />
-            <Text style={styles.secondaryActionText}>Open Portal</Text>
+            <Text style={styles.secondaryActionText}>{currentUrl.includes("fclosure.com") ? "Fclosure" : "Open Again"}</Text>
           </Pressable>
         </View>
       </View>
 
-      <View style={styles.webWrap}>
-        {loading ? (
-          <View style={styles.loading} pointerEvents="none">
-            <ActivityIndicator color={colors.brandPrimary} />
-          </View>
-        ) : null}
-        <WebView
-          source={{ uri: currentUrl }}
-          onLoadStart={() => setLoading(true)}
-          onLoadEnd={() => setLoading(false)}
-          startInLoadingState
-          javaScriptEnabled
-          domStorageEnabled
-          sharedCookiesEnabled
-          style={styles.web}
-          testID="records-webview"
-        />
+      <View style={styles.content}>
+        <View style={styles.card}>
+          <Ionicons name="copy-outline" size={24} color={colors.brandPrimary} />
+          <Text selectable style={styles.cardTitle}>{address || "Enter an address above"}</Text>
+          {account ? <Text selectable style={styles.cardMeta}>{account}</Text> : null}
+          <Text style={styles.cardText}>
+            Open the official portal in the in-app browser, then paste or type this address into Real Property search.
+          </Text>
+          <Pressable onPress={() => openInApp(TARRANT_PUBLIC_SEARCH_URL)} style={styles.largeAction} testID="records-open-in-app">
+            <Ionicons name="search" size={16} color={colors.onBrandPrimary} />
+            <Text style={styles.largeActionText}>Open Tarrant Public Search</Text>
+          </Pressable>
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -163,13 +165,27 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   secondaryActionText: { color: colors.onSurface, fontSize: 12, fontWeight: "800" },
-  webWrap: { flex: 1, backgroundColor: colors.surfaceSecondary },
-  web: { flex: 1, backgroundColor: colors.surfaceSecondary },
-  loading: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 2,
+  content: { flex: 1, padding: spacing.lg, backgroundColor: colors.surfaceSecondary },
+  card: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  cardTitle: { color: colors.onSurface, fontSize: 17, fontWeight: "800", lineHeight: 23 },
+  cardMeta: { color: colors.muted, fontSize: 12, fontWeight: "800" },
+  cardText: { color: colors.onSurfaceTertiary, fontSize: 13, lineHeight: 19 },
+  largeAction: {
+    height: 44,
+    borderRadius: radius.md,
+    backgroundColor: colors.brandPrimary,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(247,247,246,0.7)",
+    gap: 8,
+    marginTop: spacing.sm,
   },
+  largeActionText: { color: colors.onBrandPrimary, fontSize: 13, fontWeight: "800" },
 });
