@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import { Stack, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { getCountyRecord, type CountyRecord } from "@/src/lib/api";
@@ -41,7 +41,6 @@ function RawSection({ title, data }: { title: string; data?: Record<string, unkn
 
 export default function CountyRecordDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const router = useRouter();
   const [record, setRecord] = useState<CountyRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -71,13 +70,7 @@ export default function CountyRecordDetail() {
             </View>
             <Pressable
               style={styles.officialButton}
-              onPress={() => router.push({
-                pathname: "/tarrant-search",
-                params: {
-                  address: record.situs_address || "",
-                  account: record.account_id || record.parcel_id || "",
-                },
-              })}
+              onPress={() => Linking.openURL("https://tarrant.tx.publicsearch.us/")}
               testID="county-detail-official-search"
             >
               <Ionicons name="search" size={15} color={colors.onBrandPrimary} />

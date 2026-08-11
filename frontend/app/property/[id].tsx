@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Dimensions } from "react-native";
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Linking, Pressable, Dimensions } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -249,16 +249,7 @@ export default function PropertyDetail() {
     ? extraString(prop.feed_extra, "source_url")
     : "";
   const saleDate = extraString(prop.feed_extra, "sale_date") || extraString(prop.feed_extra, "auction_date");
-  const openRecordsWorkspace = (url?: string) => {
-    router.push({
-      pathname: "/tarrant-search",
-      params: {
-        address: prop.situs_address || "",
-        account: prop.account_id || prop.parcel_id || "",
-        ...(url ? { url } : {}),
-      },
-    });
-  };
+  const openRecordsUrl = (url: string) => Linking.openURL(url).catch(() => {});
 
   return (
     <View style={styles.safe}>
@@ -403,7 +394,7 @@ export default function PropertyDetail() {
             </View>
             <View style={styles.recordsActions}>
               <Pressable
-                onPress={() => openRecordsWorkspace()}
+                onPress={() => openRecordsUrl("https://tarrant.tx.publicsearch.us/")}
                 style={styles.recordsPrimary}
                 testID="property-tarrant-search"
               >
@@ -412,7 +403,7 @@ export default function PropertyDetail() {
               </Pressable>
               {fclosureUrl ? (
                 <Pressable
-                  onPress={() => openRecordsWorkspace(fclosureUrl)}
+                  onPress={() => openRecordsUrl(fclosureUrl)}
                   style={styles.recordsSecondary}
                   testID="property-fclosure-detail"
                 >

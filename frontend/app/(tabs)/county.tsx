@@ -167,10 +167,7 @@ export default function CountyRecordsScreen() {
           <View style={styles.titleActions}>
             <Pressable
               style={styles.officialButton}
-              onPress={() => router.push({
-                pathname: "/tarrant-search",
-                params: search ? { address: search } : {},
-              })}
+              onPress={() => Linking.openURL("https://tarrant.tx.publicsearch.us/")}
               testID="county-official-search"
             >
               <Ionicons name="search" size={16} color={colors.onSurface} />
