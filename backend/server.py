@@ -1682,72 +1682,27 @@ async def ai_analysis(property_id: str):
     if cached and cached.get("narrative"):
         return AIAnalysisResponse(property_id=property_id, narrative=cached["narrative"])
 
-    try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY")
-        if not key:
-            raise RuntimeError("EMERGENT_LLM_KEY missing")
-
-        system = (
-            "You are Quill, a senior real estate investor analyst. InvestorFlip V1 only analyzes "
-            "single-family houses and residential multi-family houses for house flipping. "
-            "Given a valid property record, produce a concise investment analysis in 4 short bullet points. "
-            "Be specific, reference numbers (equity, taxes, ROI). End with a one-line verdict: "
-            "'STRONG BUY', 'BUY', 'WATCH', or 'PASS'. Plain text only, no markdown."
+    investment_score = doc.get("investment_score") or 0
+    verdict = "STRONG BUY" if investment_score >= 75 else (
+        "BUY" if investment_score >= 60 else (
+            "WATCH" if investment_score >= 45 else "NEEDS DATA"
         )
-        chat = LlmChat(
-            api_key=key,
-            session_id=f"prop-{property_id}",
-            system_message=system,
-        ).with_model("anthropic", "claude-sonnet-4-6")
-
-        payload = (
-            f"Address: {doc.get('situs_address')}\n"
-            f"Property Type: {get_property_type(doc)}\n"
-            f"Data Source: {doc.get('data_source')}\n"
-            f"Listing Type: {doc.get('listing_type')}\n"
-            f"Owner: {doc.get('owner_name')} ({doc.get('owner_type')})\n"
-            f"Asking Price: ${int(doc.get('price') or 0):,}\n"
-            f"Market Value: ${int(doc.get('market_value') or 0):,}\n"
-            f"Assessed Value: ${int(doc.get('assessed_value') or 0):,}\n"
-            f"Annual Taxes: ${int(doc.get('annual_taxes') or 0):,}\n"
-            f"Equity Estimate: ${int(doc.get('equity_estimate') or 0):,}\n"
-            f"Est ROI: {doc.get('est_roi_pct')}%\n"
-            f"Beds/Baths/SqFt: {doc.get('beds')}/{doc.get('baths')}/{doc.get('sqft')}\n"
-            f"Year Built: {doc.get('year_built')}\n"
-            f"Scores → Investment {doc.get('investment_score')}, Flip {doc.get('flip_score')}, "
-            f"Rental {doc.get('rental_score')}, Wholesale {doc.get('wholesale_score')}, Risk {doc.get('risk_score')}"
-        )
-        msg = UserMessage(text=payload)
-        narrative = await chat.send_message(msg)
-        narrative = (narrative or "").strip()
-        if not narrative:
-            raise RuntimeError("Empty LLM response")
-
-        await db.ai_analysis.update_one(
-            {"property_id": property_id},
-            {"$set": {"property_id": property_id, "narrative": narrative,
-                      "created_at": datetime.now(timezone.utc).isoformat()}},
-            upsert=True,
-        )
-        return AIAnalysisResponse(property_id=property_id, narrative=narrative)
-    except Exception as e:
-        logger.exception("AI analysis failed: %s", e)
-        investment_score = doc.get("investment_score") or 0
-        verdict = "STRONG BUY" if investment_score >= 75 else (
-            "BUY" if investment_score >= 60 else (
-                "WATCH" if investment_score >= 45 else "NEEDS DATA"
-            )
-        )
-        narrative = (
-            f"• {doc.get('listing_type', 'For Sale')} {doc.get('property_type', 'house')} in {doc.get('city')} with "
-            f"${int(doc.get('equity_estimate') or 0):,} of estimated equity ({doc.get('est_roi_pct')}% ROI).\n"
-            f"• Data source: {doc.get('data_source')}.\n"
-            f"• Asking price ${int(doc.get('price') or 0):,}; estimated market value ${int(doc.get('market_value') or 0):,}.\n"
-            f"• Risk score {doc.get('risk_score')}/99 — verify comps, repairs, title, and taxes before offer.\n"
-            f"Verdict: {verdict}"
-        )
-        return AIAnalysisResponse(property_id=property_id, narrative=narrative)
+    )
+    narrative = (
+        f"• {doc.get('listing_type', 'For Sale')} {doc.get('property_type', 'house')} in {doc.get('city')} with "
+        f"${int(doc.get('equity_estimate') or 0):,} of estimated equity ({doc.get('est_roi_pct')}% ROI).\n"
+        f"• Data source: {doc.get('data_source')}.\n"
+        f"• Asking price ${int(doc.get('price') or 0):,}; estimated market value ${int(doc.get('market_value') or 0):,}.\n"
+        f"• Risk score {doc.get('risk_score')}/99 - verify comps, repairs, title, and taxes before offer.\n"
+        f"Verdict: {verdict}"
+    )
+    await db.ai_analysis.update_one(
+        {"property_id": property_id},
+        {"$set": {"property_id": property_id, "narrative": narrative,
+                  "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return AIAnalysisResponse(property_id=property_id, narrative=narrative)
 
 
 @api_router.get("/saved")
