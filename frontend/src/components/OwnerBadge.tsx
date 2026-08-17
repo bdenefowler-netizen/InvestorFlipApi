@@ -13,8 +13,9 @@ const TYPE_COLORS: Record<string, { bg: string; fg: string }> = {
   Individual: { bg: colors.brandTertiary, fg: colors.onBrandTertiary },
 };
 
-export function OwnerBadge({ type, compact = false, testID }: { type: string; compact?: boolean; testID?: string }) {
-  const c = TYPE_COLORS[type] || TYPE_COLORS.Individual;
+export function OwnerBadge({ type, compact = false, testID }: { type?: string | null; compact?: boolean; testID?: string }) {
+  const label = typeof type === "string" && type.trim() ? type.trim() : "Unknown";
+  const c = TYPE_COLORS[label] || TYPE_COLORS.Individual;
   return (
     <View
       testID={testID}
@@ -23,7 +24,7 @@ export function OwnerBadge({ type, compact = false, testID }: { type: string; co
         { backgroundColor: c.bg, paddingVertical: compact ? 2 : 4, paddingHorizontal: compact ? 6 : 8 },
       ]}
     >
-      <Text style={[styles.badgeText, { color: c.fg, fontSize: compact ? 10 : 11 }]}>{type.toUpperCase()}</Text>
+      <Text style={[styles.badgeText, { color: c.fg, fontSize: compact ? 10 : 11 }]}>{label.toUpperCase()}</Text>
     </View>
   );
 }

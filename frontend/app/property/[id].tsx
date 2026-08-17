@@ -53,6 +53,10 @@ function extraString(extra: Record<string, unknown> | null | undefined, key: str
   return typeof value === "string" ? value : "";
 }
 
+function labelText(value: unknown, fallback = "Property"): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
 function ComparisonRow({
   label,
   tad,
@@ -270,7 +274,7 @@ export default function PropertyDetail() {
           <View style={styles.heroMeta}>
             <View style={styles.listingChip}>
               <Text style={styles.listingChipText}>
-                {(prop.opportunity_signals?.[0] || prop.listing_type).toUpperCase()}
+                {labelText(prop.opportunity_signals?.[0] || prop.listing_type).toUpperCase()}
               </Text>
             </View>
             <Text style={styles.heroPrice}>{fmtMoney(prop.price)}</Text>

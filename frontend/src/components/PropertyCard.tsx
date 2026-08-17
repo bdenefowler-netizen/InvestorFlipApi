@@ -13,6 +13,10 @@ export function fmtMoney(n: number | null | undefined): string {
   return `$${n}`;
 }
 
+function labelText(value: unknown, fallback = "Opportunity"): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
 const LISTING_TYPE_COLORS: Record<string, string> = {
   REO: "#A3413B",
   "REO / Bank-Owned": "#A3413B",
@@ -44,7 +48,7 @@ export function PropertyCard({
   const photo = propertyImageUrl(p);
   const spread = p.value_spread;
   const signals = p.opportunity_signals || [];
-  const primarySignal = signals[0] || p.listing_type;
+  const primarySignal = labelText(signals[0] || p.listing_type);
   const typeColor = LISTING_TYPE_COLORS[primarySignal] || colors.brandPrimary;
   return (
     <Pressable testID={testID} onPress={onPress} style={styles.card}>
@@ -85,9 +89,9 @@ export function PropertyCard({
           </Text>
         </View>
         <View style={styles.badgeRow}>
-          {signals.slice(0, 3).map((signal) => (
-            <View key={signal} style={[styles.miniBadge, styles.opportunityBadge]}>
-              <Text style={[styles.miniBadgeText, styles.opportunityBadgeText]}>{signal.toUpperCase()}</Text>
+          {signals.slice(0, 3).map((signal, index) => (
+            <View key={`${signal || "signal"}-${index}`} style={[styles.miniBadge, styles.opportunityBadge]}>
+              <Text style={[styles.miniBadgeText, styles.opportunityBadgeText]}>{labelText(signal).toUpperCase()}</Text>
             </View>
           ))}
           <OwnerBadge type={p.owner_type} compact />

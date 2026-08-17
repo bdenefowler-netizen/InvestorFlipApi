@@ -14,6 +14,10 @@ export function fmtMoney(n: number | null | undefined): string {
   return `$${n}`;
 }
 
+function labelText(value: unknown, fallback = "Opportunity"): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
 const LISTING_TYPE_COLORS: Record<string, string> = {
   REO: "#A3413B",
   Foreclosure: "#7A2A24",
@@ -44,12 +48,13 @@ export function PropertyCardWithDistress({
   const p = property;
   const photo = propertyImageUrl(p);
   const spread = p.value_spread;
-  const typeColor = LISTING_TYPE_COLORS[p.listing_type] || colors.brandPrimary;
+  const listingType = labelText(p.listing_type);
+  const typeColor = LISTING_TYPE_COLORS[listingType] || colors.brandPrimary;
   
   // Check for distress indicators
   const hasViolation = (p as any).violation_count > 0;
   const isVacant = p.vacant;
-  const hasDistress = hasViolation || isVacant || p.listing_type === "Distressed";
+  const hasDistress = hasViolation || isVacant || listingType === "Distressed";
   const distressScore = (p as any).distress_score || 0;
   
   return (
@@ -64,7 +69,7 @@ export function PropertyCardWithDistress({
         
         {/* Listing type pill */}
         <View style={[styles.listingPill, { backgroundColor: typeColor }]}>
-          <Text style={styles.listingPillText}>{p.listing_type.toUpperCase()}</Text>
+          <Text style={styles.listingPillText}>{listingType.toUpperCase()}</Text>
         </View>
         
         {/* Distress score pill (if distressed) */}
