@@ -2,18 +2,18 @@
   "expo": {
     "name": "InvestorFlip",
     "slug": "investorflip",
-    "version": "1.0.12",
+    "version": "1.0.13",
     "orientation": "portrait",
     "icon": "./assets/images/investorflip-icon.png",
     "scheme": "investorflip",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "package": "com.bdenefowler.investorflip",
-      "versionCode": 13,
+      "versionCode": 14,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/investorflip-icon.png",
         "backgroundColor": "#031225"
