@@ -55,6 +55,7 @@ def extract_address(item: Dict[str, Any]) -> Dict[str, str]:
         or item.get("propertyAddress") or item.get("PropertyAddress")
         or item.get("situsAddress") or item.get("situs_address")
         or item.get("siteAddress") or item.get("site_address")
+        or item.get("public_address")
         or address_obj.get("streetAddress") or address_obj.get("street_address")
         or address_obj.get("street") or address_obj.get("line") or address_obj.get("address1")
         or location_obj.get("streetAddress") or location_obj.get("street")
@@ -89,6 +90,7 @@ def extract_address(item: Dict[str, Any]) -> Dict[str, str]:
     full = (
         (raw_address if isinstance(raw_address, str) else "")
         or item.get("full_address") or item.get("fullAddress")
+        or item.get("public_address")
         or item.get("formattedAddress") or item.get("formatted_address")
         or item.get("address_line") or item.get("addressLine")
         or item.get("propertyFullAddress") or item.get("situsFullAddress")
@@ -168,6 +170,7 @@ def extract_listing_fields(item: Dict[str, Any]) -> Dict[str, Any]:
             item.get("livingArea") or item.get("living_area") or item.get("square_feet")
             or item.get("LivingArea")
             or item.get("building_size") or item.get("area") or item.get("area_sqft")
+            or item.get("sq_footage")
             or description.get("sqft")
         ),
         "year_built": safe_int(
@@ -176,7 +179,8 @@ def extract_listing_fields(item: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "lot_size_sqft": safe_int(
             item.get("lotSize") or item.get("lot_size") or item.get("lotAreaValue")
-            or item.get("LotSizeSquareFeet") or description.get("lot_sqft")
+            or item.get("LotSizeSquareFeet") or item.get("lot_size_sqft")
+            or description.get("lot_sqft")
         ),
         "photos": list(dict.fromkeys(photos)),
         "latitude": item.get("latitude") or item.get("lat") or coordinate.get("lat"),

@@ -182,6 +182,7 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         or record.get("address")
         or record.get("streetAddress")
         or record.get("street")
+        or record.get("public_address")
         or nested_address.get("line")
         or ""
     )
@@ -289,8 +290,15 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "listing_status": record.get("status") or record.get("listingStatus") or "Active",
         "listing_type": record.get("listingType") or record.get("listing_type") or "For Sale",
         "mls_number": record.get("mlsNumber") or record.get("mls") or source.get("listing_id") or "",
-        "listing_url": record.get("listingUrl") or record.get("url") or record.get("href") or "",
-        "image_url": record.get("image_url") or primary_photo.get("href") or photo_url(record.get("image")) or "",
+        "listing_url": record.get("listingUrl") or record.get("url") or record.get("href") or record.get("property_url") or "",
+        "image_url": (
+            record.get("image_url")
+            or record.get("property_image")
+            or primary_photo.get("href")
+            or photo_url(record.get("image"))
+            or photo_url(record.get("images", [None])[0] if isinstance(record.get("images"), list) and record.get("images") else None)
+            or ""
+        ),
         "data_source": "Apify",
     }
 

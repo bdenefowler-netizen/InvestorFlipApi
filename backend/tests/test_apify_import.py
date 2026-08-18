@@ -116,3 +116,27 @@ def test_apify_normalizes_nested_property_wrapper():
     assert item is not None
     assert item["situs_address"] == "700 Nested Ave, Fort Worth, TX 76111"
     assert item["price"] == 125000
+
+
+def test_apify_normalizes_investorlift_public_address_shape():
+    item = normalize_record({
+        "full_address": "",
+        "public_address": "900 Public Deal Rd, Fort Worth, TX 76107",
+        "city": "Fort Worth",
+        "state": "TX",
+        "zip": "76107",
+        "price": "$210,000",
+        "sq_footage": "1,450",
+        "lot_size": "6,000",
+        "property_type": "Single Family",
+        "property_url": "https://investorlift.example/property/123",
+        "property_image": "https://investorlift.example/image.jpg",
+    })
+
+    assert item is not None
+    assert item["situs_address"] == "900 Public Deal Rd, Fort Worth, TX 76107"
+    assert item["price"] == 210000
+    assert item["sqft"] == 1450
+    assert item["lot_size_sqft"] == 6000
+    assert item["listing_url"] == "https://investorlift.example/property/123"
+    assert item["image_url"] == "https://investorlift.example/image.jpg"
