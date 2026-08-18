@@ -128,18 +128,45 @@ async def fetch_dataset(
 
 def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Normalize an Apify record into InvestorFlip property schema."""
-    
+
+    location = record.get("location") if isinstance(record.get("location"), dict) else {}
+    nested_address = location.get("address") if isinstance(location.get("address"), dict) else {}
+    nested_county = location.get("county") if isinstance(location.get("county"), dict) else {}
+    description = record.get("description") if isinstance(record.get("description"), dict) else {}
+    primary_photo = record.get("primary_photo") if isinstance(record.get("primary_photo"), dict) else {}
+    coordinate = nested_address.get("coordinate") if isinstance(nested_address.get("coordinate"), dict) else {}
+    source = record.get("source") if isinstance(record.get("source"), dict) else {}
+
     # Extract address from various formats
-    address = record.get("address") or record.get("streetAddress") or record.get("street") or ""
-    city = record.get("city") or record.get("addressCity") or ""
-    state = record.get("state") or record.get("addressState") or ""
-    zip_code = str(record.get("zip") or record.get("postalCode") or record.get("addressZip") or record.get("zipCode") or "")[:5]
-    
+    address = (
+        record.get("address")
+        or record.get("streetAddress")
+        or record.get("street")
+        or nested_address.get("line")
+        or ""
+    )
+    city = record.get("city") or record.get("addressCity") or nested_address.get("city") or ""
+    state = (
+        record.get("state")
+        or record.get("addressState")
+        or nested_address.get("state_code")
+        or nested_address.get("state")
+        or ""
+    )
+    zip_code = str(
+        record.get("zip")
+        or record.get("postalCode")
+        or record.get("addressZip")
+        or record.get("zipCode")
+        or nested_address.get("postal_code")
+        or ""
+    )[:5]
+
     # If no separate address fields, check for full address
     if not address and record.get("fullAddress"):
         parts = str(record["fullAddress"]).split(",")
         address = parts[0].strip() if parts else ""
-    
+
     full_address = f"{address}, {city}, {state} {zip_code}".strip(", ")
     if not address or not city:
         return None
@@ -151,41 +178,61 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         or f"{record.get('ownerFirstName', '')} {record.get('ownerLastName', '')}".strip()
         or ""
     )
-    
+
     # Map price
-    price = record.get("price") or record.get("listPrice") or record.get("listingPrice") or 0
-    
+    price = record.get("price") or record.get("listPrice") or record.get("listingPrice") or record.get("list_price") or 0
+
     # Map beds/baths/sqft
-    beds = record.get("beds") or record.get("bedrooms") or None
-    baths = record.get("baths") or record.get("bathrooms") or record.get("bathsFull") or None
-    sqft = record.get("sqft") or record.get("squareFootage") or record.get("livingArea") or None
-    
+    beds = record.get("beds") or record.get("bedrooms") or description.get("beds") or None
+    baths = (
+        record.get("baths")
+        or record.get("bathrooms")
+        or record.get("bathsFull")
+        or description.get("baths")
+        or description.get("baths_full")
+        or None
+    )
+    sqft = (
+        record.get("sqft")
+        or record.get("squareFootage")
+        or record.get("livingArea")
+        or description.get("sqft")
+        or None
+    )
+
     # HAR.com specific fields
     if not beds and record.get("bedsFull") is not None:
         beds = record["bedsFull"]
-    
+
     return {
         "situs_address": full_address.strip(),
         "city": city,
         "state": state,
         "zip": zip_code,
-        "county": record.get("county") or record.get("county_name") or "Tarrant",
+        "county": record.get("county") or record.get("county_name") or nested_county.get("name") or "Tarrant",
         "price": price or 0,
         "beds": beds,
         "baths": baths,
         "sqft": sqft,
-        "year_built": record.get("yearBuilt") or record.get("year_built") or None,
-        "lot_size_sqft": record.get("lotSize") or record.get("lotSizeSqFt") or record.get("landSqft") or None,
-        "property_type": record.get("propertyType") or record.get("homeType") or record.get("listingType") or "",
-        "latitude": record.get("latitude") or record.get("lat") or None,
-        "longitude": record.get("longitude") or record.get("lng") or record.get("lon") or None,
+        "year_built": record.get("yearBuilt") or record.get("year_built") or description.get("year_built") or None,
+        "lot_size_sqft": (
+            record.get("lotSize")
+            or record.get("lotSizeSqFt")
+            or record.get("landSqft")
+            or description.get("lot_sqft")
+            or None
+        ),
+        "property_type": record.get("propertyType") or record.get("homeType") or record.get("listingType") or description.get("type") or "",
+        "latitude": record.get("latitude") or record.get("lat") or coordinate.get("lat") or None,
+        "longitude": record.get("longitude") or record.get("lng") or record.get("lon") or coordinate.get("lon") or None,
         "owner_name": owner_name,
         "owner_mailing_address": "",
         "owner_type": "",
         "listing_status": record.get("status") or record.get("listingStatus") or "Active",
         "listing_type": record.get("listingType") or record.get("listing_type") or "For Sale",
-        "mls_number": record.get("mlsNumber") or record.get("mls") or "",
-        "listing_url": record.get("listingUrl") or record.get("url") or "",
+        "mls_number": record.get("mlsNumber") or record.get("mls") or source.get("listing_id") or "",
+        "listing_url": record.get("listingUrl") or record.get("url") or record.get("href") or "",
+        "image_url": record.get("image_url") or primary_photo.get("href") or "",
         "data_source": "Apify",
     }
 
@@ -216,6 +263,7 @@ async def import_apify_runs(
     results = {
         "runs_found": 0, "runs_imported": 0, "records_fetched": 0,
         "records_imported": 0, "records_skipped_non_fortworth": 0,
+        "records_skipped_missing_address": 0,
         "records_failed": 0, "property_ids": [],
     }
     
@@ -237,6 +285,7 @@ async def import_apify_runs(
                     try:
                         prop = normalize_record(record)
                         if not prop:
+                            results["records_skipped_missing_address"] += 1
                             continue
 
                         # FORT WORTH ENFORCEMENT: drop anything outside Tarrant/Fort Worth

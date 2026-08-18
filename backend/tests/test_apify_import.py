@@ -27,3 +27,39 @@ def test_apify_price_per_sqft_is_not_treated_as_square_footage():
     })
     assert item is not None
     assert item["sqft"] is None
+
+
+def test_apify_normalizes_nested_realtor_address_shape():
+    item = normalize_record({
+        "list_price": 299900,
+        "href": "https://www.realtor.com/example",
+        "primary_photo": {"href": "https://example.test/photo.jpg"},
+        "location": {
+            "county": {"name": "Tarrant"},
+            "address": {
+                "line": "1700 Weiler Blvd",
+                "city": "Fort Worth",
+                "state_code": "TX",
+                "postal_code": "76112",
+                "coordinate": {"lat": 32.754317, "lon": -97.233399},
+            },
+        },
+        "description": {
+            "beds": 5,
+            "baths": 2,
+            "sqft": 2628,
+            "lot_sqft": 22041,
+            "type": "single_family",
+            "year_built": 1952,
+        },
+        "source": {"listing_id": "21357998"},
+    })
+
+    assert item is not None
+    assert item["situs_address"] == "1700 Weiler Blvd, Fort Worth, TX 76112"
+    assert item["county"] == "Tarrant"
+    assert item["price"] == 299900
+    assert item["beds"] == 5
+    assert item["sqft"] == 2628
+    assert item["mls_number"] == "21357998"
+    assert item["listing_url"] == "https://www.realtor.com/example"
