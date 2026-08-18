@@ -63,3 +63,25 @@ def test_apify_normalizes_nested_realtor_address_shape():
     assert item["sqft"] == 2628
     assert item["mls_number"] == "21357998"
     assert item["listing_url"] == "https://www.realtor.com/example"
+
+
+def test_apify_normalizes_object_address_shape():
+    item = normalize_record({
+        "address": {
+            "streetAddress": "1941 6th Ave",
+            "city": "Fort Worth",
+            "state": "TX",
+            "postalCode": "76110",
+        },
+        "listPrice": "$250,000",
+        "bedrooms": "3",
+        "bathrooms": "2",
+        "livingArea": "1,710",
+        "homeType": "single_family",
+    })
+
+    assert item is not None
+    assert item["situs_address"] == "1941 6th Ave, Fort Worth, TX 76110"
+    assert item["price"] == 250000
+    assert item["beds"] == 3.0
+    assert item["sqft"] == 1710

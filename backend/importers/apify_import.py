@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
+from listing_normalization import extract_listing_fields, photo_url
 
 logger = logging.getLogger("apify_import")
 
@@ -129,6 +130,8 @@ async def fetch_dataset(
 def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Normalize an Apify record into InvestorFlip property schema."""
 
+    fields = extract_listing_fields(record)
+    extracted_address = fields["address"]
     location = record.get("location") if isinstance(record.get("location"), dict) else {}
     nested_address = location.get("address") if isinstance(location.get("address"), dict) else {}
     nested_county = location.get("county") if isinstance(location.get("county"), dict) else {}
@@ -139,22 +142,38 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     # Extract address from various formats
     address = (
-        record.get("address")
+        extracted_address.get("street")
+        or record.get("address")
         or record.get("streetAddress")
         or record.get("street")
         or nested_address.get("line")
         or ""
     )
-    city = record.get("city") or record.get("addressCity") or nested_address.get("city") or ""
+    full_address = extracted_address.get("full") or ""
+    if isinstance(address, dict):
+        address = (
+            address.get("streetAddress")
+            or address.get("street_address")
+            or address.get("street")
+            or address.get("line")
+            or address.get("address1")
+            or ""
+        )
+    if not address and full_address:
+        address = full_address.split(",", 1)[0].strip()
+
+    city = extracted_address.get("city") or record.get("city") or record.get("addressCity") or nested_address.get("city") or ""
     state = (
-        record.get("state")
+        extracted_address.get("state")
+        or record.get("state")
         or record.get("addressState")
         or nested_address.get("state_code")
         or nested_address.get("state")
         or ""
     )
     zip_code = str(
-        record.get("zip")
+        extracted_address.get("zip")
+        or record.get("zip")
         or record.get("postalCode")
         or record.get("addressZip")
         or record.get("zipCode")
@@ -167,7 +186,7 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         parts = str(record["fullAddress"]).split(",")
         address = parts[0].strip() if parts else ""
 
-    full_address = f"{address}, {city}, {state} {zip_code}".strip(", ")
+    full_address = full_address or f"{address}, {city}, {state} {zip_code}".strip(", ")
     if not address or not city:
         return None
     
@@ -180,12 +199,13 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     )
 
     # Map price
-    price = record.get("price") or record.get("listPrice") or record.get("listingPrice") or record.get("list_price") or 0
+    price = fields["price"] or record.get("price") or record.get("listPrice") or record.get("listingPrice") or record.get("list_price") or 0
 
     # Map beds/baths/sqft
-    beds = record.get("beds") or record.get("bedrooms") or description.get("beds") or None
+    beds = fields["beds"] or record.get("beds") or record.get("bedrooms") or description.get("beds") or None
     baths = (
-        record.get("baths")
+        fields["baths"]
+        or record.get("baths")
         or record.get("bathrooms")
         or record.get("bathsFull")
         or description.get("baths")
@@ -193,7 +213,8 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         or None
     )
     sqft = (
-        record.get("sqft")
+        fields["sqft"]
+        or record.get("sqft")
         or record.get("squareFootage")
         or record.get("livingArea")
         or description.get("sqft")
@@ -214,17 +235,18 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "beds": beds,
         "baths": baths,
         "sqft": sqft,
-        "year_built": record.get("yearBuilt") or record.get("year_built") or description.get("year_built") or None,
+        "year_built": fields["year_built"] or record.get("yearBuilt") or record.get("year_built") or description.get("year_built") or None,
         "lot_size_sqft": (
-            record.get("lotSize")
+            fields["lot_size_sqft"]
+            or record.get("lotSize")
             or record.get("lotSizeSqFt")
             or record.get("landSqft")
             or description.get("lot_sqft")
             or None
         ),
-        "property_type": record.get("propertyType") or record.get("homeType") or record.get("listingType") or description.get("type") or "",
-        "latitude": record.get("latitude") or record.get("lat") or coordinate.get("lat") or None,
-        "longitude": record.get("longitude") or record.get("lng") or record.get("lon") or coordinate.get("lon") or None,
+        "property_type": fields["property_type"] or record.get("propertyType") or record.get("homeType") or record.get("listingType") or description.get("type") or "",
+        "latitude": fields["latitude"] or record.get("latitude") or record.get("lat") or coordinate.get("lat") or None,
+        "longitude": fields["longitude"] or record.get("longitude") or record.get("lng") or record.get("lon") or coordinate.get("lon") or None,
         "owner_name": owner_name,
         "owner_mailing_address": "",
         "owner_type": "",
@@ -232,7 +254,7 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "listing_type": record.get("listingType") or record.get("listing_type") or "For Sale",
         "mls_number": record.get("mlsNumber") or record.get("mls") or source.get("listing_id") or "",
         "listing_url": record.get("listingUrl") or record.get("url") or record.get("href") or "",
-        "image_url": record.get("image_url") or primary_photo.get("href") or "",
+        "image_url": record.get("image_url") or primary_photo.get("href") or photo_url(record.get("image")) or "",
         "data_source": "Apify",
     }
 
