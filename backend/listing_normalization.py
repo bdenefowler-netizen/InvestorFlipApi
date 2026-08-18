@@ -52,6 +52,9 @@ def extract_address(item: Dict[str, Any]) -> Dict[str, str]:
     street = (
         item.get("streetAddress") or item.get("street_address") or item.get("street")
         or item.get("address1") or item.get("addressLine") or item.get("address_line_1")
+        or item.get("propertyAddress") or item.get("PropertyAddress")
+        or item.get("situsAddress") or item.get("situs_address")
+        or item.get("siteAddress") or item.get("site_address")
         or address_obj.get("streetAddress") or address_obj.get("street_address")
         or address_obj.get("street") or address_obj.get("line") or address_obj.get("address1")
         or location_obj.get("streetAddress") or location_obj.get("street")
@@ -60,18 +63,24 @@ def extract_address(item: Dict[str, Any]) -> Dict[str, str]:
     )
     city = (
         item.get("city") or item.get("addressCity") or item.get("locality")
+        or item.get("propertyCity") or item.get("PropertyCity")
+        or item.get("situsCity") or item.get("situs_city")
         or address_obj.get("city") or address_obj.get("locality")
         or location_obj.get("city") or location_obj.get("locality")
         or location_address.get("city") or "Fort Worth"
     )
     state = (
         item.get("state") or item.get("addressState") or item.get("region")
+        or item.get("propertyState") or item.get("PropertyState")
+        or item.get("situsState") or item.get("situs_state")
         or address_obj.get("state") or address_obj.get("region")
         or location_obj.get("state") or location_obj.get("region")
         or location_address.get("state") or "TX"
     )
     zip_code = (
         item.get("zipcode") or item.get("zip") or item.get("postal_code") or item.get("postalCode")
+        or item.get("propertyZip") or item.get("PropertyZip")
+        or item.get("situsZip") or item.get("situs_zip")
         or address_obj.get("zipcode") or address_obj.get("zip")
         or address_obj.get("postal_code") or address_obj.get("postalCode")
         or location_obj.get("postal_code") or location_obj.get("postalCode")
@@ -82,6 +91,7 @@ def extract_address(item: Dict[str, Any]) -> Dict[str, str]:
         or item.get("full_address") or item.get("fullAddress")
         or item.get("formattedAddress") or item.get("formatted_address")
         or item.get("address_line") or item.get("addressLine")
+        or item.get("propertyFullAddress") or item.get("situsFullAddress")
         or address_obj.get("formattedAddress") or address_obj.get("formatted_address")
         or location_obj.get("formattedAddress") or location_obj.get("formatted_address")
         or (f"{street}, {city}, {state} {zip_code}".strip(", ") if street else "")

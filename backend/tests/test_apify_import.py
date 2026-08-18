@@ -85,3 +85,34 @@ def test_apify_normalizes_object_address_shape():
     assert item["price"] == 250000
     assert item["beds"] == 3.0
     assert item["sqft"] == 1710
+
+
+def test_apify_normalizes_lead_style_property_address_fields():
+    item = normalize_record({
+        "propertyAddress": "500 Example St",
+        "propertyCity": "Fort Worth",
+        "propertyState": "TX",
+        "propertyZip": "76104",
+        "estimated_value": 180000,
+    })
+
+    assert item is not None
+    assert item["situs_address"] == "500 Example St, Fort Worth, TX 76104"
+    assert item["price"] == 0
+
+
+def test_apify_normalizes_nested_property_wrapper():
+    item = normalize_record({
+        "mode": "tax_delinquent",
+        "property": {
+            "situsAddress": "700 Nested Ave",
+            "situsCity": "Fort Worth",
+            "situsState": "TX",
+            "situsZip": "76111",
+            "price": 125000,
+        },
+    })
+
+    assert item is not None
+    assert item["situs_address"] == "700 Nested Ave, Fort Worth, TX 76111"
+    assert item["price"] == 125000

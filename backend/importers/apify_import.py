@@ -127,9 +127,31 @@ async def fetch_dataset(
     return resp.json()
 
 
+def _candidate_property_records(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return possible property payloads from common Apify actor wrappers."""
+    candidates = [record]
+    for key in (
+        "property", "propertyDetails", "property_detail", "listing", "home",
+        "lead", "data", "result", "item", "record",
+    ):
+        value = record.get(key)
+        if isinstance(value, dict):
+            candidates.append({**record, **value})
+    return candidates
+
+
+def _best_property_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    for candidate in _candidate_property_records(record):
+        address = extract_listing_fields(candidate)["address"]
+        if address.get("street") or address.get("full"):
+            return candidate
+    return record
+
+
 def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Normalize an Apify record into InvestorFlip property schema."""
 
+    record = _best_property_record(record)
     fields = extract_listing_fields(record)
     extracted_address = fields["address"]
     location = record.get("location") if isinstance(record.get("location"), dict) else {}
