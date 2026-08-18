@@ -148,6 +148,20 @@ def _best_property_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return record
 
 
+def _record_shape(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Summarize a skipped record without exposing record values."""
+    nested: Dict[str, List[str]] = {}
+    for key, value in record.items():
+        if isinstance(value, dict):
+            nested[key] = sorted(str(k) for k in value.keys())[:30]
+        elif isinstance(value, list) and value and isinstance(value[0], dict):
+            nested[f"{key}[]"] = sorted(str(k) for k in value[0].keys())[:30]
+    return {
+        "keys": sorted(str(k) for k in record.keys())[:60],
+        "nested_keys": nested,
+    }
+
+
 def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Normalize an Apify record into InvestorFlip property schema."""
 
@@ -308,8 +322,9 @@ async def import_apify_runs(
         "runs_found": 0, "runs_imported": 0, "records_fetched": 0,
         "records_imported": 0, "records_skipped_non_fortworth": 0,
         "records_skipped_missing_address": 0,
-        "records_failed": 0, "property_ids": [],
+        "records_failed": 0, "missing_address_shapes": [], "property_ids": [],
     }
+    missing_address_shape_seen: set[str] = set()
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         runs = await fetch_recent_runs(client, token, lookback_days)
@@ -330,6 +345,19 @@ async def import_apify_runs(
                         prop = normalize_record(record)
                         if not prop:
                             results["records_skipped_missing_address"] += 1
+                            shape = _record_shape(record)
+                            shape_key = json.dumps(shape, sort_keys=True)
+                            if (
+                                shape_key not in missing_address_shape_seen
+                                and len(results["missing_address_shapes"]) < 8
+                            ):
+                                missing_address_shape_seen.add(shape_key)
+                                results["missing_address_shapes"].append({
+                                    "run_id": run_id,
+                                    "actor_id": run.get("actorId"),
+                                    "dataset_id": dataset_id,
+                                    **shape,
+                                })
                             continue
 
                         # FORT WORTH ENFORCEMENT: drop anything outside Tarrant/Fort Worth
