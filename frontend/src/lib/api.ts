@@ -101,10 +101,22 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function mediaUrl(value: unknown): string | undefined {
-  if (typeof value === "string") return value.replace(/^http:\/\//, "https://");
+  if (typeof value === "string") return highQualityImageUrl(value);
   const record = asRecord(value);
   const url = record.href || record.url || record.src;
-  return typeof url === "string" ? url.replace(/^http:\/\//, "https://") : undefined;
+  return typeof url === "string" ? highQualityImageUrl(url) : undefined;
+}
+
+function highQualityImageUrl(url: string): string {
+  const secure = url.trim().replace(/^http:\/\//, "https://");
+  if (!secure) return secure;
+  if (secure.includes("ap.rdcpix.com") && !secure.includes("?")) {
+    return `${secure}?w=1200&q=90`;
+  }
+  if (secure.includes("photos.zillowstatic.com") && secure.includes("-p_e.")) {
+    return secure.replace("-p_e.", "-cc_ft_960.");
+  }
+  return secure;
 }
 
 function numberValue(...values: unknown[]): number | undefined {

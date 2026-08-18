@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Linking, Pressable, Dimensions } from "react-native";
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Linking, Pressable, Dimensions, Modal } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -150,6 +150,7 @@ export default function PropertyDetail() {
   const [enrichLoading, setEnrichLoading] = useState(false);
   const [taxHistory, setTaxHistory] = useState<TaxHistoryEntry[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null);
+  const [photoViewerOpen, setPhotoViewerOpen] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -254,13 +255,30 @@ export default function PropertyDetail() {
     : "";
   const saleDate = extraString(prop.feed_extra, "sale_date") || extraString(prop.feed_extra, "auction_date");
   const openRecordsUrl = (url: string) => Linking.openURL(url).catch(() => {});
+  const currentPhotoIndex = Math.max(0, photos.indexOf(heroPhoto || ""));
+  const openPhotoViewer = (photo: string) => {
+    setSelectedPhoto(photo);
+    setPhotoViewerOpen(true);
+  };
+  const movePhoto = (delta: number) => {
+    if (!photos.length) return;
+    const nextIndex = (currentPhotoIndex + delta + photos.length) % photos.length;
+    setSelectedPhoto(photos[nextIndex]);
+  };
 
   return (
     <View style={styles.safe}>
       <ScrollView contentContainerStyle={{ paddingBottom: 120 }} testID="property-detail-scroll">
         {/* Hero */}
         <View style={styles.hero}>
-          <Image source={heroPhoto ? { uri: heroPhoto } : undefined} style={styles.heroImg} contentFit="cover" />
+          <Pressable
+            disabled={!heroPhoto}
+            onPress={() => heroPhoto && openPhotoViewer(heroPhoto)}
+            style={styles.heroImagePressable}
+            testID="hero-photo-open"
+          >
+            <Image source={heroPhoto ? { uri: heroPhoto } : undefined} style={styles.heroImg} contentFit="cover" />
+          </Pressable>
           <LinearGradient colors={["rgba(0,0,0,0.55)", "transparent"]} style={styles.heroTopScrim} pointerEvents="none" />
           <LinearGradient colors={["transparent", "rgba(26,28,26,0.85)"]} style={styles.heroBottomScrim} pointerEvents="none" />
           <SafeAreaView edges={["top"]} style={styles.heroNav}>
@@ -333,7 +351,10 @@ export default function PropertyDetail() {
               {photos.map((photo, index) => (
                 <Pressable
                   key={`${photo}-${index}`}
-                  onPress={() => setSelectedPhoto(photo)}
+                  onPress={() => {
+                    if (heroPhoto === photo) openPhotoViewer(photo);
+                    else setSelectedPhoto(photo);
+                  }}
                   style={[
                     styles.photoThumbWrap,
                     heroPhoto === photo && styles.photoThumbSelected,
@@ -695,6 +716,47 @@ export default function PropertyDetail() {
         ) : null}
       </ScrollView>
 
+      <Modal
+        visible={photoViewerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPhotoViewerOpen(false)}
+      >
+        <View style={styles.photoViewer}>
+          <SafeAreaView edges={["top"]} style={styles.photoViewerTop}>
+            <Text style={styles.photoViewerCount}>
+              {photos.length ? `${currentPhotoIndex + 1} / ${photos.length}` : ""}
+            </Text>
+            <Pressable
+              onPress={() => setPhotoViewerOpen(false)}
+              style={styles.photoViewerClose}
+              testID="photo-viewer-close"
+            >
+              <Ionicons name="close" size={24} color="#fff" />
+            </Pressable>
+          </SafeAreaView>
+          <Pressable
+            onPress={() => setPhotoViewerOpen(false)}
+            style={styles.photoViewerImageWrap}
+            testID="photo-viewer"
+          >
+            {heroPhoto ? (
+              <Image source={{ uri: heroPhoto }} style={styles.photoViewerImage} contentFit="contain" />
+            ) : null}
+          </Pressable>
+          {photos.length > 1 ? (
+            <View style={styles.photoViewerControls}>
+              <Pressable onPress={() => movePhoto(-1)} style={styles.photoViewerNav} testID="photo-viewer-prev">
+                <Ionicons name="chevron-back" size={26} color="#fff" />
+              </Pressable>
+              <Pressable onPress={() => movePhoto(1)} style={styles.photoViewerNav} testID="photo-viewer-next">
+                <Ionicons name="chevron-forward" size={26} color="#fff" />
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+      </Modal>
+
       {/* Sticky CTA */}
       <View style={styles.ctaBar}>
         <Pressable testID="cta-save" onPress={toggleSave} style={[styles.ctaSecondary]}>
@@ -865,6 +927,7 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   hero: { width: W, height: 320 },
+  heroImagePressable: { width: "100%", height: "100%" },
   heroImg: { width: "100%", height: "100%" },
   heroTopScrim: { position: "absolute", top: 0, left: 0, right: 0, height: 120 },
   heroBottomScrim: { position: "absolute", left: 0, right: 0, bottom: 0, height: 180 },
@@ -909,6 +972,48 @@ const styles = StyleSheet.create({
   },
   photoThumbSelected: { borderColor: colors.brandPrimary },
   photoThumb: { width: "100%", height: "100%" },
+  photoViewer: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.96)",
+  },
+  photoViewerTop: {
+    minHeight: 64,
+    paddingHorizontal: spacing.lg,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  photoViewerCount: { color: "#fff", fontSize: 13, fontWeight: "800", ...tabularNums },
+  photoViewerClose: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  photoViewerImageWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  photoViewerImage: { width: "100%", height: "100%" },
+  photoViewerControls: {
+    position: "absolute",
+    left: spacing.lg,
+    right: spacing.lg,
+    top: "50%",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  photoViewerNav: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "rgba(0,0,0,0.42)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   descriptionCard: { marginTop: spacing.sm },
   recordsCard: { marginTop: spacing.sm },
   recordsHeader: {
