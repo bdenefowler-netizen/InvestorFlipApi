@@ -131,6 +131,8 @@ def test_apify_normalizes_investorlift_public_address_shape():
         "property_type": "Single Family",
         "property_url": "https://investorlift.example/property/123",
         "property_image": "https://investorlift.example/image.jpg",
+        "other_images": ["https://investorlift.example/alt.jpg"],
+        "wholesaler_name": "Deal Source LLC",
     })
 
     assert item is not None
@@ -139,7 +141,14 @@ def test_apify_normalizes_investorlift_public_address_shape():
     assert item["sqft"] == 1450
     assert item["lot_size_sqft"] == 6000
     assert item["listing_url"] == "https://investorlift.example/property/123"
+    assert item["detail_url"] == "https://investorlift.example/property/123"
     assert item["image_url"] == "https://investorlift.example/image.jpg"
+    assert item["photos"] == [
+        "https://investorlift.example/image.jpg",
+        "https://investorlift.example/alt.jpg",
+    ]
+    assert item["owner_name"] == "Deal Source LLC"
+    assert item["owner_type"] == "Wholesaler"
     assert item["wholesale"] is True
     assert item["listing_type"] == "Wholesale"
     assert item["source_platform"] == "InvestorLift"

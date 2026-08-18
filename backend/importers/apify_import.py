@@ -148,6 +148,32 @@ def _best_property_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return record
 
 
+def _photo_urls_from_record(record: Dict[str, Any]) -> List[str]:
+    photos: List[str] = []
+    for key in ("image_url", "property_image", "image", "primary_photo"):
+        url = photo_url(record.get(key))
+        if url:
+            photos.append(url)
+    for key in ("images", "other_images", "photos"):
+        values = record.get(key)
+        if not isinstance(values, list):
+            continue
+        for value in values[:8]:
+            url = photo_url(value)
+            if url:
+                photos.append(url)
+    return list(dict.fromkeys(photos))
+
+
+def _description_text(record: Dict[str, Any]) -> str:
+    description = record.get("description")
+    if isinstance(description, dict):
+        return str(description.get("text") or description.get("value") or "").strip()
+    if isinstance(description, str):
+        return description.strip()
+    return str(record.get("title") or "").strip()
+
+
 def _record_shape(record: Dict[str, Any]) -> Dict[str, Any]:
     """Summarize a skipped record without exposing record values."""
     nested: Dict[str, List[str]] = {}
@@ -238,9 +264,13 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     owner_name = (
         record.get("ownerName")
         or record.get("owner_name")
+        or record.get("wholesaler_name")
+        or record.get("account_title")
         or f"{record.get('ownerFirstName', '')} {record.get('ownerLastName', '')}".strip()
         or ""
     )
+    listing_url = record.get("listingUrl") or record.get("url") or record.get("href") or record.get("property_url") or ""
+    photos = _photo_urls_from_record(record)
 
     # Map price
     price = fields["price"] or record.get("price") or record.get("listPrice") or record.get("listingPrice") or record.get("list_price") or 0
@@ -293,7 +323,7 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "longitude": fields["longitude"] or record.get("longitude") or record.get("lng") or record.get("lon") or coordinate.get("lon") or None,
         "owner_name": owner_name,
         "owner_mailing_address": "",
-        "owner_type": "",
+        "owner_type": "Wholesaler" if is_wholesale else "",
         "listing_status": record.get("status") or record.get("listingStatus") or "Active",
         "listing_type": (
             record.get("listingType")
@@ -301,16 +331,12 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             or ("Wholesale" if is_wholesale else "For Sale")
         ),
         "mls_number": record.get("mlsNumber") or record.get("mls") or source.get("listing_id") or "",
-        "listing_url": record.get("listingUrl") or record.get("url") or record.get("href") or record.get("property_url") or "",
-        "image_url": (
-            record.get("image_url")
-            or record.get("property_image")
-            or primary_photo.get("href")
-            or photo_url(record.get("image"))
-            or photo_url(record.get("images", [None])[0] if isinstance(record.get("images"), list) and record.get("images") else None)
-            or ""
-        ),
-        "listing_description": record.get("description") or record.get("title") or "",
+        "listing_url": listing_url,
+        "detail_url": listing_url,
+        "image_url": photos[0] if photos else "",
+        "photos": photos,
+        "listing_description": _description_text(record),
+        "legal_description": record.get("legal_description") or "",
         "wholesale": is_wholesale,
         "arv_estimate": record.get("arv_estimate"),
         "gross_margin": record.get("gross_margin"),
