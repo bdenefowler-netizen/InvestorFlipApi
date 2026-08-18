@@ -140,3 +140,6 @@ def test_apify_normalizes_investorlift_public_address_shape():
     assert item["lot_size_sqft"] == 6000
     assert item["listing_url"] == "https://investorlift.example/property/123"
     assert item["image_url"] == "https://investorlift.example/image.jpg"
+    assert item["wholesale"] is True
+    assert item["listing_type"] == "Wholesale"
+    assert item["source_platform"] == "InvestorLift"

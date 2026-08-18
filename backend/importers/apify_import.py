@@ -175,6 +175,13 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     primary_photo = record.get("primary_photo") if isinstance(record.get("primary_photo"), dict) else {}
     coordinate = nested_address.get("coordinate") if isinstance(nested_address.get("coordinate"), dict) else {}
     source = record.get("source") if isinstance(record.get("source"), dict) else {}
+    is_wholesale = bool(
+        record.get("wholesale") is True
+        or record.get("arv_estimate")
+        or record.get("gross_margin")
+        or record.get("property_url")
+        or record.get("public_address")
+    )
 
     # Extract address from various formats
     address = (
@@ -288,7 +295,11 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "owner_mailing_address": "",
         "owner_type": "",
         "listing_status": record.get("status") or record.get("listingStatus") or "Active",
-        "listing_type": record.get("listingType") or record.get("listing_type") or "For Sale",
+        "listing_type": (
+            record.get("listingType")
+            or record.get("listing_type")
+            or ("Wholesale" if is_wholesale else "For Sale")
+        ),
         "mls_number": record.get("mlsNumber") or record.get("mls") or source.get("listing_id") or "",
         "listing_url": record.get("listingUrl") or record.get("url") or record.get("href") or record.get("property_url") or "",
         "image_url": (
@@ -299,6 +310,11 @@ def normalize_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             or photo_url(record.get("images", [None])[0] if isinstance(record.get("images"), list) and record.get("images") else None)
             or ""
         ),
+        "listing_description": record.get("description") or record.get("title") or "",
+        "wholesale": is_wholesale,
+        "arv_estimate": record.get("arv_estimate"),
+        "gross_margin": record.get("gross_margin"),
+        "source_platform": "InvestorLift" if is_wholesale else "Apify",
         "data_source": "Apify",
     }
 

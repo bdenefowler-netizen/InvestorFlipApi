@@ -239,6 +239,9 @@ def classify_opportunity(property_record: Mapping[str, Any]) -> Dict[str, Any]:
     flags = _listing_subtype_flags(property_record)
     normalized_flags = {str(key).replace("_", "").lower(): value for key, value in flags.items()}
 
+    if property_record.get("wholesale") is True or listing_type == "wholesale":
+        add("investor_special", "Provider identifies wholesale/investor deal")
+
     if listing_type == "foreclosure" or any(
         normalized_flags.get(key) is True
         for key in ("isforeclosure", "wassdefault", "wasdefault")

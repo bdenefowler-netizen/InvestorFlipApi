@@ -1,4 +1,5 @@
 from investor_logic import (
+    classify_opportunity,
     classify_owner,
     compute_scores,
     derive_owner_signals,
@@ -24,6 +25,15 @@ def test_owner_signals_reclassify_llc_and_absentee_owner():
 
 def test_bank_classifier_precedes_corporation_classifier():
     assert classify_owner("FREEDOM MORTGAGE CORPORATION") == "Bank"
+
+
+def test_wholesale_property_is_target_opportunity():
+    result = classify_opportunity({
+        "listing_type": "Wholesale",
+        "wholesale": True,
+    })
+    assert result["is_target_opportunity"] is True
+    assert "investor_special" in result["opportunity_signal_keys"]
 
 
 def test_synthetic_sources_are_detected_without_hiding_real_tax_matches():
