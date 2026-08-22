@@ -366,6 +366,7 @@ def generate_seed_properties(n: int = 36) -> List[Dict[str, Any]]:
 # ---------- Filter Definitions ----------
 INVESTOR_FILTERS = [
     {"key": "opportunities", "label": "All Targets"},
+    {"key": "live", "label": "All Live"},
     {"key": "motivated", "label": "Motivated Seller"},
     {"key": "foreclosure", "label": "Foreclosure"},
     {"key": "distressed", "label": "Distressed"},
@@ -449,15 +450,16 @@ def decorate_opportunity(property_record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def matches_investor_filter(property_record: Dict[str, Any], filter_key: str) -> bool:
+    key = filter_key.lower()
+    if key == "live":
+        return property_record.get("is_live_listing") is True
+
     opportunity = classify_opportunity(property_record)
     if not opportunity["is_target_opportunity"]:
         return False
 
-    key = filter_key.lower()
     if key in ("all", "", "opportunities"):
         return True
-    if key == "live":
-        return property_record.get("is_live_listing") is True
     signal_key = {
         "motivated": "motivated_seller",
         "motivated_seller": "motivated_seller",
@@ -1525,7 +1527,7 @@ async def live_status():
 async def list_properties(
     filter: str = Query("opportunities"),
     search: Optional[str] = Query(None),
-    limit: int = Query(60, ge=1, le=200),
+    limit: int = Query(200, ge=1, le=200),
 ):
     q: Dict[str, Any] = {}
     q = apply_filter(filter, q)
@@ -1564,8 +1566,9 @@ async def list_properties(
         "items": items,
         "properties": items,
         "rule": (
-            "Only motivated/distressed, foreclosure/REO, tax-lien, cash-offer, "
-            "investor-special, and as-is opportunities are returned."
+            "All Live returns current visible live houses. Target filters return only "
+            "motivated/distressed, foreclosure/REO, tax-lien, cash-offer, "
+            "investor-special, and as-is opportunities."
         ),
     }
 

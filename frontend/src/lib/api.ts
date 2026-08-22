@@ -318,7 +318,7 @@ export async function getProperties(
   filter: string,
   search: string,
 ): Promise<{ count: number; total?: number; items: Property[] }> {
-  const params = new URLSearchParams({ filter });
+  const params = new URLSearchParams({ filter, limit: "200" });
   if (search) params.set("search", search);
   const data = await jsonGet<{ count: number; total?: number; items: Property[] }>(
     `${API}/properties?${params.toString()}`,

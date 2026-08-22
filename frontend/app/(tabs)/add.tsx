@@ -97,9 +97,9 @@ export default function AddScreen() {
           </Pressable>
           {syncResult ? (
             <ResultBox>
-              <Text style={styles.resultTitle}>{syncResult.total_properties_touched} properties pulled or updated</Text>
+              <Text style={styles.resultTitle}>{syncResult.total_properties_touched} records processed or updated</Text>
               <Text style={styles.resultText}>
-                County matched {syncResult.county_enrichment.enriched} · Detail API found {syncResult.detail_enrichment.found}/{syncResult.detail_enrichment.attempted}
+                Duplicates are merged. Target deal filters may show fewer cards. County matched {syncResult.county_enrichment.enriched} · Detail API found {syncResult.detail_enrichment.found}/{syncResult.detail_enrichment.attempted}
               </Text>
               {syncResult.providers.map((provider) => (
                 <View key={provider.provider} style={styles.providerRow}>
