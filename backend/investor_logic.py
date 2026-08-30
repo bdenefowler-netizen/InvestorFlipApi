@@ -46,6 +46,8 @@ SYNTHETIC_SOURCE_MARKERS = (
 
 OPPORTUNITY_SIGNAL_LABELS = {
     "motivated_seller": "Motivated Seller",
+    "pre_foreclosure": "Pre-Foreclosure",
+    "fsbo": "For Sale By Owner",
     "foreclosure": "Foreclosure",
     "distressed": "Distressed Property",
     "reo": "REO / Bank-Owned",
@@ -58,6 +60,10 @@ OPPORTUNITY_SIGNAL_LABELS = {
 OPPORTUNITY_FILTER_TO_SIGNAL = {
     "motivated": "motivated_seller",
     "motivated_seller": "motivated_seller",
+    "pre_foreclosure": "pre_foreclosure",
+    "preforeclosure": "pre_foreclosure",
+    "fsbo": "fsbo",
+    "for_sale_by_owner": "fsbo",
     "foreclosure": "foreclosure",
     "distressed": "distressed",
     "reo": "reo",
@@ -79,15 +85,26 @@ OPPORTUNITY_TEXT_PATTERNS = {
         r"\bbring (?:all|your) offers\b",
         r"\bmake (?:us |an )?offer\b",
     ),
-    "foreclosure": (
+    "pre_foreclosure": (
         r"\bpre[- ]?foreclosure\b",
+        r"\bpreforeclosure\b",
+    ),
+    "fsbo": (
+        r"\bfor sale by owner\b",
+        r"\bfsbo\b",
+    ),
+    "foreclosure": (
         r"\bforeclos(?:ure|ed)\b",
         r"\bshort sale\b",
     ),
     "distressed": (
         r"\bdistressed propert(?:y|ies)\b",
         r"\bfixer[- ]?upper\b",
+        r"\bneeds tlc\b",
+        r"\bcontractor special\b",
+        r"\bcontractors? (?:welcome|wanted|special)\b",
         r"\bneeds (?:significant |major )?(?:work|repairs?|renovation|rehab)\b",
+        r"\b(?:full |complete |total )?(?:renovation|rehab)\b",
         r"\bfire[- ]damaged\b",
         r"\bmajor rehab\b",
         r"\btear[- ]?down\b",
@@ -241,6 +258,18 @@ def classify_opportunity(property_record: Mapping[str, Any]) -> Dict[str, Any]:
 
     if property_record.get("wholesale") is True or listing_type == "wholesale":
         add("investor_special", "Provider identifies wholesale/investor deal")
+
+    if (
+        property_record.get("pre_foreclosure") is True
+        or str(property_record.get("listing_status") or "").strip().lower() in {"pre-foreclosure", "pre foreclosure", "preforeclosure"}
+    ):
+        add("pre_foreclosure", "Provider identifies pre-foreclosure status")
+
+    if (
+        property_record.get("fsbo_confirmed") is True
+        or listing_type in {"for sale by owner", "fsbo"}
+    ):
+        add("fsbo", "Provider identifies for-sale-by-owner listing")
 
     if listing_type == "foreclosure" or any(
         normalized_flags.get(key) is True

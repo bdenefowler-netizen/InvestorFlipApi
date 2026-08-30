@@ -55,3 +55,14 @@ def test_tax_balance_and_listing_language_can_create_multiple_signals():
     }
     assert len(result["opportunity_evidence"]) == 6
     assert is_target_opportunity({"listing_type": "REO"}) is True
+
+
+def test_fsbo_preforeclosure_and_new_keywords_are_target_signals():
+    result = classify_opportunity({
+        "listing_type": "For Sale By Owner",
+        "pre_foreclosure": True,
+        "listing_description": "Contractor special. Needs TLC and full renovation.",
+    })
+
+    assert result["is_target_opportunity"] is True
+    assert set(result["opportunity_signal_keys"]) >= {"fsbo", "pre_foreclosure", "distressed"}

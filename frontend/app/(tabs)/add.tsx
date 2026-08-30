@@ -15,14 +15,16 @@ import { useRouter } from "expo-router";
 
 import {
   addPropertyLink,
+  pastePropertyCsv,
   syncAllListingSources,
   type AllSourceSyncResult,
   type LinkIntakeResult,
+  type PasteIntakeResult,
 } from "@/src/lib/api";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 
 
-type Busy = "sync" | "link" | null;
+type Busy = "sync" | "link" | "paste" | null;
 
 function ResultBox({ children, error = false }: { children: React.ReactNode; error?: boolean }) {
   return <View style={[styles.result, error && styles.resultError]}>{children}</View>;
@@ -34,6 +36,8 @@ export default function AddScreen() {
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [linkResult, setLinkResult] = useState<LinkIntakeResult | null>(null);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteResult, setPasteResult] = useState<PasteIntakeResult | null>(null);
   const [syncResult, setSyncResult] = useState<AllSourceSyncResult | null>(null);
 
   const begin = (kind: Busy) => {
@@ -69,6 +73,24 @@ export default function AddScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (e: any) {
       setError(e?.message || "The source sync could not finish.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const importPastedRows = async () => {
+    if (!pasteText.trim()) {
+      setError("Paste CSV rows with a header first.");
+      return;
+    }
+    begin("paste");
+    setPasteResult(null);
+    try {
+      const result = await pastePropertyCsv(pasteText.trim());
+      setPasteResult(result);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    } catch (e: any) {
+      setError(e?.message || "Those rows could not be imported.");
     } finally {
       setBusy(null);
     }
@@ -116,14 +138,33 @@ export default function AddScreen() {
           <View style={styles.cardTitleRow}>
             <View style={styles.icon}><Ionicons name="document-attach-outline" size={19} color={colors.brandPrimary} /></View>
             <View style={styles.cardHeading}>
-              <Text style={styles.cardTitle}>Upload a spreadsheet</Text>
-              <Text style={styles.cardText}>Temporarily unavailable in this Android recovery build. Property links and live-source pulls still import and enrich normally.</Text>
+              <Text style={styles.cardTitle}>Import spreadsheet rows</Text>
+              <Text style={styles.cardText}>Paste CSV rows from BrightData, Propwire, a skip-trace export, or a spreadsheet. Accepted rows are enriched the same way as file uploads.</Text>
             </View>
           </View>
-          <View style={[styles.secondaryButton, styles.disabled]}>
-            <Ionicons name="construct-outline" size={18} color={colors.brandPrimary} />
-            <Text style={styles.secondaryButtonText}>Upload returns after startup verification</Text>
-          </View>
+          <TextInput
+            value={pasteText}
+            onChangeText={setPasteText}
+            autoCapitalize="none"
+            autoCorrect={false}
+            multiline
+            placeholder={"address,city,state,zip,price,description,listing_type,owner_name,phone,email\n123 Main St,Fort Worth,TX,76102,175000,needs TLC,FSBO,Jane Owner,,"}
+            placeholderTextColor={colors.muted}
+            style={styles.pasteInput}
+            textAlignVertical="top"
+          />
+          <Pressable disabled={busy !== null} onPress={importPastedRows} style={[styles.secondaryButton, busy && styles.disabled]}>
+            {busy === "paste" ? <ActivityIndicator color={colors.brandPrimary} /> : <Ionicons name="cloud-upload-outline" size={18} color={colors.brandPrimary} />}
+            <Text style={styles.secondaryButtonText}>{busy === "paste" ? "Importing and enriching…" : "Import Pasted Rows"}</Text>
+          </Pressable>
+          {pasteResult ? (
+            <ResultBox>
+              <Text style={styles.resultTitle}>{pasteResult.accepted} imported · {pasteResult.rejected} rejected</Text>
+              <Text style={styles.resultText}>
+                Inserted {pasteResult.inserted} · Updated {pasteResult.updated} · Duplicates merged {pasteResult.duplicates_merged}
+              </Text>
+            </ResultBox>
+          ) : null}
         </View>
 
         <View style={styles.card}>
@@ -187,6 +228,7 @@ const styles = StyleSheet.create({
   secondaryButtonText: { color: colors.brandPrimary, fontSize: 13, fontWeight: "800" },
   disabled: { opacity: 0.55 },
   linkInput: { minHeight: 50, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.md, paddingHorizontal: spacing.md, color: colors.onSurface, backgroundColor: colors.surface, marginBottom: spacing.sm, fontSize: 13 },
+  pasteInput: { minHeight: 132, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.md, padding: spacing.md, color: colors.onSurface, backgroundColor: colors.surface, marginBottom: spacing.sm, fontSize: 12, lineHeight: 17 },
   result: { marginTop: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: "#E8F0EB", borderWidth: 1, borderColor: "#C9DACE" },
   resultError: { backgroundColor: "#F8E9E7", borderColor: "#ECC7C3" },
   resultTitle: { color: colors.onSurface, fontSize: 13, fontWeight: "800" },

@@ -34,8 +34,12 @@ ALIASES = {
     "owner_mailing_address": ("mailing address", "owner mailing address", "owner address"),
     "account_id": ("account", "account id", "tax account", "parcel", "parcel id", "apn"),
     "listing_type": ("listing type", "deal type", "status", "property status", "tags"),
+    "listing_description": ("description", "listing description", "remarks", "public remarks", "marketing remarks", "notes"),
     "detail_url": ("url", "link", "property url", "listing url"),
+    "image_url": ("image", "image url", "photo", "photo url", "property image", "property_image"),
     "property_type": ("property type", "home type", "building type"),
+    "phone": ("phone", "phone number", "phone_number", "owner phone", "seller phone"),
+    "email": ("email", "owner email", "seller email"),
 }
 
 
@@ -102,7 +106,9 @@ def _address_parts(address: str, city: str, state: str, zip_code: str) -> Dict[s
 
 def infer_listing_type(value: Any) -> Dict[str, Any]:
     text = _text(value).lower().replace("_", "-")
-    if "reo" in text or "bank owned" in text:
+    if "for sale by owner" in text or "fsbo" in text:
+        listing_type = "For Sale By Owner"
+    elif "reo" in text or "bank owned" in text:
         listing_type = "REO"
     elif "foreclos" in text or "pre-foreclos" in text:
         listing_type = "Foreclosure"
@@ -117,11 +123,15 @@ def infer_listing_type(value: Any) -> Dict[str, Any]:
     motivated = any(term in text for term in (
         "motivated", "distress", "foreclos", "reo", "tax lien", "tax lein",
         "cash offer", "investor special", "as-is", "as is", "wholesale",
+        "for sale by owner", "fsbo", "needs tlc", "contractor", "fixer upper",
+        "fixer-upper", "cash only", "priced to sell", "needs work", "rehab",
+        "renovation", "handyman special",
     ))
     return {
         "listing_type": listing_type,
         "listing_status": _text(value) or listing_type,
-        "pre_foreclosure": "pre-foreclos" in text,
+        "pre_foreclosure": "pre-foreclos" in text or "preforeclos" in text,
+        "fsbo_confirmed": listing_type == "For Sale By Owner",
         "wholesale": "wholesale" in text or "investor special" in text,
         "motivation_score": 70 if motivated else 0,
         "distress_score": 70 if motivated else 0,
@@ -143,7 +153,8 @@ def normalize_import_row(row: Mapping[str, Any], source_name: str, row_number: i
     owner_name = _text(_row_value(row, "owner_name"))
     owner_mailing = _text(_row_value(row, "owner_mailing_address"))
     property_type = _text(_row_value(row, "property_type")) or "Single Family Residential"
-    status = infer_listing_type(_row_value(row, "listing_type"))
+    listing_description = _text(_row_value(row, "listing_description"))
+    status = infer_listing_type(" ".join(filter(None, [_text(_row_value(row, "listing_type")), listing_description])))
     price = _number(_row_value(row, "price"))
     market_value = _number(_row_value(row, "market_value"))
     document: Dict[str, Any] = {
@@ -165,8 +176,12 @@ def normalize_import_row(row: Mapping[str, Any], source_name: str, row_number: i
         "year_built": int(_number(_row_value(row, "year_built")) or 0) or None,
         "owner_name": owner_name,
         "owner_mailing_address": owner_mailing,
+        "owner_phone": _text(_row_value(row, "phone")),
+        "owner_email": _text(_row_value(row, "email")),
         "account_id": _text(_row_value(row, "account_id")),
         "detail_url": _text(_row_value(row, "detail_url")),
+        "image_url": _text(_row_value(row, "image_url")),
+        "listing_description": listing_description,
         "is_live_listing": True,
         "data_source": source_name,
         "listing_sources": [source_name],

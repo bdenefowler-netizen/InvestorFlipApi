@@ -537,6 +537,8 @@ export type UploadIntakeResult = {
   enrichment: IntakeEnrichment;
 };
 
+export type PasteIntakeResult = UploadIntakeResult;
+
 export type LinkIntakeResult = {
   ok: boolean;
   property_id: string;
@@ -583,6 +585,18 @@ export async function uploadPropertyFile(asset: {
   const res = await fetch(`${API}/intake/upload`, { method: "POST", headers, body: form });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `upload failed (${res.status})`);
+  return data;
+}
+
+export async function pastePropertyCsv(csvText: string, filename = "pasted-leads.csv"): Promise<PasteIntakeResult> {
+  const headers = await adminRequestHeaders({ "Content-Type": "application/json" });
+  const res = await fetch(`${API}/intake/paste`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ filename, csv_text: csvText }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `paste import failed (${res.status})`);
   return data;
 }
 

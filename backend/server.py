@@ -51,7 +51,7 @@ import random
 import logging
 import time
 import pandas as pd
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -367,6 +367,8 @@ def generate_seed_properties(n: int = 36) -> List[Dict[str, Any]]:
 INVESTOR_FILTERS = [
     {"key": "opportunities", "label": "All Targets"},
     {"key": "live", "label": "All Live"},
+    {"key": "pre_foreclosure", "label": "Pre-Foreclosure"},
+    {"key": "fsbo", "label": "FSBO"},
     {"key": "motivated", "label": "Motivated Seller"},
     {"key": "foreclosure", "label": "Foreclosure"},
     {"key": "distressed", "label": "Distressed"},
@@ -383,6 +385,7 @@ def apply_filter(filter_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
     if f in (
         "all", "", "opportunities", "motivated", "distressed", "tax_lien",
         "cash_offer", "investor_special", "foreclosure", "reo", "as_is",
+        "pre_foreclosure", "preforeclosure", "fsbo",
     ):
         return query
     if f == "live":
@@ -463,6 +466,10 @@ def matches_investor_filter(property_record: Dict[str, Any], filter_key: str) ->
     signal_key = {
         "motivated": "motivated_seller",
         "motivated_seller": "motivated_seller",
+        "pre_foreclosure": "pre_foreclosure",
+        "preforeclosure": "pre_foreclosure",
+        "fsbo": "fsbo",
+        "for_sale_by_owner": "fsbo",
         "foreclosure": "foreclosure",
         "distressed": "distressed",
         "reo": "reo",
@@ -517,6 +524,11 @@ class SaveRequest(BaseModel):
 
 class PropertyLinkRequest(BaseModel):
     url: str
+
+
+class PropertyPasteRequest(BaseModel):
+    filename: str = "pasted-leads.csv"
+    csv_text: str
 
 
 # ---------- RapidAPI Helpers ----------
@@ -1873,6 +1885,33 @@ async def intake_upload(file: UploadFile = File(...)):
         raise HTTPException(400, "Import up to 250 properties at a time so every row can be enriched")
 
     source_name = f"User upload: {filename}"
+    report = await upsert_import_records(db, frame.to_dict(orient="records"), source_name)
+    enrichment = await _enrich_imported_properties(report["property_ids"])
+    return {
+        "ok": bool(report["accepted"]),
+        "filename": filename,
+        **report,
+        "enrichment": enrichment,
+    }
+
+
+@api_router.post("/intake/paste")
+async def intake_paste(body: PropertyPasteRequest):
+    """Import pasted CSV rows, then enrich accepted houses."""
+    filename = Path(body.filename or "pasted-leads.csv").name
+    csv_text = str(body.csv_text or "").strip()
+    if not csv_text:
+        raise HTTPException(400, "Paste CSV rows with a header first")
+    if len(csv_text.encode("utf-8")) > 2 * 1024 * 1024:
+        raise HTTPException(413, "Paste up to 2 MB at a time")
+    try:
+        frame = pd.read_csv(StringIO(csv_text))
+    except Exception as exc:
+        raise HTTPException(400, f"Could not read pasted CSV rows: {str(exc)[:180]}") from exc
+    if len(frame.index) > 250:
+        raise HTTPException(400, "Import up to 250 properties at a time so every row can be enriched")
+
+    source_name = f"User paste: {filename}"
     report = await upsert_import_records(db, frame.to_dict(orient="records"), source_name)
     enrichment = await _enrich_imported_properties(report["property_ids"])
     return {

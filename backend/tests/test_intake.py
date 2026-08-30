@@ -31,6 +31,30 @@ def test_motivated_keywords_are_classified():
     assert infer_listing_type("bank owned REO")["listing_type"] == "REO"
     assert infer_listing_type("Investor special wholesale")["wholesale"] is True
     assert infer_listing_type("tax lein")["motivation_score"] == 70
+    assert infer_listing_type("For Sale By Owner needs TLC")["fsbo_confirmed"] is True
+
+
+def test_spreadsheet_description_and_contact_fields_are_imported():
+    row = normalize_import_row(
+        {
+            "address": "789 Pine St",
+            "description": "Cash only contractor special",
+            "listing_type": "For Sale By Owner",
+            "phone_number": "8175550100",
+            "email": "owner@example.com",
+            "property_image": "https://example.com/photo.jpg",
+        },
+        "User paste: brightdata.csv",
+        2,
+    )
+
+    assert row is not None
+    assert row["listing_type"] == "For Sale By Owner"
+    assert row["fsbo_confirmed"] is True
+    assert row["listing_description"] == "Cash only contractor special"
+    assert row["owner_phone"] == "8175550100"
+    assert row["owner_email"] == "owner@example.com"
+    assert row["image_url"] == "https://example.com/photo.jpg"
 
 
 def test_zillow_and_realtor_links_extract_address_without_fetching_web_page():
