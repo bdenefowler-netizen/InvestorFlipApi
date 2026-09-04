@@ -1210,3 +1210,83 @@ async def brightdata_save_check(payload: dict):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await db.close()
+
+
+# ========== Bright Data Deal Finder (county clerk + FSBO + Hubzu) ==========
+@router.post("/import/brightdata-deals")
+async def import_brightdata_deals_route(
+    days_back: int = Body(default=30, embed=True, description="How many days back to search county clerk (7, 30, 90, 180, 365)"),
+):
+    """
+    Fetch pre-foreclosure + FSBO + REO leads from:
+    1. Tarrant County Clerk (Lis Pendens filings = pre-foreclosure BEFORE auction)
+    2. FSBO.com (For Sale By Owner = motivated sellers, no agent commission)
+    3. Hubzu (Zillow's REO auction inventory = bank-owned)
+    
+    Uses Bright Data Web Unlocker to bypass anti-bot protections.
+    Cost: ~50-100 credits per run. Free tier: 5,000 credits/month.
+    """
+    from database import PostgresDatabase
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        result = await import_brightdata_deals(db, days_back=days_back)
+        return result
+    except Exception as e:
+        logger.exception("brightdata_deals import failed")
+        return {"imported": 0, "status": "error", "error": str(e)}
+    finally:
+        try:
+            await db.close()
+        except Exception:
+            pass
+
+
+@router.get("/brightdata-deals/preview")
+async def preview_brightdata_deals(
+    days_back: int = 30,
+    limit: int = 50,
+):
+    """
+    Preview leads without writing to DB. Returns the raw fetched leads
+    so you can verify the data quality before committing.
+    """
+    try:
+        leads = await fetch_all_pre_foreclosure_leads(days_back=days_back)
+        return {
+            "total": len(leads),
+            "preview": leads[:limit],
+            "by_source": _count_by_source(leads),
+            "days_back": days_back,
+        }
+    except Exception as e:
+        logger.exception("preview failed")
+        return {"error": str(e), "total": 0, "preview": []}
+
+
+def _count_by_source(leads: list) -> dict:
+    counts = {}
+    for l in leads:
+        src = l.get("data_source", "Unknown")
+        counts[src] = counts.get(src, 0) + 1
+    return counts
+
+
+@router.get("/brightdata-deals/status")
+async def brightdata_deals_status():
+    """
+    Check Bright Data integration status + remaining credits.
+    """
+    import os
+    has_token = bool(os.environ.get("BRIGHT_DATA_TOKEN", ""))
+    has_zone = bool(os.environ.get("BRIGHT_DATA_ZONE", ""))
+    return {
+        "brightdata_configured": has_token,
+        "web_unlocker_zone": has_zone,
+        "sources": [
+            {"name": "Tarrant County Clerk", "type": "Pre-Foreclosure (Lis Pendens)", "requires_brightdata": True},
+            {"name": "FSBO.com", "type": "For Sale By Owner", "requires_brightdata": True},
+            {"name": "Hubzu", "type": "REO Auction (Bank-Owned)", "requires_brightdata": True},
+        ],
+        "credit_cost_per_run": "~50-100 credits (5,000 free/month)",
+    }

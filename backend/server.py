@@ -433,6 +433,12 @@ def apply_filter(filter_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
             {"pre_foreclosure": True},
             {"listing_status": "Pre-Foreclosure"},
         ]
+    elif f == "fsbo":
+        query["$or"] = [
+            {"listing_type": "FSBO"},
+            {"data_source": "FSBO.com"},
+            {"source_platform": "FSBO.com"},
+        ]
     elif f == "motivated_seller":
         query["motivation_score"] = {"$gte": 50}
     elif f == "tax_lien":
@@ -503,6 +509,10 @@ def matches_investor_filter(property_record: Dict[str, Any], filter_key: str) ->
         return (property_record.get("violation_count") or 0) >= 1
     if key == "pre_foreclosure":
         return property_record.get("pre_foreclosure") is True or property_record.get("listing_status") == "Pre-Foreclosure"
+    if key == "fsbo":
+        return (property_record.get("listing_type") == "FSBO" or
+                property_record.get("data_source") == "FSBO.com" or
+                property_record.get("source_platform") == "FSBO.com")
     if key == "motivated_seller":
         return (property_record.get("motivation_score") or 0) >= 50
     if key == "tax_lien":

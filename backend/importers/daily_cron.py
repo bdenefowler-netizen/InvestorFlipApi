@@ -48,7 +48,9 @@ async def run_all(limit: int = 2000) -> dict:
         ("fort_worth_violations", "importers.fort_worth_violations", "import_fort_worth_violations", (db,), {"limit": limit}),
         ("foreclosures", "importers.foreclosure_finder", "import_foreclosures", (db,), {}),
         ("foreclosure_listings", "importers.foreclosure_listings_scraper", "import_foreclosure_listings", (db,), {"pages": 3}),
-        ("county_tad", "importers.county_records", "sync_tad_county_records", (db,), {}),
+        ("tad", "importers.tad_scraper", "import_tad_properties", (db,), {"limit": 300}),
+        ("brightdata_deals", "importers.brightdata_deal_finder", "import_brightdata_deals", (db,), {"days_back": 30}),
+        ("apify", None, None, None, {}),  # handled separately below (disabled)
     ]
 
     for name, module_path, func_name, args, kwargs in sources:

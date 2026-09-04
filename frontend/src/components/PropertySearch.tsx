@@ -68,6 +68,8 @@ export default function PropertySearch() {
   // ─── Filters ──────────────────────────────────────────
   const filters: { key: FilterType; label: string }[] = [
     { key: 'all', label: 'All' },
+    { key: 'pre-foreclosure', label: '📋 Pre-Foreclosure' },
+    { key: 'fsbo', label: '🏠 FSBO' },
     { key: 'distressed', label: '⚠️ Distressed' },
     { key: 'foreclosure', label: '🏛️ Foreclosure' },
     { key: 'off-market', label: '📦 Off-Market' },
