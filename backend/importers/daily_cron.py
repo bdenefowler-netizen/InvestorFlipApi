@@ -68,21 +68,13 @@ async def run_all(limit: int = 2000) -> dict:
             logger.error("%s failed: %s", name, traceback.format_exc())
             results["sources"][name] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
-    # ── Apify Import ──
-    logger.info("Importing Apify actor runs...")
-    try:
-        from importers.apify_import import import_apify_runs
-        apify_result = await import_apify_runs(db, lookback_days=7)
-        results["sources"]["apify"] = {
-            "ok": "error" not in apify_result,
-            **apify_result,
-        }
-        logger.info("Apify → %d records imported from %d runs",
-                     apify_result.get("records_imported", 0),
-                     apify_result.get("runs_imported", 0))
-    except Exception as e:
-        logger.error("Apify failed: %s", traceback.format_exc())
-        results["sources"]["apify"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    # ── Apify Import ── REMOVED 2026-09-04 (cost too high, data marginal)
+    # Apify was burning $29/mo for 3% of deal data. All sources are now FREE.
+    # Keeping the import_apify_runs function available at:
+    #   from importers.apify_import import import_apify_runs
+    # to run manually when needed with: await import_apify_runs(db, lookback_days=7)
+    logger.info("Apify import disabled (cost too high). Use manual /api/import/apify if needed.")
+    results["sources"]["apify"] = {"ok": True, "status": "DISABLED", "reason": "Cost too high — all sources now free"}
     
     # ── Tarrant County Tax Roll (official delinquent-tax data) ──
     logger.info("Importing Tarrant County tax roll (official ZIP)...")
