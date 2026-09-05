@@ -2,6 +2,7 @@
 import { adminRequestHeaders } from "@/src/lib/admin";
 
 const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || "https://investorflipapi-production-4970.up.railway.app").replace(/\/$/, "");
+export const API_BASE = BASE;
 const API = `${BASE}/api`;
 
 export type Property = {

@@ -40,7 +40,8 @@ interface SavedSearch {
 
 type FilterType =
   | 'all' | 'distressed' | 'foreclosure' | 'off-market'
-  | 'vacant' | 'absentee' | 'tax-delinquent' | 'fixer-upper' | 'wholesale';
+  | 'pre-foreclosure' | 'fsbo' | 'vacant' | 'absentee'
+  | 'tax-delinquent' | 'fixer-upper' | 'wholesale';
 
 // ─── API Config ──────────────────────────────────────────
 const API_BASE = 'https://investorflipapi-production-4970.up.railway.app';

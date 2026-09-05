@@ -73,7 +73,6 @@ export function FilterDropdown({
       >
         <Pressable
           style={styles.backdrop}
-          activeOpacity={1}
           onPress={() => setOpen(false)}
         >
           <View style={styles.drawer} onStartShouldSetResponder={() => true}>
@@ -136,7 +135,7 @@ export function FilterDropdown({
                         </Text>
                         {isActive && (
                           <Ionicons
-                            name="checkmark-circle-fill"
+                            name="checkmark-circle"
                             size={18}
                             color={colors.brandPrimary}
                           />

@@ -17,6 +17,7 @@ import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 
 import {
+  API_BASE,
   addPropertyLink,
   pastePropertyCsv,
   syncAllListingSources,
