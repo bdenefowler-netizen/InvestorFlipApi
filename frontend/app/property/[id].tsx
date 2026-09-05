@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Linking, Pressable, Dimensions, Modal } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -256,6 +256,7 @@ export default function PropertyDetail() {
   const saleDate = extraString(prop.feed_extra, "sale_date") || extraString(prop.feed_extra, "auction_date");
   const openRecordsUrl = (url: string) => Linking.openURL(url).catch(() => {});
   const currentPhotoIndex = Math.max(0, photos.indexOf(heroPhoto || ""));
+  const insets = useSafeAreaInsets();
   const openPhotoViewer = (photo: string) => {
     setSelectedPhoto(photo);
     setPhotoViewerOpen(true);
@@ -268,7 +269,7 @@ export default function PropertyDetail() {
 
   return (
     <View style={styles.safe}>
-      <ScrollView contentContainerStyle={{ paddingBottom: 120 }} testID="property-detail-scroll">
+      <ScrollView contentContainerStyle={{ paddingBottom: 200 }} testID="property-detail-scroll">
         {/* Hero */}
         <View style={styles.hero}>
           <Pressable
@@ -758,7 +759,7 @@ export default function PropertyDetail() {
       </Modal>
 
       {/* Sticky CTA */}
-      <View style={styles.ctaBar}>
+      <View style={[styles.ctaBar, { paddingBottom: 10 + insets.bottom }]}>
         <Pressable testID="cta-save" onPress={toggleSave} style={[styles.ctaSecondary]}>
           <Ionicons name={saved ? "bookmark" : "bookmark-outline"} size={18} color={colors.onSurface} />
           <Text style={styles.ctaSecondaryText}>{saved ? "Saved" : "Save Deal"}</Text>
@@ -1173,11 +1174,17 @@ const styles = StyleSheet.create({
   ctaBar: {
     position: "absolute", left: 0, right: 0, bottom: 0,
     flexDirection: "row", gap: 8,
-    paddingHorizontal: spacing.lg, paddingTop: 10, paddingBottom: 24,
+    paddingHorizontal: spacing.lg, paddingTop: 10,
+    paddingBottom: 10,
     backgroundColor: "rgba(247,247,246,0.96)",
     borderTopWidth: 1, borderTopColor: colors.border,
     shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: -2 },
     elevation: 4,
+  },
+  ctaBarSpacer: {
+    position: "absolute", left: 0, right: 0, bottom: 0,
+    height: 0,
+    backgroundColor: "rgba(247,247,246,0.96)",
   },
   ctaSecondary: {
     flex: 1, height: 48, borderRadius: radius.md,
