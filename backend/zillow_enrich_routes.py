@@ -77,9 +77,26 @@ async def enrich_property_ep(
     db = get_db()
     await db.connect()
     try:
+        # Check Bright Data token is available before trying enrichment
+        if not os.environ.get("BRIGHTDATA_TOKEN", "").strip():
+            return {
+                "ok": False,
+                "error": "BRIGHTDATA_TOKEN not configured on Railway",
+                "hint": "Add BRIGHTDATA_TOKEN=<your_token> to Railway environment variables",
+                "address": address,
+            }
         enricher = ZillowRedfinEnricher()
         result = await enricher.enrich(db, address, city, state)
         return result
+    except RuntimeError as e:
+        if "BRIGHTDATA_TOKEN" in str(e):
+            return {
+                "ok": False,
+                "error": f"Bright Data error: {e}",
+                "hint": "Add BRIGHTDATA_TOKEN to Railway environment variables",
+                "address": address,
+            }
+        raise
     finally:
         await db.close()
 
