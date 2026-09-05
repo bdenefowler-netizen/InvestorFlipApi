@@ -46,6 +46,7 @@ from intake import infer_listing_type, property_link_seed, upsert_import_records
 import asyncio
 import hmac
 import os
+import zipfile
 import re
 import random
 import logging
@@ -1870,37 +1871,109 @@ async def _enrich_imported_properties(property_ids: List[str]) -> Dict[str, Any]
 
 
 @api_router.post("/intake/upload")
+async def _read_dataframe(raw: bytes, suffix: str, filename: str) -> list[dict]:
+    """Parse CSV/XLS/XLSX raw bytes into a list of row dicts."""
+    if suffix == ".csv":
+        try:
+            frame = pd.read_csv(BytesIO(raw), encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            frame = pd.read_csv(BytesIO(raw), encoding="latin1")
+    elif suffix in {".xls", ".xlsx"}:
+        frame = pd.read_excel(BytesIO(raw))
+    else:
+        raise ValueError(f"Unsupported file type: {suffix}")
+    return frame.to_dict(orient="records")
+
+
 async def intake_upload(file: UploadFile = File(...)):
-    """Import CSV/XLS/XLSX rows, reject blanks, then enrich accepted houses."""
+    """
+    Import CSV/XLS/XLSX rows, or extract & import all CSVs from a ZIP file.
+    Reject blanks, then enrich accepted houses.
+    """
     filename = Path(file.filename or "upload.csv").name
     suffix = Path(filename).suffix.lower()
-    if suffix not in {".csv", ".xls", ".xlsx"}:
-        raise HTTPException(400, "Upload a .csv, .xls, or .xlsx file")
+    SUPPORTED = {".csv", ".xls", ".xlsx", ".zip"}
+    if suffix not in SUPPORTED:
+        raise HTTPException(400, f"Unsupported file type. Upload .csv, .xls, .xlsx, or .zip")
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "The uploaded file is empty")
-    if len(raw) > 15 * 1024 * 1024:
-        raise HTTPException(413, "The upload is larger than 15 MB")
-    try:
-        if suffix == ".csv":
-            try:
-                frame = pd.read_csv(BytesIO(raw), encoding="utf-8-sig")
-            except UnicodeDecodeError:
-                frame = pd.read_csv(BytesIO(raw), encoding="latin1")
-        else:
-            frame = pd.read_excel(BytesIO(raw))
-    except Exception as exc:
-        raise HTTPException(400, f"Could not read {suffix} file: {str(exc)[:180]}") from exc
-    if len(frame.index) > 250:
-        raise HTTPException(400, "Import up to 250 properties at a time so every row can be enriched")
+    if len(raw) > 50 * 1024 * 1024:  # 50 MB limit (ZIP may contain many files)
+        raise HTTPException(413, "The upload is larger than 50 MB")
 
     source_name = f"User upload: {filename}"
-    report = await upsert_import_records(db, frame.to_dict(orient="records"), source_name)
-    enrichment = await _enrich_imported_properties(report["property_ids"])
+    property_ids: list[str] = []
+    total_accepted = 0
+    total_rejected = 0
+    total_inserted = 0
+    total_updated = 0
+    file_reports: list[dict] = []
+
+    if suffix == ".zip":
+        # Extract all CSV/XLS/XLSX files from ZIP and import each
+        try:
+            with zipfile.ZipFile(BytesIO(raw)) as zf:
+                members = [m for m in zf.namelist()
+                           if not m.endswith("/")  # skip directories
+                           and Path(m).suffix.lower() in {".csv", ".xls", ".xlsx"}]
+                if not members:
+                    raise HTTPException(400, "ZIP contains no CSV or Excel files")
+                for member in members:
+                    try:
+                        member_raw = zf.read(member)
+                        member_suffix = Path(member).suffix.lower()
+                        rows = await _read_dataframe(member_raw, member_suffix, member)
+                        if len(rows) > 250:
+                            file_reports.append({
+                                "file": member, "status": "skipped",
+                                "reason": f"{len(rows)} rows exceeds 250-row limit"})
+                            continue
+                        report = await upsert_import_records(
+                            db, rows, f"{source_name} / {member}")
+                        property_ids.extend(report["property_ids"])
+                        total_accepted += report["accepted"]
+                        total_rejected += report["rejected"]
+                        total_inserted += report["inserted"]
+                        total_updated += report["updated"]
+                        file_reports.append({
+                            "file": member, "status": "ok",
+                            "rows": report["rows_read"], "accepted": report["accepted"],
+                            "inserted": report["inserted"], "updated": report["updated"]})
+                    except Exception as exc:
+                        file_reports.append({"file": member, "status": "error", "reason": str(exc)})
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(400, f"Could not read ZIP: {str(exc)[:180]}")
+    else:
+        # Single file
+        try:
+            rows = await _read_dataframe(raw, suffix, filename)
+        except Exception as exc:
+            raise HTTPException(400, f"Could not read {suffix} file: {str(exc)[:180]}")
+        if len(rows) > 250:
+            raise HTTPException(400, "Import up to 250 properties at a time so every row can be enriched")
+        report = await upsert_import_records(db, rows, source_name)
+        property_ids = report["property_ids"]
+        total_accepted = report["accepted"]
+        total_rejected = report["rejected"]
+        total_inserted = report["inserted"]
+        total_updated = report["updated"]
+        file_reports = [{"file": filename, "status": "ok", "rows": report["rows_read"],
+                         "accepted": report["accepted"], "inserted": report["inserted"],
+                         "updated": report["updated"]}]
+
+    # Enrich all imported properties
+    enrichment = await _enrich_imported_properties(property_ids)
     return {
-        "ok": bool(report["accepted"]),
+        "ok": bool(total_accepted),
         "filename": filename,
-        **report,
+        "files": file_reports,
+        "total_accepted": total_accepted,
+        "total_rejected": total_rejected,
+        "total_inserted": total_inserted,
+        "total_updated": total_updated,
+        "property_ids": property_ids,
         "enrichment": enrichment,
     }
 
