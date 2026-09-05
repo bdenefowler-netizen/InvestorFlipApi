@@ -25,10 +25,17 @@ def requires_admin_key(path: str, method: str = "GET") -> bool:
         "/api/ai/analyze-property",
         "/api/scout/quill-analysis",
     }
+    # Read-only endpoints — should NOT require admin key (no mutation, no credit cost)
+    READ_ONLY_ENDPOINTS = {
+        "/api/analyze/quick",
+        "/api/analyze/deal",
+    }
     protected_property_operation = bool(re.match(
         r"^/api/properties/[^/]+/(?:enrich|ai-analysis|quill-analysis|tax-history)$",
         path,
     ))
+    if path in READ_ONLY_ENDPOINTS:
+        return False
     return (
         path.startswith(protected_prefixes)
         or path in protected_exact
