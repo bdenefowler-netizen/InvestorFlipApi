@@ -759,7 +759,7 @@ export default function PropertyDetail() {
       </Modal>
 
       {/* Sticky CTA */}
-      <View style={[styles.ctaBar, { paddingBottom: 10 + insets.bottom }]}>
+      <View style={[styles.ctaBar, { paddingTop: 14, paddingBottom: 14 + insets.bottom }]}>
         <Pressable testID="cta-save" onPress={toggleSave} style={[styles.ctaSecondary]}>
           <Ionicons name={saved ? "bookmark" : "bookmark-outline"} size={18} color={colors.onSurface} />
           <Text style={styles.ctaSecondaryText}>{saved ? "Saved" : "Save Deal"}</Text>
@@ -1174,8 +1174,8 @@ const styles = StyleSheet.create({
   ctaBar: {
     position: "absolute", left: 0, right: 0, bottom: 0,
     flexDirection: "row", gap: 8,
-    paddingHorizontal: spacing.lg, paddingTop: 10,
-    paddingBottom: 10,
+    paddingHorizontal: spacing.lg, paddingTop: 14,
+    paddingBottom: 14,
     backgroundColor: "rgba(247,247,246,0.96)",
     borderTopWidth: 1, borderTopColor: colors.border,
     shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: -2 },
