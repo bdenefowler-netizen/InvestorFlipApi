@@ -4,11 +4,11 @@ import {
   Text,
   StyleSheet,
   FlatList,
-  ScrollView,
   TextInput,
   ActivityIndicator,
   RefreshControl,
   Pressable,
+  ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -25,7 +25,6 @@ import {
   type Property,
 } from "@/src/lib/api";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
-import { FilterDropdown, type FilterOption } from "@/src/components/FilterDropdown";
 import { PropertyCard } from "@/src/components/PropertyCard";
 
 export default function ListingsScreen() {
@@ -40,34 +39,29 @@ export default function ListingsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [debugInfo, setDebugInfo] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
 
   const loadFilters = useCallback(async () => {
     try {
       const data = await getFilters();
       setFilters(data.filters);
-    } catch (e: any) {
-      // non-fatal
-    }
+    } catch { /* non-fatal */ }
   }, []);
 
   const loadSaved = useCallback(async () => {
     try {
       const { ids } = await getSavedIds();
       setSavedIds(new Set(ids));
-    } catch {}
+    } catch { /* non-fatal */ }
   }, []);
 
   const loadProperties = useCallback(async () => {
     setError(null);
     try {
       const data = await getProperties(active, search.trim());
-      setItems(data.items);
-      setDebugInfo(`OK: ${data.total ?? data.count} total \u00b7 ${data.items.length} shown \u00b7 filter=${active}`);
+      setItems(data.items ?? []);
     } catch (e: any) {
-      setError("Unable to load Tarrant County listings.");
-      setDebugInfo(`ERR: ${e?.message || String(e)}`);
+      setError("Unable to load listings.");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -93,12 +87,7 @@ export default function ListingsScreen() {
       setSuggesting(false);
       return;
     }
-    if (query.length < 5) {
-      setSuggestions([]);
-      setSuggesting(false);
-      return;
-    }
-
+    if (query.length < 5) { setSuggestions([]); setSuggesting(false); return; }
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       setSuggesting(true);
@@ -111,43 +100,23 @@ export default function ListingsScreen() {
         if (!controller.signal.aborted) setSuggesting(false);
       }
     }, 450);
-
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
+    return () => { clearTimeout(timer); controller.abort(); };
   }, [search]);
 
-  const selectSuggestion = (suggestion: AddressSuggestion) => {
+  const selectSuggestion = (s: AddressSuggestion) => {
     suppressSuggestions.current = true;
     setSuggestions([]);
-    setSearch(suggestion.street_address || suggestion.title);
+    setSearch(s.street_address || s.title || "");
   };
 
-  // Refetch when returning from detail page (enrichment may have updated beds/baths)
-  useFocusEffect(
-    useCallback(() => {
-      loadProperties();
-      loadSaved();
-    }, [loadProperties, loadSaved])
-  );
+  useFocusEffect(useCallback(() => { loadProperties(); loadSaved(); }, [loadProperties, loadSaved]));
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    Promise.all([loadFilters(), loadSaved(), loadProperties()]);
-  };
+  const onRefresh = () => { setRefreshing(true); Promise.all([loadFilters(), loadSaved(), loadProperties()]); };
 
   const toggleSave = async (id: string) => {
     const next = new Set(savedIds);
-    if (next.has(id)) {
-      next.delete(id);
-      setSavedIds(next);
-      try { await unsaveProperty(id); } catch {}
-    } else {
-      next.add(id);
-      setSavedIds(next);
-      try { await saveProperty(id); } catch {}
-    }
+    if (next.has(id)) { next.delete(id); setSavedIds(next); try { await unsaveProperty(id); } catch {} }
+    else { next.add(id); setSavedIds(next); try { await saveProperty(id); } catch {} }
   };
 
   const totalLabel = useMemo(() => {
@@ -157,118 +126,115 @@ export default function ListingsScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      {/* Sticky Header */}
-      <View style={styles.header} testID="listings-header">
+      {/* ── Header ── */}
+      <View style={styles.header}>
         <View style={styles.titleRow}>
           <View>
             <Text style={styles.eyebrow}>TARRANT COUNTY · TX</Text>
-            <Text style={styles.title}>Motivated Deals</Text>
+            <Text style={styles.title}>Deals</Text>
           </View>
-          <View testID="result-count" style={styles.countPill}>
-            <Text style={[styles.countPillText, tabularNums]}>{totalLabel}</Text>
+          <View style={styles.countPill}>
+            <Text style={styles.countPillText}>{totalLabel}</Text>
           </View>
         </View>
 
-        <View style={styles.searchBox} testID="search-box">
-          <Ionicons name="search" size={16} color={colors.muted} />
+        {/* Search bar */}
+        <View style={styles.searchBox}>
+          <Ionicons name="search" size={15} color={colors.muted} />
           <TextInput
-            testID="search-input"
-            placeholder="Search address, city, owner, ZIP"
+            placeholder="Address, city, owner, ZIP…"
             placeholderTextColor={colors.muted}
             value={search}
-            onChangeText={(value) => {
-              suppressSuggestions.current = false;
-              setSearch(value);
-            }}
+            onChangeText={(v) => { suppressSuggestions.current = false; setSearch(v); }}
             style={styles.searchInput}
             returnKeyType="search"
+            autoCorrect={false}
+            autoCapitalize="words"
           />
           {search ? (
-            <Pressable
-              onPress={() => {
-                suppressSuggestions.current = true;
-                setSuggestions([]);
-                setSearch("");
-              }}
-              hitSlop={10}
-              testID="clear-search"
-            >
-              <Ionicons name="close-circle" size={18} color={colors.muted} />
+            <Pressable onPress={() => { suppressSuggestions.current = true; setSuggestions([]); setSearch(""); }} hitSlop={10}>
+              <Ionicons name="close-circle" size={16} color={colors.muted} />
             </Pressable>
           ) : null}
         </View>
 
-        {suggesting || suggestions.length > 0 ? (
-          <View style={styles.suggestionPanel} testID="address-suggestions">
+        {/* Address suggestions */}
+        {(suggesting || suggestions.length > 0) ? (
+          <View style={styles.suggestionPanel}>
             {suggesting && suggestions.length === 0 ? (
               <View style={styles.suggestionLoading}>
                 <ActivityIndicator size="small" color={colors.brandPrimary} />
-                <Text style={styles.suggestionMeta}>Serenity is checking that address…</Text>
+                <Text style={styles.suggestionMeta}>Checking that address…</Text>
               </View>
             ) : (
-              suggestions.map((suggestion) => (
-                <Pressable
-                  key={`${suggestion.property_reach_id || "address"}-${suggestion.title}`}
-                  onPress={() => selectSuggestion(suggestion)}
-                  style={({ pressed }) => [styles.suggestionRow, pressed && styles.suggestionPressed]}
-                >
-                  <Ionicons name="location-outline" size={17} color={colors.brandPrimary} />
+              suggestions.map((s) => (
+                <Pressable key={`${s.property_reach_id}-${s.title}`} onPress={() => selectSuggestion(s)} style={({ pressed }) => [styles.suggestionRow, pressed && styles.suggestionPressed]}>
+                  <Ionicons name="location-outline" size={15} color={colors.brandPrimary} />
                   <View style={styles.suggestionText}>
-                    <Text style={styles.suggestionTitle} numberOfLines={1}>{suggestion.title}</Text>
-                    <Text style={styles.suggestionMeta} numberOfLines={1}>
-                      {[suggestion.county, suggestion.zip].filter(Boolean).join(" · ")}
-                    </Text>
+                    <Text style={styles.suggestionTitle} numberOfLines={1}>{s.title}</Text>
+                    <Text style={styles.suggestionMeta} numberOfLines={1}>{(s.county || "") + (s.zip ? " · " + s.zip : "")}</Text>
                   </View>
                 </Pressable>
               ))
             )}
           </View>
         ) : null}
-
-        <View style={styles.dropdownWrap}>
-          <FilterDropdown
-            testID="filter-row"
-            options={filters.map((f) => ({ key: f.key, label: f.label, count: f.count }) as FilterOption)}
-            activeKey={active}
-            onSelect={(key) => setActive(key)}
-          />
-        </View>
       </View>
 
-      {debugInfo ? (
-        <View style={[styles.debugBanner, debugInfo.startsWith("OK") ? styles.debugOk : styles.debugErr]} testID="debug-banner">
-          <Text style={styles.debugText}>{debugInfo}</Text>
-        </View>
-      ) : null}
+      {/* ── Filter Chips ── */}
+      <View style={styles.chipSection}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.chipScroll}
+        >
+          {filters.map((f) => {
+            const isActive = f.key === active;
+            return (
+              <Pressable
+                key={f.key}
+                onPress={() => { setActive(f.key); setLoading(true); }}
+                style={[styles.chip, isActive && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, isActive && styles.chipTextActive]}>{f.label}</Text>
+                {f.count != null && (
+                  <View style={[styles.chipCount, isActive && styles.chipCountActive]}>
+                    <Text style={[styles.chipCountText, isActive && styles.chipCountTextActive]}>
+                      {f.count > 999 ? "999+" : f.count}
+                    </Text>
+                  </View>
+                )}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
 
-      {/* List */}
+      {/* ── Content ── */}
       {loading ? (
-        <View style={styles.center} testID="listings-loading">
-          <ActivityIndicator color={colors.brandPrimary} />
-        </View>
+        <View style={styles.center}><ActivityIndicator color={colors.brandPrimary} /></View>
       ) : error ? (
-        <View style={styles.center} testID="listings-error">
+        <View style={styles.center}>
           <Text style={styles.errorText}>{error}</Text>
-          <Pressable testID="retry-button" style={styles.retryBtn} onPress={loadProperties}>
+          <Pressable style={styles.retryBtn} onPress={loadProperties}>
             <Text style={styles.retryText}>Retry</Text>
           </Pressable>
         </View>
       ) : items.length === 0 ? (
-        <View style={styles.center} testID="listings-empty">
-          <Ionicons name="home-outline" size={42} color={colors.muted} />
-          <Text style={styles.emptyText}>No target opportunities match.</Text>
-          <Text style={styles.emptySub}>Try another motivated or distressed category.</Text>
+        <View style={styles.center}>
+          <Ionicons name="home-outline" size={44} color={colors.muted} />
+          <Text style={styles.emptyText}>No deals found.</Text>
+          <Text style={styles.emptySub}>Try a different filter or search term.</Text>
         </View>
       ) : (
         <FlatList
-          testID="property-list"
           data={items}
           keyExtractor={(p) => p.id}
           contentContainerStyle={styles.listContent}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brandPrimary} />}
+          showsVerticalScrollIndicator={false}
           renderItem={({ item }) => (
             <PropertyCard
-              testID={`property-card-${item.id}`}
               property={item}
               saved={savedIds.has(item.id)}
               onPress={() => router.push(`/property/${item.id}`)}
@@ -292,94 +258,66 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   titleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  eyebrow: { fontSize: 10, color: colors.muted, fontWeight: "800", letterSpacing: 1 },
-  title: { fontSize: 24, fontWeight: "800", color: colors.onSurface, marginTop: 2 },
+  eyebrow: { fontSize: 10, color: colors.muted, fontWeight: "800", letterSpacing: 1.2 },
+  title: { fontSize: 24, fontWeight: "800", color: colors.onSurface, marginTop: 1 },
   countPill: {
     backgroundColor: colors.brandTertiary,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 10, paddingVertical: 5,
     borderRadius: radius.pill,
   },
-  countPillText: { fontSize: 12, fontWeight: "800", color: colors.onBrandTertiary },
+  countPillText: { fontSize: 12, fontWeight: "800", color: colors.onBrandTertiary, ...tabularNums },
   searchBox: {
-    flexDirection: "row",
-    alignItems: "center",
+    flexDirection: "row", alignItems: "center",
     backgroundColor: colors.surfaceSecondary,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: 12,
-    height: 42,
-    marginTop: spacing.md,
-    gap: 8,
+    borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    paddingHorizontal: 12, height: 42, marginTop: spacing.md, gap: 8,
   },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    color: colors.onSurface,
-    paddingVertical: 0,
-  },
+  searchInput: { flex: 1, fontSize: 14, color: colors.onSurface, paddingVertical: 0 },
   suggestionPanel: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    marginTop: 6,
-    overflow: "hidden",
+    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border,
+    borderRadius: radius.md, marginTop: 6, overflow: "hidden",
   },
-  suggestionLoading: {
-    minHeight: 46,
-    paddingHorizontal: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 9,
-  },
+  suggestionLoading: { minHeight: 46, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", gap: 9 },
   suggestionRow: {
-    minHeight: 52,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 9,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    minHeight: 50, paddingHorizontal: 12, paddingVertical: 8,
+    flexDirection: "row", alignItems: "center", gap: 9,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
   },
   suggestionPressed: { backgroundColor: colors.surfaceSecondary },
   suggestionText: { flex: 1 },
   suggestionTitle: { color: colors.onSurface, fontSize: 13, fontWeight: "700" },
-  suggestionMeta: { color: colors.muted, fontSize: 11, marginTop: 2 },
-  dropdownWrap: {
-    marginTop: spacing.md,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  suggestionMeta: { color: colors.muted, fontSize: 11, marginTop: 1 },
+
+  // Horizontal filter chips
+  chipSection: {
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
   },
-  chipScroll: {
-    marginTop: spacing.md,
-    height: 36,
+  chipScroll: { paddingHorizontal: spacing.lg, paddingVertical: 10, gap: 8, flexDirection: "row" },
+  chip: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 14, paddingVertical: 7,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSecondary,
+    borderWidth: 1, borderColor: colors.border,
   },
-  chipRow: {
-    gap: 8,
-    paddingRight: 8,
-    alignItems: "center",
+  chipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  chipText: { fontSize: 13, fontWeight: "700", color: colors.onSurface },
+  chipTextActive: { color: "#fff" },
+  chipCount: {
+    minWidth: 22, height: 18, paddingHorizontal: 5,
+    borderRadius: radius.pill, backgroundColor: colors.surfaceTertiary,
+    alignItems: "center", justifyContent: "center",
   },
-  listContent: {
-    padding: spacing.lg,
-    paddingBottom: spacing.xxxl,
-  },
+  chipCountActive: { backgroundColor: "rgba(255,255,255,0.2)" },
+  chipCountText: { fontSize: 10, fontWeight: "800", color: colors.onSurfaceTertiary },
+  chipCountTextActive: { color: "#fff" },
+
+  listContent: { padding: spacing.lg, paddingBottom: spacing.xxxl },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.xl },
   errorText: { color: colors.error, fontSize: 14, marginBottom: spacing.md, fontWeight: "600" },
-  retryBtn: {
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    backgroundColor: colors.brandPrimary,
-    borderRadius: radius.md,
-  },
-  retryText: { color: colors.onBrandPrimary, fontWeight: "700" },
+  retryBtn: { paddingHorizontal: 18, paddingVertical: 10, backgroundColor: colors.brandPrimary, borderRadius: radius.md },
+  retryText: { color: "#fff", fontWeight: "700" },
   emptyText: { fontSize: 15, color: colors.onSurface, fontWeight: "700", marginTop: 12 },
   emptySub: { fontSize: 13, color: colors.muted, marginTop: 4 },
-  debugBanner: { paddingHorizontal: spacing.lg, paddingVertical: 6 },
-  debugOk: { backgroundColor: "#0d3b26" },
-  debugErr: { backgroundColor: "#3d1010" },
-  debugText: { fontSize: 12, color: "#d6f0e0", fontWeight: "700" },
 });

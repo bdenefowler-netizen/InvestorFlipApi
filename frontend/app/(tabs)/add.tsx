@@ -20,13 +20,13 @@ import {
   addPropertyLink,
   pastePropertyCsv,
   syncAllListingSources,
-  uploadPropertyFile,
   type AllSourceSyncResult,
   type LinkIntakeResult,
   type PasteIntakeResult,
   type UploadIntakeResult,
 } from "@/src/lib/api";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
+import { adminRequestHeaders } from "@/src/lib/admin";
 
 type Busy = "sync" | "link" | "paste" | "url" | null;
 
@@ -108,25 +108,33 @@ export default function AddScreen() {
   const importFromUrl = async () => {
     const url = urlInput.trim();
     if (!url) { setError("Paste a URL to your file first."); return; }
-    if (!url.match(/\.(csv|xls|xlsx|zip)(\?|$|#)/i) && !url.includes("docs.google.com")) {
-      setError("URL must point to a .csv, .xlsx, or .zip file.");
+    // Accept: .csv, .xls, .xlsx, .zip, Google Sheets share links, or any URL with csv/xlsx in path
+    const isHostedFile = /\.(csv|xls|xlsx|zip)(\?|$|#)/i.test(url) ||
+                         /docs\.google\.com/i.test(url) ||
+                         /drive\.google\.com/i.test(url) ||
+                         /dropbox\.com/i.test(url) ||
+                         /onedrive/i.test(url) ||
+                         /sharepoint/i.test(url);
+    if (!isHostedFile) {
+      setError("URL must be a hosted CSV, Excel, or ZIP file.\nFor Google Sheets, use the share link.");
       return;
     }
     setUrlBusy(true);
     setUrlResult(null);
     try {
-      // Use the URL directly as a file-like asset
-      const result = await uploadPropertyFile({
-        uri: url,
-        name: url.split("/").pop() || "import.csv",
-        mimeType: url.endsWith(".xlsx") ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                 : url.endsWith(".xls")  ? "application/vnd.ms-excel"
-                 : url.endsWith(".zip")  ? "application/zip"
-                 : "text/csv",
-      } as any);
+      const headers = await adminRequestHeaders({ "Content-Type": "application/json" });
+      const res = await fetch(`${API_BASE}/api/import/url`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ url, source_label: `URL: ${url.split("/").pop() || url}` }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.detail || `Import failed (${res.status})`);
       setUrlResult({
         ok: result.ok,
-        message: `Imported ${result.accepted} rows from URL`,
+        message: result.ok
+          ? `Imported ${result.total_accepted} properties (${result.total_inserted} new, ${result.total_updated} updated)`
+          : "Import completed with issues",
         files: result.files,
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});

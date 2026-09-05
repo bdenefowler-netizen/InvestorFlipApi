@@ -22,6 +22,7 @@ import json
 import os
 import re
 from fastapi import APIRouter, HTTPException, Body
+from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 
 import httpx
@@ -1400,4 +1401,166 @@ async def brightdata_mcp_status():
             {"name": "Zillow", "type": "Property lookup (per address)", "mcp_tool": "scrape_as_html"},
         ],
         "credit_cost_per_run": "~5-20 MCP credits (5,000 free/month)",
+    }
+
+
+# ========== URL File Import (downloads + imports) ==========
+
+import io
+import zipfile
+import pandas as pd
+import httpx
+
+from pathlib import Path
+from intake import upsert_import_records
+
+class URLImportRequest(BaseModel):
+    url: str
+    source_label: str | None = None
+
+
+@router.post("/import/url")
+async def import_from_url(body: URLImportRequest):
+    from database import PostgresDatabase
+    db = PostgresDatabase()
+    """
+    Download a file from a URL, detect type (csv/xlsx/zip), then import.
+
+    Use cases:
+    - Hosted CSV (any public URL)
+    - Hosted Excel (.xlsx)
+    - Hosted ZIP containing multiple CSVs
+    - Google Sheets exported as CSV
+    - Dropbox / OneDrive share links
+    """
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(400, "URL is required")
+
+    # Normalize Google Sheets export links
+    if "docs.google.com/spreadsheets" in url and "/export" not in url:
+        # Convert view link to CSV export
+        try:
+            parts = url.split("/d/")[1].split("/")
+            sheet_id = parts[0]
+            gid = "0"
+            for p in parts:
+                if p.startswith("gid="):
+                    gid = p.split("=")[1]
+            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+        except Exception:
+            pass
+
+    # Download the file
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "InvestorFlip/1.0"})
+    except Exception as exc:
+        raise HTTPException(400, f"Could not download URL: {str(exc)[:200]}")
+
+    if resp.status_code != 200:
+        raise HTTPException(400, f"URL returned status {resp.status_code}")
+
+    raw = resp.content
+    if not raw:
+        raise HTTPException(400, "Downloaded file is empty")
+
+    # Detect type from URL or content-type
+    url_lower = url.lower().split("?")[0]
+    content_type = resp.headers.get("content-type", "").lower()
+
+    if "zip" in url_lower or "application/zip" in content_type:
+        file_type = "zip"
+    elif "xls" in url_lower and not "xls" in url_lower.replace("xlsx", ""):
+        file_type = "xlsx"
+    elif "csv" in url_lower or "text/csv" in content_type or "application/vnd.ms-excel" in content_type:
+        file_type = "csv"
+    else:
+        raise HTTPException(400, f"Could not detect file type from URL: {url_lower}")
+
+    source_name = body.source_label or f"URL import: {url[:80]}"
+
+    # Process based on type
+    property_ids: list[str] = []
+    file_reports: list[dict] = []
+
+    try:
+        if file_type == "zip":
+            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                members = [
+                    m for m in zf.namelist()
+                    if not m.endswith("/")
+                    and Path(m).suffix.lower() in {".csv", ".xls", ".xlsx"}
+                ]
+                if not members:
+                    raise HTTPException(400, "ZIP contains no CSV or Excel files")
+                for member in members:
+                    try:
+                        member_raw = zf.read(member)
+                        member_suffix = Path(member).suffix.lower()
+                        if member_suffix == ".csv":
+                            frame = pd.read_csv(io.BytesIO(member_raw), encoding="utf-8-sig")
+                        else:
+                            frame = pd.read_excel(io.BytesIO(member_raw))
+                        rows = frame.to_dict(orient="records")
+                        if len(rows) > 250:
+                            file_reports.append({
+                                "file": member, "status": "skipped",
+                                "reason": f"{len(rows)} rows exceeds 250-row limit"})
+                            continue
+                        report = await upsert_import_records(
+                            db, rows, f"{source_name} / {member}")
+                        property_ids.extend(report["property_ids"])
+                        file_reports.append({
+                            "file": member, "status": "ok",
+                            "rows": report["rows_read"], "accepted": report["accepted"],
+                            "inserted": report["inserted"], "updated": report["updated"]})
+                    except Exception as exc:
+                        file_reports.append({"file": member, "status": "error", "reason": str(exc)[:160]})
+        elif file_type == "xlsx":
+            frame = pd.read_excel(io.BytesIO(raw))
+            rows = frame.to_dict(orient="records")
+            if len(rows) > 250:
+                raise HTTPException(400, f"File has {len(rows)} rows, max 250 per import")
+            report = await upsert_import_records(db, rows, source_name)
+            property_ids = report["property_ids"]
+            file_reports = [{
+                "file": url.split("/")[-1] or "import.xlsx", "status": "ok",
+                "rows": report["rows_read"], "accepted": report["accepted"],
+                "inserted": report["inserted"], "updated": report["updated"]}]
+        else:  # csv
+            try:
+                frame = pd.read_csv(io.BytesIO(raw), encoding="utf-8-sig")
+            except UnicodeDecodeError:
+                frame = pd.read_csv(io.BytesIO(raw), encoding="latin1")
+            rows = frame.to_dict(orient="records")
+            if len(rows) > 250:
+                raise HTTPException(400, f"File has {len(rows)} rows, max 250 per import")
+            report = await upsert_import_records(db, rows, source_name)
+            property_ids = report["property_ids"]
+            file_reports = [{
+                "file": url.split("/")[-1] or "import.csv", "status": "ok",
+                "rows": report["rows_read"], "accepted": report["accepted"],
+                "inserted": report["inserted"], "updated": report["updated"]}]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, f"Could not parse file: {str(exc)[:200]}")
+
+    # Enrich imported properties
+    enrichment = await _enrich_imported_properties(property_ids)
+
+    total_accepted = sum(r.get("accepted", 0) for r in file_reports)
+    total_inserted = sum(r.get("inserted", 0) for r in file_reports)
+    total_updated = sum(r.get("updated", 0) for r in file_reports)
+
+    return {
+        "ok": bool(total_accepted),
+        "source_url": url,
+        "files": file_reports,
+        "total_accepted": total_accepted,
+        "total_inserted": total_inserted,
+        "total_updated": total_updated,
+        "property_ids": property_ids,
+        "enrichment": enrichment,
     }
