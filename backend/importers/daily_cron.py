@@ -29,14 +29,18 @@ async def run_all(limit: int = 2000) -> dict:
     """Run all free imports and return structured results."""
     from database import PostgresDatabase
 
-    db = PostgresDatabase()
     results = {"started_at": datetime.now(timezone.utc).isoformat(), "sources": {}}
 
+    # Wrap PostgresDatabase() + connect() together: an empty DATABASE_URL on
+    # this Railway service instance raises RuntimeError before connect() even
+    # runs. The main API service has its own DATABASE_URL — this cron is a
+    # sidecar refresh task that can run without the DB.
     try:
+        db = PostgresDatabase()
         await db.connect()
         logger.info("Database connected.")
     except Exception as e:
-        logger.error("Database connection failed: %s", e)
+        logger.warning("Database unavailable (skipping imports): %s", e)
         results["error"] = f"DB_CONNECT: {e}"
         return results
 

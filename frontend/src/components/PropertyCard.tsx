@@ -82,7 +82,7 @@ export function PropertyCard({
         </View>
       </View>
       <View style={styles.body}>
-        <Text style={styles.address} numberOfLines={1}>{p.situs_address}</Text>
+        <Text style={styles.address} numberOfLines={1}>{p.situs_address || p.address || p.street_address || "—"}</Text>
         <View style={styles.metaRow}>
           <Text style={styles.meta}>
             {p.beds ? `${p.beds} bd` : "— bd"} · {p.baths ? `${p.baths} ba` : "— ba"} · {p.sqft ? `${p.sqft.toLocaleString()} sqft` : "— sqft"}
