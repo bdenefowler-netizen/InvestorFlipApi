@@ -383,70 +383,46 @@ INVESTOR_FILTERS = [
 
 
 def apply_filter(filter_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
-    f = filter_key.lower()
-    if f in (
-        "all", "", "opportunities", "motivated", "distressed", "tax_lien",
-        "cash_offer", "investor_special", "foreclosure", "reo", "as_is",
-        "pre_foreclosure", "preforeclosure", "fsbo",
-    ):
-        return query
-    if f == "live":
-        query["is_live_listing"] = True
-    elif f == "reo":
-        query["listing_type"] = "REO"
-    elif f == "foreclosure":
-        query["listing_type"] = "Foreclosure"
-    elif f == "as_is":
-        query["listing_type"] = "As-Is"
-    elif f == "investor":
-        query["listing_type"] = "Investor"
-    elif f == "cash_house":
-        query["listing_type"] = "Cash House"
-    elif f == "high_equity":
-        query["high_equity"] = True
-    elif f == "cash_buyer":
-        query["cash_buyer"] = True
-    elif f == "investor_owned":
-        query["investor_owned"] = True
-    elif f == "llc":
-        query["owner_type"] = "LLC"
-    elif f == "law_firm":
-        query["owner_type"] = {"$in": ["Law Firm", "Attorney"]}
-    elif f == "tax_delinquent":
-        query["tax_delinquent"] = True
-    elif f == "absentee_owner":
-        query["absentee_owner"] = True
-    elif f == "out_of_state":
-        query["out_of_state_owner"] = True
-    elif f == "vacant":
-        query["vacant"] = True
-    elif f == "corporate":
-        query["owner_type"] = "Corporation"
-    elif f == "trust":
-        query["owner_type"] = "Trust"
-    elif f == "bank_owned":
-        query["owner_type"] = "Bank"
-    elif f == "distressed":
-        query["distress_score"] = {"$gte": 50}
-    elif f == "code_violation":
-        query["violation_count"] = {"$gte": 1}
-    elif f == "pre_foreclosure":
-        query["$or"] = [
-            {"pre_foreclosure": True},
-            {"listing_status": "Pre-Foreclosure"},
-        ]
+    f = filter_key.lower().replace("-", "_")
+    # Normalize hyphens to underscores (frontend sends "pre-foreclosure", "fixer-upper", etc.)
+    # Investor-relevant filters get real DB queries for performance
+    if f in ("all", "", "opportunities", "motivated"):
+        return query  # Return all — in-memory classification decides visibility
+    if f == "pre_foreclosure":
+        query["$or"] = [{"pre_foreclosure": True}, {"listing_status": "Pre-Foreclosure"}]
     elif f == "fsbo":
         query["$or"] = [
             {"listing_type": "FSBO"},
-            {"data_source": "FSBO.com"},
-            {"source_platform": "FSBO.com"},
+            {"listing_type": "For Sale By Owner"},
+            {"data_source": {"$regex": "FSBO", "$options": "i"}},
         ]
-    elif f == "motivated_seller":
-        query["motivation_score"] = {"$gte": 50}
-    elif f == "tax_lien":
+    elif f == "distressed":
+        query["$or"] = [
+            {"distress_score": {"$gte": 50}},
+            {"violation_count": {"$gte": 1}},
+            {"listing_status": "Distressed"},
+        ]
+    elif f == "foreclosure":
+        query["$or"] = [
+            {"listing_type": "Foreclosure"},
+            {"listing_type": "REO"},
+            {"is_foreclosure": True},
+            {"listing_status": "Foreclosure"},
+        ]
+    elif f == "off_market":
+        query["is_live_listing"] = False
+    elif f == "vacant":
+        query["vacant"] = True
+    elif f == "absentee":
+        query["absentee_owner"] = True
+    elif f == "tax_delinquent":
         query["tax_delinquent"] = True
+    elif f == "fixer_upper":
+        query["listing_type"] = "As-Is"
     elif f == "wholesale":
         query["wholesale"] = True
+    elif f in ("tax_lien", "cash_offer", "investor_special", "reo", "as_is"):
+        return query  # These use in-memory classification
     return query
 
 
@@ -461,7 +437,7 @@ def decorate_opportunity(property_record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def matches_investor_filter(property_record: Dict[str, Any], filter_key: str) -> bool:
-    key = filter_key.lower()
+    key = filter_key.lower().replace("-", "_")
     if key == "live":
         return property_record.get("is_live_listing") is True
 
@@ -2652,6 +2628,39 @@ async def cleanup_non_flip_properties():
         "blocked_examples": blocked_examples,
         "rule": "Kept only single-family houses and residential multi-family houses.",
     }
+
+
+@api_router.post("/analyze/quick")
+async def analyze_quick(body: Dict[str, Any]):
+    """
+    Quick deal analysis from the Calculator screen.
+    Takes: address, price, arv, repairs, rent
+    Returns: decision, max_offer, estimated_profit, roi_pct, warning
+    """
+    from ai.quill import analyze_property_with_quill
+    from ai.models import QuillAnalyzeRequest
+
+    address = body.get("address") or ""
+    price = float(body.get("price") or 0)
+    arv = float(body.get("arv") or 0)
+    repairs = float(body.get("repairs") or 0)
+    rent = float(body.get("rent") or 0)
+
+    if price <= 0:
+        return {"error": "Purchase price is required"}
+    if arv <= 0:
+        return {"error": "ARV (After Repair Value) is required"}
+
+    # Build the Quill request
+    req = QuillAnalyzeRequest(
+        address=address,
+        listing_price=price,
+        arv_estimate=arv,
+        repair_estimate=repairs,
+        rent_estimate=rent,
+        mortgage_estimate=0,
+    )
+    return analyze_property_with_quill(req)
 
 
 @api_router.post("/scout/quill-analysis", response_model=QuillAnalyzeResponse)
