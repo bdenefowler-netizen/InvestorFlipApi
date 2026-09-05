@@ -255,6 +255,14 @@ export default function PropertyDetail() {
     : "";
   const saleDate = extraString(prop.feed_extra, "sale_date") || extraString(prop.feed_extra, "auction_date");
   const openRecordsUrl = (url: string) => Linking.openURL(url).catch(() => {});
+  const contactOwner = () => {
+    const phone = prop.listing_agent_phone;
+    if (phone) {
+      Linking.openURL(`tel:${phone}`).catch(() => {});
+    } else if (prop.owner_mailing_phone) {
+      Linking.openURL(`tel:${prop.owner_mailing_phone}`).catch(() => {});
+    }
+  };
   const currentPhotoIndex = Math.max(0, photos.indexOf(heroPhoto || ""));
   const insets = useSafeAreaInsets();
   const openPhotoViewer = (photo: string) => {
@@ -764,7 +772,7 @@ export default function PropertyDetail() {
           <Ionicons name={saved ? "bookmark" : "bookmark-outline"} size={18} color={colors.onSurface} />
           <Text style={styles.ctaSecondaryText}>{saved ? "Saved" : "Save Deal"}</Text>
         </Pressable>
-        <Pressable testID="cta-contact" style={styles.ctaPrimary}>
+        <Pressable testID="cta-contact" style={styles.ctaPrimary} onPress={contactOwner}>
           <Ionicons name="call" size={16} color={colors.onBrandPrimary} />
           <Text style={styles.ctaPrimaryText}>Contact Owner</Text>
         </Pressable>
@@ -1180,11 +1188,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: colors.border,
     shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: -2 },
     elevation: 4,
-  },
-  ctaBarSpacer: {
-    position: "absolute", left: 0, right: 0, bottom: 0,
-    height: 0,
-    backgroundColor: "rgba(247,247,246,0.96)",
   },
   ctaSecondary: {
     flex: 1, height: 48, borderRadius: radius.md,
