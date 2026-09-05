@@ -8,6 +8,8 @@ Dedicated to Serenity:
 The good girl who frequented the Naughty List, but was never actually on it.
 """
 
+import re
+
 from .models import QuillAnalyzeRequest, QuillAnalyzeResponse
 from .openweb_ninja import enrich_property, openweb_ninja_status
 from .quill import analyze_property_with_quill
@@ -82,8 +84,55 @@ def serenity_status() -> dict:
     }
 
 
+def _fetch_tad_by_address(address: str) -> dict | None:
+    """
+    Look up TAD county records by address string.
+    Serenity checks the official county database as a fallback when
+    tax_roll_market_value hasn't been merged into the property record.
+    """
+    try:
+        from database import PostgresDatabase
+        db = PostgresDatabase()
+        # Search by normalized address
+        normalized = re.sub(r"[^a-z0-9 ]", " ", address.lower())
+        tokens = normalized.split()
+        # Try to find the property in TAD
+        cursor = db.tad_properties.find(
+            {
+                "$or": [
+                    {"SITUS_ADDR": {"$regex": tokens[0], "$options": "i"}},
+                ]
+            },
+            limit=5,
+        ).limit(5)
+        for doc in cursor:
+            tad_addr = (doc.get("SITUS_ADDR") or "").lower().replace(" ", "")
+            prop_addr = address.lower().replace(" ", "")
+            # Simple overlap check
+            if any(tok in tad_addr for tok in tokens if len(tok) > 3):
+                return doc
+        return None
+    except Exception:
+        return None
+
+
 def serenity_analyze_property(p: dict) -> QuillAnalyzeResponse:
     """Serenity enriches and prepares the deal; Quill analyzes it."""
     protected_property = enrich_property(p)
+
+    # 🏛️ TAD FALLBACK: if no tax_roll_market_value, check county DB directly
+    if not protected_property.get("tax_roll_market_value"):
+        tad_record = _fetch_tad_by_address(protected_property.get("situs_address", ""))
+        if tad_record:
+            tad_value = tad_record.get("TOTAL_VALU") or tad_record.get("APPRAISEDV")
+            if tad_value:
+                protected_property["tax_roll_market_value"] = float(tad_value)
+                # Also pull other useful TAD fields
+                protected_property["tax_roll_owner"] = tad_record.get("OWNER_NAME", "").strip()
+                protected_property["tax_roll_year_built"] = tad_record.get("YEAR_BUILT")
+                protected_property["tax_roll_sqft"] = tad_record.get("LIVING_AREA")
+                protected_property["tax_roll_beds"] = tad_record.get("BEDROOMS")
+                protected_property["tax_roll_baths"] = tad_record.get("BATHROOMS")
+
     request = build_quill_request_from_property(protected_property)
     return analyze_property_with_quill(request)
