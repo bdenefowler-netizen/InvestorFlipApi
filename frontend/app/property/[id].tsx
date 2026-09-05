@@ -349,6 +349,56 @@ export default function PropertyDetail() {
           </View>
         ) : null}
 
+        {/* TAD Property Record */}
+        {(prop.account_id || prop.legal_description || prop.subdivision || prop.quality || prop.condition || prop.assessed_value || prop.sale_status || prop.cause_number) ? (
+          <View style={styles.section} testID="section-tad-record">
+            <Text style={styles.sectionTitle}>TAD PROPERTY RECORD</Text>
+            <View style={styles.card}>
+              {prop.account_id ? <KeyValue k="TAD Account" v={prop.account_id} mono /> : null}
+              {prop.owner_name ? <KeyValue k="Owner Name" v={prop.owner_name} mono={false} /> : null}
+              {prop.owner_mailing_address ? <KeyValue k="Owner Mailing Address" v={prop.owner_mailing_address} mono={false} /> : null}
+              {prop.subdivision ? <KeyValue k="Subdivision" v={prop.subdivision} mono={false} /> : null}
+              {prop.legal_description ? <KeyValue k="Legal Description" v={prop.legal_description} mono={false} /> : null}
+              {prop.land_use_code ? <KeyValue k="Land Use" v={prop.land_use_code} mono={false} /> : null}
+            </View>
+
+            {prop.quality || prop.condition || prop.stories || prop.garage || prop.pool || prop.hvac || prop.effective_year ? (
+              <View style={styles.card}>
+                <Text style={styles.recordsTitle}>Building / Condition</Text>
+                {prop.quality ? <KeyValue k="Quality" v={prop.quality} mono={false} /> : null}
+                {prop.condition ? <KeyValue k="Condition" v={prop.condition} mono={false} /> : null}
+                {prop.effective_year ? <KeyValue k="Effective Year" v={String(prop.effective_year)} mono /> : null}
+                {prop.stories ? <KeyValue k="Stories" v={String(prop.stories)} mono /> : null}
+                {prop.garage ? <KeyValue k="Garage" v={prop.garage} mono={false} /> : null}
+                {prop.pool ? <KeyValue k="Pool" v={prop.pool} mono={false} /> : null}
+                {prop.hvac ? <KeyValue k="HVAC" v={prop.hvac} mono={false} /> : null}
+              </View>
+            ) : null}
+
+            {prop.land_value || prop.improvement_value || prop.assessed_value || prop.market_value ? (
+              <View style={styles.card}>
+                <Text style={styles.recordsTitle}>Values</Text>
+                {prop.land_value ? <KeyValue k="Land Value" v={`$${prop.land_value.toLocaleString()}`} mono /> : null}
+                {prop.improvement_value ? <KeyValue k="Improvement Value" v={`$${prop.improvement_value.toLocaleString()}`} mono /> : null}
+                {prop.assessed_value ? <KeyValue k="Assessed Value" v={`$${prop.assessed_value.toLocaleString()}`} mono /> : null}
+                {prop.market_value ? <KeyValue k="Market/Appraised Value" v={`$${prop.market_value.toLocaleString()}`} mono /> : null}
+              </View>
+            ) : null}
+
+            {prop.sale_status || prop.cause_number || prop.sale_date || prop.purchaser || prop.sale_amount || prop.lead_action ? (
+              <View style={styles.card}>
+                <Text style={styles.recordsTitle}>Tax Sale / Distress</Text>
+                {prop.sale_status ? <KeyValue k="Sale Status" v={prop.sale_status} mono={false} /> : null}
+                {prop.cause_number ? <KeyValue k="Cause Number" v={prop.cause_number} mono /> : null}
+                {prop.sale_date ? <KeyValue k="Sale Date" v={prop.sale_date} mono={false} /> : null}
+                {prop.purchaser ? <KeyValue k="Purchaser" v={prop.purchaser} mono={false} /> : null}
+                {prop.sale_amount ? <KeyValue k="Sale Amount" v={`$${prop.sale_amount.toLocaleString()}`} mono /> : null}
+                {prop.lead_action ? <KeyValue k="Lead Action" v={prop.lead_action} mono={false} /> : null}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
         {photos.length > 1 ? (
           <View style={styles.section} testID="section-photos">
             <Text style={styles.sectionTitle}>LISTING PHOTOS · {photos.length}</Text>

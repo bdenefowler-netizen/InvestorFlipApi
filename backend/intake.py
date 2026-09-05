@@ -6,6 +6,7 @@ discarding columns we do not recognize yet.
 """
 
 from __future__ import annotations
+import logging
 
 import math
 import re
@@ -19,20 +20,58 @@ from database import PostgresDatabase
 from investor_logic import compute_scores, derive_owner_signals, merge_live_refresh
 
 
+_log = logging.getLogger(__name__)
+
 ALIASES = {
+    # Core address
     "address": ("address", "property address", "situs address", "street address", "site address", "full address"),
     "city": ("city", "property city", "situs city"),
     "state": ("state", "property state", "situs state"),
     "zip": ("zip", "zipcode", "zip code", "postal code", "property zip"),
+    # Pricing
     "price": ("price", "list price", "listing price", "asking price", "opening bid"),
-    "market_value": ("market value", "estimated value", "zestimate", "arv"),
-    "beds": ("beds", "bedrooms", "bedroom count"),
-    "baths": ("baths", "bathrooms", "bathroom count"),
-    "sqft": ("sqft", "square feet", "living area", "living sqft"),
-    "year_built": ("year built", "year_built"),
+    "market_value": ("market value", "market/appraised", "appraised value", "estimated value", "zestimate", "arv", "assessed value"),
+    # Property details
+    "beds": ("beds", "bedrooms", "bedroom count", "bedroom"),
+    "baths": ("baths", "bathrooms", "bathroom count", "bathroom"),
+    "sqft": ("sqft", "square feet", "living area", "living sqft", "building sqft", "heated sqft"),
+    "year_built": ("year built", "year_built", "yr built"),
+    # Owner
     "owner_name": ("owner", "owner name", "property owner", "seller"),
-    "owner_mailing_address": ("mailing address", "owner mailing address", "owner address"),
-    "account_id": ("account", "account id", "tax account", "parcel", "parcel id", "apn"),
+    "owner_mailing_address": ("mailing address", "owner mailing address", "owner address", "mailing"),
+    # Account / ID
+    "account_id": (
+        "account_num", "account number", "account", "account id", "tax account",
+        "parcel", "parcel id", "apn", "pin", "pin number",
+        "tad account", "tad #", "tad account #", "appraisal dist #",
+        "account_num", "acct_num", "prop_id", "property id",
+    ),
+    # TAD / Tax fields
+    "legal_description": ("legal description", "legal desc", "legal"),
+    "subdivision": ("subdivision", "subdiv", "neighborhood", "development"),
+    "land_use_code": ("land use", "land use code", "land_use_code", "use code", "zoning"),
+    "stories": ("stories", "story", "stories count", "story count"),
+    "garage": ("garage", "garage spaces", "garage type", "parking"),
+    "pool": ("pool", "pool type", "swimming pool"),
+    "hvac": ("hvac", "hvac type", "heating", "cooling", "heating/cooling"),
+    "quality": ("quality", "building quality", "construction quality", "quality grade"),
+    "condition": ("condition", "building condition", "condition grade", "prop condition"),
+    "improvement_type": ("improvement type", "improvement", "improvement type", "bldg type"),
+    "effective_year": ("effective year", "effective year built", "eff year", "year effective"),
+    "land_value": ("land value", "land", "land assessed", "site value", "land appraised"),
+    "improvement_value": ("improvement value", "improvement", "bldg value", "improvement assessed"),
+    "assessed_value": ("assessed value", "assessed", "tax assessed value"),
+    # Tax sale / distress
+    "sale_status": (
+        "sale status", "sale_status", "tax sale status", "sale type",
+        "sold/withdrawn/struck off", "sale_type",
+    ),
+    "cause_number": ("cause number", "cause_no", "cause #", "case number", "case #", "cause_number"),
+    "sale_date": ("sale date", "sale_date", "auction date", "foreclosure date", "tax sale date"),
+    "purchaser": ("purchaser", "buyer", "purchaser name", "winning bidder", "successful bidder"),
+    "sale_amount": ("sale amount", "sale_price", "purchase price", "winning bid", "bid amount"),
+    "lead_action": ("lead action", "lead_act", "action", "disposition", "deed type"),
+    # Misc
     "listing_type": ("listing type", "deal type", "status", "property status", "tags"),
     "listing_description": ("description", "listing description", "remarks", "public remarks", "marketing remarks", "notes"),
     "detail_url": ("url", "link", "property url", "listing url"),
@@ -157,6 +196,35 @@ def normalize_import_row(row: Mapping[str, Any], source_name: str, row_number: i
     status = infer_listing_type(" ".join(filter(None, [_text(_row_value(row, "listing_type")), listing_description])))
     price = _number(_row_value(row, "price"))
     market_value = _number(_row_value(row, "market_value"))
+    # Extract all TAD / tax sale fields
+    land_value = _number(_row_value(row, "land_value"))
+    improvement_value = _number(_row_value(row, "improvement_value"))
+    assessed_value = _number(_row_value(row, "assessed_value"))
+    stories = _number(_row_value(row, "stories"))
+    garage = _text(_row_value(row, "garage"))
+    pool = _text(_row_value(row, "pool"))
+    hvac = _text(_row_value(row, "hvac"))
+    quality = _text(_row_value(row, "quality"))
+    condition = _text(_row_value(row, "condition"))
+    improvement_type = _text(_row_value(row, "improvement_type"))
+    effective_year = _number(_row_value(row, "effective_year"))
+    legal_description = _text(_row_value(row, "legal_description"))
+    subdivision = _text(_row_value(row, "subdivision"))
+    land_use_code = _text(_row_value(row, "land_use_code"))
+    sale_status = _text(_row_value(row, "sale_status"))
+    cause_number = _text(_row_value(row, "cause_number"))
+    sale_date = _text(_row_value(row, "sale_date"))
+    purchaser = _text(_row_value(row, "purchaser"))
+    sale_amount = _number(_row_value(row, "sale_amount"))
+    lead_action = _text(_row_value(row, "lead_action"))
+
+    # Tax roll market value overrides feed estimate when available
+    if market_value:
+        market_value_source = "uploaded estimate"
+    elif assessed_value:
+        market_value = assessed_value
+        market_value_source = "TAD assessed value"
+
     document: Dict[str, Any] = {
         "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"listing:{identity}")),
         "address_key": canonical_street_key(parts["full"]),
@@ -169,7 +237,7 @@ def normalize_import_row(row: Mapping[str, Any], source_name: str, row_number: i
         "home_type": property_type,
         "price": int(price) if price is not None else 0,
         "market_value": int(market_value) if market_value is not None else None,
-        "market_value_source": "uploaded estimate" if market_value else None,
+        "market_value_source": market_value_source if market_value else None,
         "beds": _number(_row_value(row, "beds")),
         "baths": _number(_row_value(row, "baths")),
         "sqft": int(_number(_row_value(row, "sqft")) or 0) or None,
@@ -191,6 +259,28 @@ def normalize_import_row(row: Mapping[str, Any], source_name: str, row_number: i
         "updated_at": now,
         "listing_last_seen_at": now,
         "missed_syncs": 0,
+        # TAD / Tax fields
+        "land_value": int(land_value) if land_value else None,
+        "improvement_value": int(improvement_value) if improvement_value else None,
+        "assessed_value": int(assessed_value) if assessed_value else None,
+        "stories": int(stories) if stories else None,
+        "garage": garage,
+        "pool": pool,
+        "hvac": hvac,
+        "quality": quality,
+        "condition": condition,
+        "improvement_type": improvement_type,
+        "effective_year": int(effective_year) if effective_year else None,
+        "legal_description": legal_description,
+        "subdivision": subdivision,
+        "land_use_code": land_use_code,
+        # Tax sale / distress
+        "sale_status": sale_status,
+        "cause_number": cause_number,
+        "sale_date": sale_date,
+        "purchaser": purchaser,
+        "sale_amount": int(sale_amount) if sale_amount else None,
+        "lead_action": lead_action,
         **status,
     }
     document.update(derive_owner_signals(owner_name, owner_mailing, parts["full"], parts["state"]))
@@ -226,11 +316,21 @@ async def upsert_import_records(
     ids: List[str] = []
     inserted = updated = 0
     for record in unique.values():
-        existing = await database.properties.find_one({"id": record["id"]}, {"_id": 0})
+        # Try matching by TAD account_id first (most precise)
+        account_id = record.get("account_id")
+        if account_id:
+            existing = await database.properties.find_one(
+                {"account_id": account_id}, {"_id": 0})
+            if existing:
+                _log.debug("Matched %s by account_id %s", record["situs_address"], account_id)
+
+        # Try matching by canonical address_key + zip
         if not existing:
             existing = await database.properties.find_one({
                 "address_key": record["address_key"], "zip": record["zip"],
             }, {"_id": 0})
+
+        # Try matching by address substring + zip
         if not existing:
             street = str(record.get("situs_address") or "").split(",", 1)[0].strip()
             address_query: Dict[str, Any] = {

@@ -1875,8 +1875,8 @@ async def intake_upload(file: UploadFile = File(...)):
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "The uploaded file is empty")
-    if len(raw) > 50 * 1024 * 1024:  # 50 MB limit (ZIP may contain many files)
-        raise HTTPException(413, "The upload is larger than 50 MB")
+    if len(raw) > 200 * 1024 * 1024:  # 50 MB limit (ZIP may contain many files)
+        raise HTTPException(413, "The upload is larger than 200 MB")
 
     source_name = f"User upload: {filename}"
     property_ids: list[str] = []
