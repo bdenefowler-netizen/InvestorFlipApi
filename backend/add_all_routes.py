@@ -1290,3 +1290,114 @@ async def brightdata_deals_status():
         ],
         "credit_cost_per_run": "~50-100 credits (5,000 free/month)",
     }
+
+
+# ========== Bright Data MCP Scraper (no zone required) ==========
+
+@router.post("/import/brightdata-mcp")
+async def import_brightdata_mcp_route(
+    include_offmarket: bool = Body(default=True),
+    include_fsbo: bool = Body(default=True),
+    include_hubzu: bool = Body(default=True),
+    max_pages: int = Body(default=2),
+):
+    """
+    Scrape off-market deals via Bright Data MCP (no zone required).
+
+    Sources:
+    1. OffMarketDeck — wholesale + flip + rental deals
+    2. FSBO.com — for sale by owner (motivated sellers)
+    3. Hubzu — bank-owned REO auctions
+
+    Cost: ~5-20 MCP credits per run. Free tier: 5,000 credits/month.
+    """
+    from database import PostgresDatabase
+    from importers.brightdata_mcp_scraper import (
+        fetch_all_leads, import_leads_to_db,
+    )
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        leads = await fetch_all_leads(
+            include_offmarket=include_offmarket,
+            include_fsbo=include_fsbo,
+            include_hubzu=include_hubzu,
+            max_pages=max_pages,
+        )
+        result = await import_leads_to_db(db, leads)
+        result["status"] = "ok"
+        result["source"] = "brightdata_mcp"
+        result["by_source"] = {}
+        for lead in leads:
+            src = lead.get("data_source", "Unknown")
+            result["by_source"][src] = result["by_source"].get(src, 0) + 1
+        return result
+    except Exception as e:
+        logger.exception("brightdata_mcp import failed")
+        return {"imported": 0, "status": "error", "error": str(e)}
+    finally:
+        try:
+            await db.close()
+        except Exception:
+            pass
+
+
+@router.get("/brightdata-mcp/preview")
+async def preview_brightdata_mcp(
+    include_offmarket: bool = True,
+    include_fsbo: bool = True,
+    include_hubzu: bool = True,
+    max_pages: int = 1,
+):
+    """
+    Preview MCP-scraped leads without writing to DB.
+    Returns raw leads so you can verify data quality first.
+    """
+    from importers.brightdata_mcp_scraper import fetch_all_leads
+
+    try:
+        leads = await fetch_all_leads(
+            include_offmarket=include_offmarket,
+            include_fsbo=include_fsbo,
+            include_hubzu=include_hubzu,
+            max_pages=max_pages,
+        )
+        by_source = {}
+        for lead in leads:
+            src = lead.get("data_source", "Unknown")
+            by_source[src] = by_source.get(src, 0) + 1
+        return {
+            "total": len(leads),
+            "preview": leads[:30],
+            "by_source": by_source,
+        }
+    except Exception as e:
+        logger.exception("brightdata_mcp preview failed")
+        return {"error": str(e), "total": 0, "preview": []}
+
+
+@router.get("/brightdata-mcp/status")
+async def brightdata_mcp_status():
+    """
+    Check Bright Data MCP configuration and available tools.
+    """
+    import os
+    has_token = bool(os.environ.get("BRIGHTDATA_TOKEN", "") or os.environ.get("BRIGHTDATA_TOKEN", ""))
+    return {
+        "brightdata_mcp_configured": has_token,
+        "tools": [
+            "scrape_as_html",
+            "scrape_as_markdown",
+            "scrape_batch",
+            "search_engine",
+            "search_engine_batch",
+        ],
+        "sources": [
+            {"name": "OffMarketDeck", "type": "Off-market / wholesale deals", "mcp_tool": "scrape_as_html"},
+            {"name": "FSBO.com", "type": "For sale by owner", "mcp_tool": "scrape_as_html"},
+            {"name": "Hubzu", "type": "Bank-owned auctions", "mcp_tool": "scrape_as_html"},
+            {"name": "Zillow", "type": "Property lookup (per address)", "mcp_tool": "scrape_as_html"},
+        ],
+        "credit_cost_per_run": "~5-20 MCP credits (5,000 free/month)",
+    }

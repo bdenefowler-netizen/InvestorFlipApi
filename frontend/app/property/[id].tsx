@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Linking, Pressable, Dimensions, Modal } from "react-native";
+import { Platform } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -268,7 +269,7 @@ export default function PropertyDetail() {
 
   return (
     <View style={styles.safe}>
-      <ScrollView contentContainerStyle={{ paddingBottom: 120 }} testID="property-detail-scroll">
+      <ScrollView contentContainerStyle={{ paddingTop: 90, paddingBottom: 120 }} testID="property-detail-scroll">
         {/* Hero */}
         <View style={styles.hero}>
           <Pressable
@@ -1171,11 +1172,13 @@ const styles = StyleSheet.create({
   muted: { color: colors.muted, fontSize: 12 },
 
   ctaBar: {
-    position: "absolute", left: 0, right: 0, bottom: 0,
+    position: "absolute", left: 0, right: 0, top: 0,
     flexDirection: "row", gap: 8,
-    paddingHorizontal: spacing.lg, paddingTop: 10, paddingBottom: 24,
-    backgroundColor: colors.surfaceSecondary,
-    borderTopWidth: 1, borderTopColor: colors.border,
+    paddingHorizontal: spacing.lg, paddingTop: 50, paddingBottom: 10,
+    backgroundColor: "rgba(247,247,246,0.96)",
+    borderBottomWidth: 1, borderBottomColor: colors.border,
+    shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
   ctaSecondary: {
     flex: 1, height: 48, borderRadius: radius.md,

@@ -1,4 +1,5 @@
 import { Tabs } from "expo-router";
+import { Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { colors } from "@/src/theme/tokens";
 
@@ -9,14 +10,22 @@ export default function TabsLayout() {
         headerShown: false,
         tabBarActiveTintColor: colors.brandPrimary,
         tabBarInactiveTintColor: colors.muted,
+        // Smaller, more compact tab bar — never collides with phone gesture bar
         tabBarStyle: {
           backgroundColor: colors.surfaceSecondary,
           borderTopColor: colors.border,
-          height: 64,
-          paddingTop: 6,
-          paddingBottom: 8,
+          height: Platform.OS === "ios" ? 56 : 56,
+          paddingTop: 4,
+          paddingBottom: Platform.OS === "ios" ? 0 : 4, // Android already has nav bar
         },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: "700" },
+        tabBarLabelStyle: {
+          fontSize: 10,
+          fontWeight: "700",
+          marginTop: 1,
+        },
+        tabBarItemStyle: {
+          paddingVertical: 2,
+        },
       }}
     >
       <Tabs.Screen

@@ -5,12 +5,15 @@ import {
   Text,
   View,
   StyleSheet,
-  FlatList,
+  ScrollView,
   TouchableOpacity,
+  Dimensions,
 } from "react-native";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing } from "../theme/tokens";
+
+const WIDTH = Dimensions.get("window").width;
 
 export interface FilterOption {
   key: string;
@@ -32,9 +35,15 @@ export function FilterDropdown({
   const [open, setOpen] = useState(false);
   const active = options.find((o) => o.key === activeKey) ?? options[0];
 
+  const handleSelect = (key: string) => {
+    Haptics.selectionAsync().catch(() => {});
+    onSelect(key);
+    setOpen(false);
+  };
+
   return (
     <View testID={testID}>
-      {/* Trigger */}
+      {/* Trigger — styled pill */}
       <Pressable
         testID="filter-dropdown-trigger"
         onPress={() => {
@@ -43,78 +52,123 @@ export function FilterDropdown({
         }}
         style={styles.trigger}
       >
+        <Ionicons name="options-outline" size={14} color={colors.onSurfaceTertiary} />
         <Text style={styles.triggerLabel} numberOfLines={1}>
-          {active?.label ?? "All"}
+          {active?.label ?? "Filter"}
         </Text>
-        {typeof active?.count === "number" ? (
-          <View style={styles.countWrap}>
+        {typeof active?.count === "number" && (
+          <View style={styles.countPill}>
             <Text style={styles.countText}>{active.count}</Text>
           </View>
-        ) : null}
-        <Ionicons
-          name={open ? "chevron-up" : "chevron-down"}
-          size={16}
-          color={colors.onSurfaceTertiary}
-        />
+        )}
+        <Ionicons name="chevron-down" size={14} color={colors.onSurfaceTertiary} />
       </Pressable>
 
-      {/* Dropdown modal */}
+      {/* Top drawer modal */}
       <Modal
         visible={open}
         transparent
-        animationType="fade"
+        animationType="slide"
         onRequestClose={() => setOpen(false)}
       >
-        <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
-          <View style={styles.sheet}>
-            <View style={styles.handle} />
-            <Text style={styles.sheetTitle}>Filter deals</Text>
-            <FlatList
-              data={options}
-              keyExtractor={(o) => o.key}
-              style={styles.list}
-              renderItem={({ item }) => {
-                const isActive = item.key === activeKey;
-                return (
-                  <TouchableOpacity
-                    testID={`dropdown-option-${item.key}`}
-                    onPress={() => {
-                      Haptics.selectionAsync().catch(() => {});
-                      onSelect(item.key);
-                      setOpen(false);
-                    }}
-                    style={[styles.option, isActive && styles.optionActive]}
-                  >
-                    <Text
+        <Pressable
+          style={styles.backdrop}
+          activeOpacity={1}
+          onPress={() => setOpen(false)}
+        >
+          <View style={styles.drawer} onStartShouldSetResponder={() => true}>
+            {/* Drawer handle */}
+            <View style={styles.handleRow}>
+              <View style={styles.handle} />
+            </View>
+
+            {/* Header */}
+            <View style={styles.drawerHeader}>
+              <Text style={styles.drawerTitle}>Filter Deals</Text>
+              <TouchableOpacity
+                onPress={() => setOpen(false)}
+                hitSlop={12}
+              >
+                <Ionicons name="close" size={22} color={colors.onSurfaceTertiary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Scrollable options */}
+            <ScrollView
+              style={styles.scrollArea}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Active filter info */}
+              {activeKey !== "all" && (
+                <View style={styles.activeInfo}>
+                  <Ionicons name="checkmark-circle" size={16} color={colors.brandPrimary} />
+                  <Text style={styles.activeInfoText}>
+                    Showing: <Text style={styles.activeInfoBold}>{active?.label}</Text> ({active?.count})
+                  </Text>
+                </View>
+              )}
+
+              {/* Options grid — 2 columns */}
+              <View style={styles.grid}>
+                {options.map((option) => {
+                  const isActive = option.key === activeKey;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      testID={`dropdown-option-${option.key}`}
+                      onPress={() => handleSelect(option.key)}
                       style={[
-                        styles.optionLabel,
-                        { color: isActive ? colors.brandPrimary : colors.onSurface },
+                        styles.gridCard,
+                        isActive && styles.gridCardActive,
                       ]}
+                      activeOpacity={0.7}
                     >
-                      {item.label}
-                    </Text>
-                    {typeof item.count === "number" ? (
-                      <View style={[styles.optionCount, isActive && { backgroundColor: colors.brandPrimary }]}>
+                      <View style={styles.gridCardTop}>
                         <Text
                           style={[
-                            styles.optionCountText,
-                            { color: isActive ? colors.onBrandPrimary : colors.onSurfaceTertiary },
+                            styles.gridCardLabel,
+                            isActive && styles.gridCardLabelActive,
+                          ]}
+                          numberOfLines={2}
+                        >
+                          {option.label}
+                        </Text>
+                        {isActive && (
+                          <Ionicons
+                            name="checkmark-circle-fill"
+                            size={18}
+                            color={colors.brandPrimary}
+                          />
+                        )}
+                      </View>
+                      {typeof option.count === "number" && (
+                        <Text
+                          style={[
+                            styles.gridCardCount,
+                            isActive && styles.gridCardCountActive,
                           ]}
                         >
-                          {item.count}
+                          {option.count.toLocaleString()} deals
                         </Text>
-                      </View>
-                    ) : null}
-                    {isActive ? (
-                      <Ionicons name="checkmark-circle" size={18} color={colors.brandPrimary} />
-                    ) : null}
-                  </TouchableOpacity>
-                );
-              }}
-            />
-            <Pressable style={styles.closeBtn} onPress={() => setOpen(false)}>
-              <Text style={styles.closeText}>Close</Text>
-            </Pressable>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+
+            {/* Apply button */}
+            <View style={styles.footer}>
+              <TouchableOpacity
+                style={styles.applyBtn}
+                onPress={() => setOpen(false)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.applyBtnText}>Apply Filter</Text>
+                <Ionicons name="checkmark" size={18} color="#fff" />
+              </TouchableOpacity>
+            </View>
           </View>
         </Pressable>
       </Modal>
@@ -124,89 +178,168 @@ export function FilterDropdown({
 
 const styles = StyleSheet.create({
   trigger: {
-    height: 42,
+    height: 40,
+    paddingHorizontal: 14,
     borderRadius: radius.md,
     backgroundColor: colors.surfaceSecondary,
     borderWidth: 1,
     borderColor: colors.border,
-    paddingHorizontal: 14,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
   },
   triggerLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
     color: colors.onSurface,
-    flexShrink: 1,
   },
-  countWrap: {
-    minWidth: 22,
-    height: 20,
+  countPill: {
+    minWidth: 24,
+    height: 18,
     paddingHorizontal: 6,
     borderRadius: radius.pill,
-    backgroundColor: colors.surfaceTertiary,
+    backgroundColor: colors.brandTertiary,
     alignItems: "center",
     justifyContent: "center",
   },
-  countText: { fontSize: 11, fontWeight: "800", color: colors.onSurfaceTertiary },
+  countText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: colors.onBrandTertiary,
+  },
+
+  // Modal backdrop
   backdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "flex-end",
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-start", // ← TOP, not bottom
   },
-  sheet: {
+
+  // Drawer at top (was bottom sheet)
+  drawer: {
     backgroundColor: colors.surface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderBottomLeftRadius: 20,
+    borderBottomRightRadius: 20,
     paddingBottom: 28,
-    paddingHorizontal: 16,
-    maxHeight: "70%",
+    // Max height so it doesn't eat the whole screen
+    maxHeight: Dimensions.get("window").height * 0.65,
+  },
+
+  handleRow: {
+    alignItems: "center",
+    paddingTop: 10,
+    paddingBottom: 4,
   },
   handle: {
-    alignSelf: "center",
-    width: 40,
+    width: 36,
     height: 4,
     borderRadius: 2,
     backgroundColor: colors.border,
-    marginTop: 10,
-    marginBottom: 12,
   },
-  sheetTitle: {
-    fontSize: 16,
+
+  drawerHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+  drawerTitle: {
+    fontSize: 17,
     fontWeight: "800",
     color: colors.onSurface,
-    marginBottom: 10,
   },
-  list: { flexGrow: 0 },
-  option: {
+
+  activeInfo: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingVertical: 13,
+    gap: 6,
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 8,
+  },
+  activeInfoText: {
+    fontSize: 12,
+    color: colors.muted,
+  },
+  activeInfoBold: {
+    fontWeight: "800",
+    color: colors.brandPrimary,
+  },
+
+  scrollArea: {
+    flexGrow: 0,
+  },
+  scrollContent: {
     paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+
+  // 2-column grid
+  grid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  gridCard: {
+    width: (WIDTH - 44) / 2, // 20+20 padding + 12+12 gap / 2 columns
+    backgroundColor: colors.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: colors.border,
     borderRadius: radius.md,
+    padding: 14,
     marginBottom: 4,
   },
-  optionActive: { backgroundColor: colors.surfaceSecondary },
-  optionLabel: { fontSize: 15, fontWeight: "600", flex: 1 },
-  optionCount: {
-    minWidth: 24,
-    height: 20,
-    paddingHorizontal: 7,
-    borderRadius: radius.pill,
-    backgroundColor: colors.surfaceTertiary,
-    alignItems: "center",
-    justifyContent: "center",
+  gridCardActive: {
+    backgroundColor: colors.brandTertiary,
+    borderColor: colors.brandPrimary,
   },
-  optionCountText: { fontSize: 12, fontWeight: "800" },
-  closeBtn: {
-    marginTop: 12,
-    height: 44,
+  gridCardTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  gridCardLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: colors.onSurface,
+    flex: 1,
+    lineHeight: 18,
+  },
+  gridCardLabelActive: {
+    color: colors.brandPrimary,
+  },
+  gridCardCount: {
+    fontSize: 11,
+    color: colors.muted,
+    marginTop: 4,
+  },
+  gridCardCountActive: {
+    color: colors.onBrandTertiary,
+  },
+
+  footer: {
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+  },
+  applyBtn: {
+    height: 48,
     borderRadius: radius.md,
+    backgroundColor: colors.brandPrimary,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: colors.surfaceSecondary,
+    gap: 8,
   },
-  closeText: { fontSize: 15, fontWeight: "700", color: colors.onSurface },
+  applyBtnText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "800",
+  },
 });
