@@ -12,6 +12,7 @@ class QuillAnalyzeRequest(BaseModel):
     sqft: Optional[int] = None
 
     arv_estimate: Optional[float] = None
+    arv_source: Optional[str] = None  # "TAD county", "benchmark", "feed estimate", etc.
     repair_estimate: Optional[float] = None
     rent_estimate: Optional[float] = None
     mortgage_estimate: Optional[float] = None
@@ -37,3 +38,7 @@ class QuillAnalyzeResponse(BaseModel):
     risk_flags: List[str] = Field(default_factory=list)
     offer_letter: str
     questions_to_ask_agent: List[str] = Field(default_factory=list)
+
+    # 🐾 Quill's math + reason breakdown (new)
+    math_breakdown: Optional[dict] = None  # {arv, repairs, max_offer_formula, profit, roi}
+    deal_reason: Optional[str] = None  # Plain-English explanation of BUY/PASS/NEGOTIATE
