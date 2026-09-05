@@ -17,18 +17,18 @@ import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 import { API_BASE } from "@/src/lib/api";
 
-interface TadProperty {
-  situs_address: string;
-  owner_name?: string;
-  assessed_value?: number;
-  market_value?: number;
+interface AddressSuggestion {
+  address: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  zpid?: string;
+  price?: number;
   beds?: number;
   baths?: number;
   sqft?: number;
-  year_built?: number;
-  lot_size_sqft?: number;
-  legal_description?: string;
-  owner_mailing_address?: string;
+  listing_type?: string;
+  source?: string;
 }
 
 interface AnalysisResult {
@@ -48,15 +48,18 @@ type Step = "address" | "form" | "result";
 export default function CalculateScreen() {
   const [step, setStep] = useState<Step>("address");
   const [addressInput, setAddressInput] = useState("");
-  const [suggestions, setSuggestions] = useState<TadProperty[]>([]);
+  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([]);
   const [suggesting, setSuggesting] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
-  const [selectedProperty, setSelectedProperty] = useState<TadProperty | null>(null);
+  const [selectedProperty, setSelectedProperty] = useState<AddressSuggestion | null>(null);
   
   // Form state
   const [purchasePrice, setPurchasePrice] = useState("");
   const [arv, setArv] = useState("");
   const [repairs, setRepairs] = useState("");
+  const [beds, setBeds] = useState("");
+  const [baths, setBaths] = useState("");
+  const [sqft, setSqft] = useState("");
   const [monthlyRent, setMonthlyRent] = useState("");
   const [holdingMonths, setHoldingMonths] = useState("6");
   
@@ -67,7 +70,7 @@ export default function CalculateScreen() {
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ─── Address Search ─────────────────────────────────────────────────────────
-  const searchTad = useCallback(async (query: string) => {
+  const searchAddress = useCallback(async (query: string) => {
     if (query.length < 5) {
       setSuggestions([]);
       setSuggesting(false);
@@ -77,10 +80,10 @@ export default function CalculateScreen() {
     setLoadingSuggestions(true);
     try {
       const res = await fetch(
-        `${API_BASE}/api/tad/search?query=${encodeURIComponent(query)}&search_type=address`
+        `${API_BASE}/api/address-suggestions?query=${encodeURIComponent(query)}&search_type=address`
       );
       const data = await res.json();
-      const items: TadProperty[] = data.items || [];
+      const items: AddressSuggestion[] = data.items || [];
       // Deduplicate by address
       const seen = new Set<string>();
       const unique = items.filter((p) => {
@@ -102,18 +105,23 @@ export default function CalculateScreen() {
     setStep("address");
     setResult(null);
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
-    searchTimeout.current = setTimeout(() => searchTad(text), 400);
+    searchTimeout.current = setTimeout(() => searchAddress(text), 400);
   };
 
-  const selectProperty = (prop: TadProperty) => {
+  const selectProperty = (prop: AddressSuggestion) => {
     setSelectedProperty(prop);
-    setAddressInput(prop.situs_address || "");
+    const fullAddress = [prop.address, prop.city, prop.state, prop.zip].filter(Boolean).join(", ");
+    setAddressInput(fullAddress || prop.address || "");
     setSuggestions([]);
     setSuggesting(false);
     
-    // Auto-fill ARV from TAD
-    const tadValue = prop.assessed_value || prop.market_value;
-    if (tadValue) setArv(String(tadValue));
+    // Auto-fill ARV from listing price (best available estimate)
+    if (prop.price) setArv(String(prop.price));
+    
+    // Auto-fill beds/baths/sqft if available
+    if (prop.beds) setBeds(String(prop.beds));
+    if (prop.baths) setBaths(String(prop.baths));
+    if (prop.sqft) setSqft(String(prop.sqft));
     
     setStep("form");
     Keyboard.dismiss();
@@ -296,10 +304,10 @@ export default function CalculateScreen() {
                 </Pressable>
               </View>
               <View style={styles.propertyCardBody}>
-                <Text style={styles.propertyAddress}>{selectedProperty.situs_address}</Text>
-                {selectedProperty.owner_name && (
+                <Text style={styles.propertyAddress}>{[selectedProperty.address, selectedProperty.city].filter(Boolean).join(", ")}</Text>
+                {selectedProperty.listing_type && (
                   <Text style={styles.propertyOwner}>
-                    👤 {selectedProperty.owner_name}
+                    🏷️ {selectedProperty.listing_type || 'For Sale'}
                   </Text>
                 )}
                 <View style={styles.propertyStats}>
@@ -312,13 +320,10 @@ export default function CalculateScreen() {
                   {selectedProperty.sqft && (
                     <View style={styles.statPill}><Text style={styles.statPillText}>📐 {selectedProperty.sqft.toLocaleString()} sf</Text></View>
                   )}
-                  {selectedProperty.year_built && (
-                    <View style={styles.statPill}><Text style={styles.statPillText}>🏗 {selectedProperty.year_built}</Text></View>
-                  )}
-                  {(selectedProperty.assessed_value || selectedProperty.market_value) && (
+                  {selectedProperty.price && (
                     <View style={[styles.statPill, styles.statPillHighlight]}>
                       <Text style={styles.statPillHighlightText}>
-                        💰 TAD ${((selectedProperty.assessed_value || selectedProperty.market_value) || 0).toLocaleString()}
+                        💰 ${selectedProperty.price.toLocaleString()}
                       </Text>
                     </View>
                   )}

@@ -19,7 +19,6 @@ def requires_admin_key(path: str, method: str = "GET") -> bool:
         "/api/brightdata/check",
     )
     protected_exact = {
-        "/api/address-suggestions",
         "/api/feeds/sync",
         "/api/feeds/upload-csv",
         "/api/live/sync-fort-worth",
