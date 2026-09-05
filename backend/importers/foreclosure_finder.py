@@ -93,10 +93,47 @@ async def import_foreclosures(db: PostgresDatabase) -> Dict[str, Any]:
     matched = 0
     skipped = 0
     
+    # ─── Filter: only auctions 30+ days in the future ───
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) + timedelta(days=30)
+
+    def _parse_sale_date(record):
+        """Parse sale_date from record, return None if unparseable."""
+        raw = record.get("sale_date", "")
+        if not raw:
+            return None
+        raw = str(raw).strip()
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y", "%b %d %Y"):
+            try:
+                return datetime.strptime(raw.replace("\n", " ").strip(), fmt).replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+        return None
+
+    filtered_records = []
+    skipped_past = 0
+    skipped_undated = 0
+    for record in records:
+        sale_dt = _parse_sale_date(record)
+        if sale_dt is None:
+            # Keep records without a date (can't verify)
+            filtered_records.append(record)
+            skipped_undated += 1
+        elif sale_dt >= cutoff:
+            filtered_records.append(record)
+        else:
+            skipped_past += 1
+
+    logger.info(
+        "Foreclosure filter: %d future auctions (30+ days), %d skipped (past), %d kept (no date)",
+        len(filtered_records), skipped_past, skipped_undated,
+    )
+    records = filtered_records
+
     for record in records:
         doc = _build_foreclosure_doc(record)
         address = doc.get("situs_address", "")
-        
+
         # Check if property already exists
         existing = await db.properties.find_one({"situs_address": address})
         
@@ -128,4 +165,5 @@ async def import_foreclosures(db: PostgresDatabase) -> Dict[str, Any]:
         "inserted": inserted,
         "matched": matched,
         "skipped": skipped,
+        "filter": "auctions 30+ days in the future only",
     }
