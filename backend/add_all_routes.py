@@ -1564,3 +1564,30 @@ async def import_from_url(body: URLImportRequest):
         "property_ids": property_ids,
         "enrichment": enrichment,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Bright Data MCP Scraper (OffMarketDeck + FSBO + Hubzu)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/import/brightdata-mcp")
+async def import_brightdata_mcp_route(
+    include_offmarket: bool = True,
+    include_fsbo: bool = True,
+    include_hubzu: bool = True,
+    max_pages: int = 3,
+):
+    """
+    Scrape off-market deals, FSBO listings, and Hubzu auctions using Bright Data MCP.
+    Pulls from public marketplaces and saves to the database.
+    """
+    from database import PostgresDatabase
+    from importers.brightdata_mcp_scraper import import_brightdata_mcp
+    db = PostgresDatabase()
+    return await import_brightdata_mcp(
+        db,
+        include_offmarket=include_offmarket,
+        include_fsbo=include_fsbo,
+        include_hubzu=include_hubzu,
+        max_pages=max_pages,
+    )

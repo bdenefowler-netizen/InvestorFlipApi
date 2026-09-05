@@ -733,3 +733,50 @@ async def import_leads_to_db(db, leads: List[Dict[str, Any]]) -> dict[str, Any]:
         "errors": errors,
         "total": len(leads),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOP-LEVEL IMPORT FUNCTION (for daily cron + API routes)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def import_brightdata_mcp(
+    db,
+    include_offmarket: bool = True,
+    include_fsbo: bool = True,
+    include_hubzu: bool = True,
+    max_pages: int = 3,
+) -> dict[str, Any]:
+    """
+    Main entry point for the Bright Data MCP scraper.
+    Fetches all lead types and saves them to the database.
+    Add to daily_cron.py as:
+        ("brightdata_mcp", "importers.brightdata_mcp_scraper", "import_brightdata_mcp", (db,), {"max_pages": 3})
+    """
+    from datetime import datetime
+
+    token = os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+    if not token:
+        return {"ok": False, "error": "BRIGHTDATA_TOKEN not set", "imported": 0}
+
+    logger.info("Starting Bright Data MCP scrape...")
+    leads = await fetch_all_leads(
+        include_offmarket=include_offmarket,
+        include_fsbo=include_fsbo,
+        include_hubzu=include_hubzu,
+        max_pages=max_pages,
+    )
+
+    if not leads:
+        return {"ok": True, "imported": 0, "skipped": 0, "message": "No leads found"}
+
+    # Filter to Fort Worth area
+    fw_leads = [l for l in leads if is_fort_worth_area(l.get("city", ""))]
+    logger.info(f"Total leads: {len(leads)}, Fort Worth: {len(fw_leads)}")
+
+    result = await import_leads_to_db(db, fw_leads)
+    return {
+        "ok": True,
+        "total_fetched": len(leads),
+        "fort_worth": len(fw_leads),
+        **result,
+    }

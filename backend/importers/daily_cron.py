@@ -50,6 +50,7 @@ async def run_all(limit: int = 2000) -> dict:
         ("foreclosure_listings", "importers.foreclosure_listings_scraper", "import_foreclosure_listings", (db,), {"pages": 2, "cities": list(TARRANT_COUNTY_CITIES.keys())}),
         ("tad", "importers.tad_scraper", "import_tad_properties", (db,), {"limit": 300}),
         ("brightdata_deals", "importers.brightdata_deal_finder", "import_brightdata_deals", (db,), {"days_back": 30}),
+        ("brightdata_mcp", "importers.brightdata_mcp_scraper", "import_brightdata_mcp", (db,), {"max_pages": 3}),
         ("apify", None, None, None, {}),  # handled separately below (disabled)
     ]
 
