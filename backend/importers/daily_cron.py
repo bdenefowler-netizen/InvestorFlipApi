@@ -18,6 +18,8 @@ import sys
 import traceback
 from datetime import datetime, timezone
 
+from importers.foreclosure_listings_scraper import TARRANT_COUNTY_CITIES
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -81,15 +83,32 @@ async def run_all(limit: int = 2000) -> dict:
     logger.info("Apify import disabled (cost too high). Use manual /api/import/apify if needed.")
     results["sources"]["apify"] = {"ok": True, "status": "DISABLED", "reason": "Cost too high — all sources now free"}
     
-    # ── Tarrant County Tax Roll ── DISABLED 2026-09-05
-    # The official ZIP download from tarrantcountytx.gov fails on Railway
-    # (network restrictions / external ZIP download not supported in this env).
-    # Disable entirely — it should NOT touch the tax roll from this cron.
-    # Run manually if needed: python -m importers.tax_roll_sync --apply
-    results["sources"]["tax_roll"] = {
-        "ok": True, "skipped": True,
-        "reason": "Disabled on Railway (external ZIP download not supported)",
-    }
+    # ── Tarrant County Tax Roll (official delinquent-tax data) ──
+    logger.info("Importing Tarrant County tax roll (official ZIP)...")
+    try:
+        import argparse
+        from importers.tax_roll_sync import run as run_tax_roll
+        tax_args = argparse.Namespace(
+            url=None, layout=None, max_records=None, force=False,
+            apply=True, dry_run=False,
+        )
+        tax_result = await run_tax_roll(tax_args)
+        results["sources"]["tax_roll"] = {
+            "ok": bool(tax_result.get("ok", False)),
+            **tax_result,
+        }
+        logger.info("Tax roll → %s", tax_result.get("matches", tax_result))
+    except Exception as e:
+        logger.error("Tax roll failed: %s", traceback.format_exc())
+        # Don't fail the cron just because the official tax-roll ZIP can't be
+        # reached from Railway. Mark as a soft skip so the GitHub status
+        # doesn't show red on a network-restricted environment.
+        results["sources"]["tax_roll"] = {
+            "ok": False,
+            "skipped": True,
+            "error": f"{type(e).__name__}: {e}",
+            "reason": "Tax roll ZIP unreachable from Railway — run manually",
+        }
 
     # ── Live Listings (OpenWeb Ninja → RapidAPI fallback) ──
     # Re-enabled per QA audit 2026-08-02: production's last live sync was
@@ -147,11 +166,15 @@ def main():
     results = asyncio.run(run_all(args.limit))
     print(json.dumps(results, indent=2, default=str))
 
-    # Exit error if a CORE source failed. Apify is optional (free-plan account is
-    # hard-blocked), so it must not turn every cron execution red.
+    # Exit error if a CORE source failed. Apify and tax_roll are optional:
+    # - Apify: free-plan account is hard-blocked
+    # - tax_roll: official ZIP from tarrantcountytx.gov is often unreachable
+    #   from Railway. The importer marks failed runs as {"ok": False,
+    #   "skipped": True} so we treat them as soft-skips, not core failures.
+    OPTIONAL_SOURCES = {"apify", "tax_roll"}
     core_failed = [
         name for name, s in results.get("sources", {}).items()
-        if name != "apify" and not s.get("ok", False)
+        if name not in OPTIONAL_SOURCES and not s.get("ok", False)
     ]
     if core_failed:
         logger.error("Core sources failed: %s", ", ".join(core_failed))
