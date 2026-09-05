@@ -1,22 +1,24 @@
 """
-Zillow Property Enricher — InvestorFlip V1
+Zillow + Redfin Property Enricher — InvestorFlip V1
 
-Uses Bright Data MCP to search Google for Zillow/Realtor property data and
-extracts:
-  - estimated_value   (Zillow Zestimate)
-  - last_sold_price  (from Zillow snippet)
-  - last_sold_date   (from Zillow snippet)
-  - annual_taxes     (from Zillow snippet)
-  - beds / baths / sqft
-  - zpid / zillow_url
+Strategy:
+  1. Google search via Bright Data MCP for "address zillow" and "address redfin"
+  2. Parse Zestimate, sold price, tax, beds/baths/sqft from BOTH snippets
+  3. Cross-check between Zillow and Redfin — flag big disagreements
+  4. Write back to DB: estimated_value (Zillow), redfin_estimate (Redfin),
+     last_sold_price, annual_taxes, beds/baths/sqft, zpid, zillow_url, redfin_url
 
-Workflow:
-  1. Search Google for "{address} zillow zestimate sold" via Bright Data MCP
-  2. Parse Zestimate, sold price, beds/baths from Google snippet
-  3. Write back to DB via upsert_property (only fills empty fields)
+Zillow snippets look like:
+  "Off market. Zestimate. $234,100. 3beds 2baths 1,700sqft."
+  "$261,900 2beds 1bath 1,350sqft. Annual tax amount: $3,450"
+
+Redfin snippets look like:
+  "Redfin Estimate: $245,000"
+  "Sold: $185,000 on Feb 12, 2020"
+  "Est. payment: $1,520/mo"
 
 Usage:
-  python -m importers.zillow_enricher --address "3915 Meadowbrook Dr Fort Worth TX"
+  python -m importers.zillow_enricher --address "3915 Meadowbrook Dr"
   python -m importers.zillow_enricher --batch --limit 50
 """
 
@@ -38,68 +40,64 @@ logger = logging.getLogger("zillow_enricher")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 
-# ─── Bright Data MCP ──────────────────────────────────────────────────────────
-
 from importers.brightdata_mcp_scraper import BrightDataMCP
 
 
-# ─── Parser ──────────────────────────────────────────────────────────────────
+# ─── Generic price extraction ────────────────────────────────────────────────
+
+_PRICE_RE = re.compile(r"\$([\d,]+)")
+
 
 def _extract_prices(text: str) -> list[int]:
-    """Extract all dollar amounts that look like home prices ($10K–$10M)."""
-    amounts = re.findall(r"\$[\d,]+", text)
-    prices = []
-    for amt in amounts:
-        cleaned = amt.replace("$", "").replace(",", "")
+    """All dollar amounts that look like home prices ($10K–$10M)."""
+    out: list[int] = []
+    for m in _PRICE_RE.finditer(text):
         try:
-            val = int(cleaned)
-            if 10_000 <= val <= 10_000_000:
-                prices.append(val)
+            v = int(m.group(1).replace(",", ""))
+            if 10_000 <= v <= 10_000_000:
+                out.append(v)
         except ValueError:
             continue
-    return prices
+    return out
 
 
-def parse_zillow_from_search_result(title: str, description: str, url: str = "") -> dict[str, Any]:
+# ─── Zillow snippet parser ────────────────────────────────────────────────────
+
+def parse_zillow(title: str, desc: str, url: str = "") -> dict[str, Any]:
     """
-    Parse Zillow property data from a Google search result snippet.
+    Parse Zillow data from a Google result.
 
-    Snippet patterns:
-      "$234,100  3beds 2baths 1,700sqft"
-      "Zestimate® $271,947  3beds 2baths"
-      "Annual tax amount: $3,200"
+    Patterns handled:
+      "$234,100. 3beds. 2baths. 1,700sqft."   (off-market format)
+      "$261,900 2beds 1bath 1,350sqft"        (active listing format)
+      "Zestimate $271,947"                     (Zestimate explicit)
+      "Annual tax amount: $3,200"              (Zillow taxes)
       "Last sold: $95,000 on Jan 15, 2020"
     """
+    text = f"{title} {desc}"
     result: dict[str, Any] = {
-        "estimated_value": None,
-        "last_sold_price": None,
-        "last_sold_date": None,
-        "annual_taxes": None,
+        "zillow_estimate": None,
+        "zillow_sold_price": None,
+        "zillow_sold_date": None,
+        "zillow_tax_amount": None,
         "beds": None,
         "baths": None,
         "sqft": None,
-        "rent_zestimate": None,
         "zpid": None,
-        "zillow_url": url,
+        "zillow_url": url or None,
     }
 
-    text = f"{title} {description}"
-
-    # ── Zestimate ────────────────────────────────────────────────────────
+    # Zestimate: pick largest price, or the one right before "bed(s)"
     prices = _extract_prices(text)
     if prices:
-        # Zestimate is typically the largest price in the snippet
-        # (sold prices are usually lower; asking price might be listed separately)
-        result["estimated_value"] = max(prices)
-
-    # Also try: "price Nbeds N baths" pattern (common Zillow format)
+        result["zillow_estimate"] = max(prices)
     m = re.search(r"\$([\d,]+)\D+(\d+)\s*bed", text, re.I)
     if m:
-        val = int(m.group(1).replace(",", ""))
-        if 10_000 <= val <= 10_000_000:
-            result["estimated_value"] = val
+        v = int(m.group(1).replace(",", ""))
+        if 10_000 <= v <= 10_000_000:
+            result["zillow_estimate"] = v
 
-    # ── Beds / Baths / Sqft ───────────────────────────────────────────
+    # Beds / Baths / Sqft
     m = re.search(r"(\d+)\s*bed", text, re.I)
     if m:
         result["beds"] = int(m.group(1))
@@ -109,308 +107,384 @@ def parse_zillow_from_search_result(title: str, description: str, url: str = "")
     m = re.search(r"([\d,]+)\s*sqft", text, re.I)
     if m:
         result["sqft"] = int(m.group(1).replace(",", ""))
-    # Handle "1,700sqft" without space
-    m = re.search(r"([\d,]+)sqft", text, re.I)
-    if m and not result.get("sqft"):
-        result["sqft"] = int(m.group(1).replace(",", ""))
 
-    # ── Last Sold Price ────────────────────────────────────────────────
-    sold_patterns = [
-        r"last\s+sold[:\s]+\$?([\d,]+)",
-        r"sold\s+(?:on\s+)?[\w\s,]+(?:\$|price)\s*([\d,]+)",
-        r"sold\s+\$?([\d,]+)",
-        r"sale\s+price[:\s]+\$?([\d,]+)",
-    ]
-    for pat in sold_patterns:
+    # Sold price
+    for pat in [r"last\s+sold[:\s]+\$?([\d,]+)",
+                r"sold[:\s]+on\s+[\w\s,]+\$?([\d,]+)",
+                r"sold\s+\$?([\d,]+)"]:
         m = re.search(pat, text, re.I)
         if m:
-            val = int(m.group(1).replace(",", ""))
-            if 10_000 <= val <= 10_000_000:
-                result["last_sold_price"] = val
+            v = int(m.group(1).replace(",", ""))
+            if 10_000 <= v <= 10_000_000:
+                result["zillow_sold_price"] = v
                 break
 
-    # ── Last Sold Date ────────────────────────────────────────────────
+    # Sold date
     m = re.search(
         r"(?:last\s+)?sold\s+(?:on\s+)?((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+\d{1,2},?\s+\d{4})",
-        text, re.I,
-    )
+        text, re.I)
     if m:
-        result["last_sold_date"] = m.group(1).strip()
+        result["zillow_sold_date"] = m.group(1).strip()
 
-    # ── Annual Taxes ─────────────────────────────────────────────────
-    tax_patterns = [
-        r"annual\s+tax\s+amount[:\s]+\$?([\d,]+)",
-        r"annual\s+tax[:\s]+\$?([\d,]+)",
-        r"property\s+tax[:\s]+\$?([\d,]+)",
-        r"tax\s+amount[:\s]+\$?([\d,]+)",
-    ]
-    for pat in tax_patterns:
+    # Taxes
+    for pat in [r"annual\s+tax\s+amount[:\s]+\$?([\d,]+)",
+                r"annual\s+tax[:\s]+\$?([\d,]+)",
+                r"property\s+tax[:\s]+\$?([\d,]+)"]:
         m = re.search(pat, text, re.I)
         if m:
-            val = int(m.group(1).replace(",", ""))
-            if 500 <= val <= 100_000:
-                result["annual_taxes"] = val
+            v = int(m.group(1).replace(",", ""))
+            if 500 <= v <= 100_000:
+                result["zillow_tax_amount"] = v
                 break
 
-    # ── Rent Zestimate ───────────────────────────────────────────────
-    m = re.search(r"rent\s+zestimate[®\s:]+\$?([\d,]+)", text, re.I)
-    if m:
-        result["rent_zestimate"] = int(m.group(1).replace(",", ""))
-
-    # ── ZPID from URL ────────────────────────────────────────────────
-    m = re.search(r"_zpid|zpid[=/](\d+)", url, re.I)
-    if m:
-        result["zpid"] = m.group(1) if m.group(1) else url.split("_")[0].split("/")[-1]
+    # ZPID from URL
+    if url:
+        m = re.search(r"_(\d{6,15})_zpid", url)
+        if m:
+            result["zpid"] = m.group(1)
 
     return result
 
 
-# ─── Google Search (via Bright Data MCP) ──────────────────────────────────────
+# ─── Redfin snippet parser ────────────────────────────────────────────────────
 
-async def search_zillow_for_address(
-    address: str,
-    city: str = "Fort Worth",
-    state: str = "TX",
-) -> Optional[dict[str, Any]]:
+def parse_redfin(title: str, desc: str, url: str = "") -> dict[str, Any]:
     """
-    Search Google for a property's Zillow data via Bright Data MCP.
-    Returns parsed property data (estimate, sold price, beds/baths) or None.
-    """
-    # Two query angles — zip gets the best results
-    zipcode = re.search(r"\b(\d{5})\b", address + " " + city)
-    zip_part = f" {zipcode.group(1)}" if zipcode else ""
+    Parse Redfin data from a Google result.
 
+    Patterns handled:
+      "Redfin Estimate: $245,000"
+      "Sold: $185,000 on Feb 12, 2020"
+      "Est. payment: $1,520/mo"
+      "3 beds 2 baths 1,700 sqft"  (Redfin format)
+      "$XYZ. 3 beds. 2 baths."      (Redfin snippet format)
+    """
+    text = f"{title} {desc}"
+    result: dict[str, Any] = {
+        "redfin_estimate": None,
+        "redfin_sold_price": None,
+        "redfin_sold_date": None,
+        "redfin_url": url or None,
+    }
+
+    # Redfin estimate
+    m = re.search(r"redfin\s+estimate[:\s]+\$?([\d,]+)", text, re.I)
+    if m:
+        v = int(m.group(1).replace(",", ""))
+        if 10_000 <= v <= 10_000_000:
+            result["redfin_estimate"] = v
+    # Fallback: any "Estimate $X" pattern
+    if not result["redfin_estimate"]:
+        m = re.search(r"estimate[:\s]+\$?([\d,]+)", text, re.I)
+        if m:
+            v = int(m.group(1).replace(",", ""))
+            if 10_000 <= v <= 10_000_000:
+                result["redfin_estimate"] = v
+    # Fallback: largest price if no Zillow data
+    if not result["redfin_estimate"]:
+        prices = _extract_prices(text)
+        if prices:
+            result["redfin_estimate"] = max(prices)
+
+    # Sold price
+    for pat in [r"sold[:\s]+on\s+[\w\s,]+\$?([\d,]+)",
+                r"sold[:\s]+\$?([\d,]+)",
+                r"sale\s+price[:\s]+\$?([\d,]+)"]:
+        m = re.search(pat, text, re.I)
+        if m:
+            v = int(m.group(1).replace(",", ""))
+            if 10_000 <= v <= 10_000_000:
+                result["redfin_sold_price"] = v
+                break
+
+    # Sold date
+    m = re.search(
+        r"sold\s+(?:on\s+)?((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+\d{1,2},?\s+\d{4})",
+        text, re.I)
+    if m:
+        result["redfin_sold_date"] = m.group(1).strip()
+
+    return result
+
+
+# ─── Combined Google search (Zillow + Redfin) ─────────────────────────────────
+
+async def _search_google(mcp: BrightDataMCP, address: str, site: str) -> list[dict[str, Any]]:
+    """Helper: run 2 Google queries targeting a specific site."""
     queries = [
-        f'"{address}{zip_part}" site:zillow.com',
-        f'"{address}{zip_part}" site:zillow.com Zestimate',
-        f'"{address}{zip_part}" zillow "sold" "zestimate"',
+        f'"{address}" site:{site}',
+        f'"{address}" site:{site} estimate',
     ]
+    all_results: list[dict[str, Any]] = []
+    for q in queries:
+        try:
+            r = await mcp.search(q, engine="google")
+            all_results.extend(r[:5])
+        except Exception as e:
+            logger.warning("Search '%s' failed: %s", q[:60], e)
+        await asyncio.sleep(0.3)
+    return all_results
 
-    async with BrightDataMCP() as mcp:
-        for query in queries:
-            logger.info("  Search: %s", query[:100])
-            try:
-                results = await mcp.search(query, engine="google")
-            except Exception as e:
-                logger.warning("  Search failed: %s", e)
-                continue
 
-            if not results:
-                continue
+def _is_address_match(address: str, text: str) -> bool:
+    """Fuzzy check: at least 1 unique word from address is in text."""
+    parts = [p.lower() for p in re.split(r"[\s,]+", address) if len(p) > 3 and p.lower() not in {"fort", "worth", "tx", "texas"}]
+    if not parts:
+        return True
+    t = text.lower()
+    return any(p in t for p in parts)
 
-            # Find the best Zillow result
-            for r in results[:5]:
+
+# ─── The Enricher class (used by routes) ──────────────────────────────────────
+
+class ZillowRedfinEnricher:
+    """Enrich properties with Zillow + Redfin data via Bright Data MCP."""
+
+    def __init__(self):
+        self.source_name = "Zillow+Redfin via Bright Data MCP"
+
+    async def enrich(
+        self,
+        db,
+        address: str,
+        city: str = "Fort Worth",
+        state: str = "TX",
+    ) -> dict[str, Any]:
+        """Enrich one property. Returns summary dict."""
+        if not address or not address.strip():
+            return {"ok": False, "address": str(address), "error": "Empty address"}
+        address = address.strip()
+
+        # Strip city/state from address if already included
+        search_address = re.sub(r",?\s*(fort worth|tx|texas)\s*$", "", address, flags=re.I).strip()
+
+        logger.info("Enriching: %s, %s %s", search_address, city, state)
+        result: dict[str, Any] = {
+            "address": address,
+            "zillow": {},
+            "redfin": {},
+            "merged": {},
+            "ok": False,
+        }
+
+        async with BrightDataMCP() as mcp:
+            # ── Zillow ──
+            z_results = await _search_google(mcp, search_address, "zillow.com")
+            for r in z_results:
                 title = r.get("title", "")
                 desc = r.get("description", r.get("snippet", ""))
                 url = r.get("url") or r.get("link") or ""
-
-                # Must be Zillow or have Zillow data
-                if "zillow" not in title.lower() and "zillow" not in desc.lower():
+                combined = f"{title} {desc}"
+                if "zillow" not in combined.lower() and "zillow" not in url.lower():
                     continue
-
-                data = parse_zillow_from_search_result(title, desc, url)
-
-                if data.get("estimated_value") or data.get("beds") or data.get("last_sold_price"):
-                    logger.info(
-                        "    ✓ Got: value=$%s | sold=$%s | beds=%s | baths=%s",
-                        data.get("estimated_value"),
-                        data.get("last_sold_price"),
-                        data.get("beds"),
-                        data.get("baths"),
-                    )
-                    return data
+                if not _is_address_match(search_address, combined):
+                    continue
+                parsed = parse_zillow(title, desc, url)
+                if parsed.get("zillow_estimate") or parsed.get("beds"):
+                    result["zillow"] = parsed
+                    break
 
             await asyncio.sleep(0.5)
 
-    return None
+            # ── Redfin ──
+            r_results = await _search_google(mcp, search_address, "redfin.com")
+            for r in r_results:
+                title = r.get("title", "")
+                desc = r.get("description", r.get("snippet", ""))
+                url = r.get("url") or r.get("link") or ""
+                combined = f"{title} {desc}"
+                if "redfin" not in combined.lower() and "redfin" not in url.lower():
+                    continue
+                if not _is_address_match(search_address, combined):
+                    continue
+                parsed = parse_redfin(title, desc, url)
+                if parsed.get("redfin_estimate") or parsed.get("redfin_sold_price"):
+                    result["redfin"] = parsed
+                    break
 
+        # ── Cross-check & merge ──
+        result["merged"] = self._merge(result["zillow"], result["redfin"])
+        result["ok"] = bool(result["merged"].get("estimated_value"))
 
-# ─── DB Write ────────────────────────────────────────────────────────────────
+        # ── Write to DB ──
+        if result["ok"]:
+            write = await self._write_to_db(db, address, result["merged"])
+            result["db_write"] = write
 
-async def write_enrichment(db, address: str, enrichment: dict[str, Any]) -> dict:
-    """Write Zillow enrichment data to the properties DB. Only fills empty fields."""
-    from intake import upsert_property
+        return result
 
-    patch: dict[str, Any] = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "zillow_enriched_at": datetime.now(timezone.utc).isoformat(),
-        "enrichment_source": "Zillow via Google (Bright Data MCP)",
-    }
+    def _merge(self, z: dict, r: dict) -> dict[str, Any]:
+        """Merge Zillow + Redfin data, cross-check, return unified dict."""
+        merged: dict[str, Any] = {}
 
-    # Fields that are ALWAYS written (replace any stale/old data)
-    if enrichment.get("estimated_value"):
-        patch["estimated_value"] = enrichment["estimated_value"]
-        patch["zestimate"] = enrichment["estimated_value"]
-    if enrichment.get("last_sold_price"):
-        patch["last_sold_price"] = enrichment["last_sold_price"]
-    if enrichment.get("last_sold_date"):
-        patch["last_sold_date"] = enrichment["last_sold_date"]
-    if enrichment.get("annual_taxes"):
-        patch["annual_taxes"] = enrichment["annual_taxes"]
-    if enrichment.get("rent_zestimate"):
-        patch["rent_zestimate"] = enrichment["rent_zestimate"]
-    if enrichment.get("zpid"):
-        patch["zpid"] = enrichment["zpid"]
-    if enrichment.get("zillow_url"):
-        patch["zillow_url"] = enrichment["zillow_url"]
+        # Estimated value: prefer Zillow (more common), cross-check Redfin
+        z_est = z.get("zillow_estimate")
+        r_est = r.get("redfin_estimate")
+        if z_est and r_est:
+            # Both available — cross-check
+            diff_pct = abs(z_est - r_est) / max(z_est, r_est) * 100
+            merged["estimated_value"] = z_est  # Zillow is primary
+            merged["redfin_estimate"] = r_est
+            merged["estimate_cross_check_diff_pct"] = round(diff_pct, 1)
+            if diff_pct > 25:
+                merged["estimate_confidence"] = "low"
+                merged["estimate_warning"] = f"Zillow and Redfin disagree by {diff_pct:.0f}%"
+            elif diff_pct > 10:
+                merged["estimate_confidence"] = "medium"
+            else:
+                merged["estimate_confidence"] = "high"
+        elif z_est:
+            merged["estimated_value"] = z_est
+            merged["estimate_confidence"] = "medium (Zillow only)"
+        elif r_est:
+            merged["estimated_value"] = r_est
+            merged["estimate_confidence"] = "medium (Redfin only)"
 
-    # Beds/baths/sqft — only fill if not already set
-    existing = await db.properties.find_one(
-        {"$or": [{"situs_address": address}, {"address": address}]},
-        {"_id": 0, "beds": 1, "baths": 1, "sqft": 1},
-    )
-    if existing:
-        if not existing.get("beds") and enrichment.get("beds"):
-            patch["beds"] = enrichment["beds"]
-        if not existing.get("baths") and enrichment.get("baths"):
-            patch["baths"] = enrichment["baths"]
-        if not existing.get("sqft") and enrichment.get("sqft"):
-            patch["sqft"] = enrichment["sqft"]
+        # Sold price
+        if z.get("zillow_sold_price"):
+            merged["last_sold_price"] = z["zillow_sold_price"]
+            merged["last_sold_date"] = z.get("zillow_sold_date")
+        elif r.get("redfin_sold_price"):
+            merged["last_sold_price"] = r["redfin_sold_price"]
+            merged["last_sold_date"] = r.get("redfin_sold_date")
 
-    try:
-        await upsert_property(db, address, patch)
-        return {"ok": True, "address": address, "patch": patch}
-    except Exception as e:
-        logger.error("DB write failed for %s: %s", address, e)
-        return {"ok": False, "address": address, "error": str(e)}
+        # Tax
+        if z.get("zillow_tax_amount"):
+            merged["annual_taxes"] = z["zillow_tax_amount"]
 
+        # Beds / Baths / Sqft (Zillow first)
+        for k, src in [("beds", z), ("baths", z), ("sqft", z)]:
+            if src.get(k):
+                merged[k] = src[k]
 
-# ─── Single Property Enrichment ───────────────────────────────────────────────
+        # IDs / URLs
+        if z.get("zpid"):
+            merged["zpid"] = z["zpid"]
+        if z.get("zillow_url"):
+            merged["zillow_url"] = z["zillow_url"]
+        if r.get("redfin_url"):
+            merged["redfin_url"] = r["redfin_url"]
 
-async def enrich_property(
-    db,
-    address: str,
-    city: str = "Fort Worth",
-    state: str = "TX",
-) -> dict[str, Any]:
-    """
-    Enrich one property by address. Searches Google via Bright Data MCP,
-    parses Zillow data, writes to DB.
-    """
-    if not address or not address.strip():
-        return {"ok": False, "address": str(address), "error": "Empty address"}
+        # Provenance
+        sources = []
+        if z.get("zillow_estimate"): sources.append("Zillow")
+        if r.get("redfin_estimate"): sources.append("Redfin")
+        merged["enrichment_source"] = " + ".join(sources) if sources else "Google search (no direct source)"
 
-    address = address.strip()
-    logger.info("Enriching: %s", address)
+        return merged
 
-    data = await search_zillow_for_address(address, city, state)
-    if not data:
-        return {
-            "ok": False,
-            "address": address,
-            "error": "No Zillow data found for this address",
-        }
+    async def _write_to_db(self, db, address: str, data: dict) -> dict:
+        """Write merged enrichment to the properties DB."""
+        from intake import upsert_property
+        from database import PostgresDatabase
 
-    result = await write_enrichment(db, address, data)
-    return {
-        "ok": result.get("ok", False),
-        "address": address,
-        "estimated_value": data.get("estimated_value"),
-        "last_sold_price": data.get("last_sold_price"),
-        "last_sold_date": data.get("last_sold_date"),
-        "annual_taxes": data.get("annual_taxes"),
-        "beds": data.get("beds"),
-        "baths": data.get("baths"),
-        "sqft": data.get("sqft"),
-        "zpid": data.get("zpid"),
-        "zillow_url": data.get("zillow_url"),
-        "source": "Zillow via Google (Bright Data MCP)",
-    }
-
-
-# ─── Batch Enrichment ────────────────────────────────────────────────────────
-
-async def enrich_all_preforeclosures(
-    db,
-    limit: int = 200,
-    skip_already_enriched: bool = True,
-) -> dict[str, Any]:
-    """
-    Find all preforeclosure / foreclosure records missing estimated_value
-    and enrich them from Zillow via Google.
-    """
-    logger.info("Scanning for preforeclosures needing enrichment...")
-
-    query: dict[str, Any] = {
-        "pre_foreclosure": True,
-    }
-
-    if skip_already_enriched:
-        query["$and"] = [
-            {"estimated_value": {"$exists": False}},
-            {"zillow_enriched_at": {"$exists": False}},
-        ]
-
-    cursor = db.properties.find(
-        query,
-        {"_id": 0, "id": 1, "situs_address": 1, "address": 1, "city": 1, "state": 1},
-    )
-
-    results = {"total": 0, "enriched": 0, "failed": 0, "items": []}
-
-    async for prop in cursor:
-        results["total"] += 1
-        if results["total"] > limit:
-            break
-
-        address = prop.get("situs_address") or prop.get("address")
-        if not address:
-            results["failed"] += 1
-            continue
-
-        city = prop.get("city") or "Fort Worth"
-        state = prop.get("state") or "TX"
+        patch = dict(data)
+        patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+        patch["enriched_at"] = datetime.now(timezone.utc).isoformat()
 
         try:
-            result = await enrich_property(db, address, city, state)
-            if result.get("ok") and result.get("estimated_value"):
-                results["enriched"] += 1
-                results["items"].append({
-                    "address": address,
-                    "estimated_value": result["estimated_value"],
-                    "last_sold_price": result.get("last_sold_price"),
-                    "annual_taxes": result.get("annual_taxes"),
-                })
-            else:
-                results["failed"] += 1
+            # Don't overwrite existing beds/baths/sqft if they're populated
+            existing = await db.properties.find_one(
+                {"$or": [{"situs_address": address}, {"address": address}]},
+                {"_id": 0, "beds": 1, "baths": 1, "sqft": 1}
+            )
+            if existing:
+                for k in ("beds", "baths", "sqft"):
+                    if existing.get(k) and k in patch:
+                        del patch[k]
+
+            await upsert_property(db, address, patch)
+            return {"ok": True, "fields_written": list(patch.keys())}
         except Exception as e:
-            results["failed"] += 1
-            logger.error("Exception for %s: %s", address, e)
+            logger.error("DB write failed for %s: %s", address, e)
+            return {"ok": False, "error": str(e)}
 
-        # Rate limit between searches (~2 search credits per address)
-        await asyncio.sleep(1.2)
+    async def enrich_all_preforeclosures(
+        self,
+        db,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Batch enrich all preforeclosure records missing estimated_value."""
+        cursor = db.properties.find(
+            {
+                "pre_foreclosure": True,
+                "$and": [
+                    {"$or": [{"estimated_value": {"$exists": False}}, {"estimated_value": None}]},
+                ],
+            },
+            {"_id": 0, "id": 1, "situs_address": 1, "address": 1, "city": 1, "state": 1},
+        )
 
-    logger.info(
-        "Batch complete: %s/%s enriched, %s failed of %s total",
-        results["enriched"], results["total"], results["failed"], results["total"],
-    )
-    return results
+        results = {"total": 0, "enriched": 0, "zillow_only": 0, "redfin_only": 0, "both": 0, "failed": 0, "items": []}
+
+        async for prop in cursor:
+            results["total"] += 1
+            if results["total"] > limit:
+                break
+
+            address = prop.get("situs_address") or prop.get("address")
+            if not address:
+                results["failed"] += 1
+                continue
+
+            city = prop.get("city") or "Fort Worth"
+            state = prop.get("state") or "TX"
+
+            try:
+                r = await self.enrich(db, address, city, state)
+                merged = r.get("merged", {})
+                if r.get("ok") and merged.get("estimated_value"):
+                    results["enriched"] += 1
+                    has_z = bool(r.get("zillow"))
+                    has_r = bool(r.get("redfin"))
+                    if has_z and has_r: results["both"] += 1
+                    elif has_z: results["zillow_only"] += 1
+                    elif has_r: results["redfin_only"] += 1
+                    results["items"].append({
+                        "address": address,
+                        "estimated_value": merged.get("estimated_value"),
+                        "redfin_estimate": merged.get("redfin_estimate"),
+                        "cross_check_diff_pct": merged.get("estimate_cross_check_diff_pct"),
+                        "confidence": merged.get("estimate_confidence"),
+                    })
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                results["failed"] += 1
+                logger.error("Enrich exception for %s: %s", address, e)
+
+            await asyncio.sleep(1.5)  # rate limit
+
+        logger.info(
+            "Batch done: %s/%s enriched (both: %s, zillow only: %s, redfin only: %s), %s failed",
+            results["enriched"], results["total"], results["both"], results["zillow_only"],
+            results["redfin_only"], results["failed"],
+        )
+        return results
 
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
 
 async def main():
-    parser = argparse.ArgumentParser(description="Zillow property enricher via Bright Data MCP")
-    parser.add_argument("--address", help='Full address, e.g. "3915 Meadowbrook Dr"')
-    parser.add_argument("--city", default="Fort Worth")
-    parser.add_argument("--state", default="TX")
-    parser.add_argument("--batch", action="store_true")
-    parser.add_argument("--limit", type=int, default=200)
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--address")
+    p.add_argument("--city", default="Fort Worth")
+    p.add_argument("--state", default="TX")
+    p.add_argument("--batch", action="store_true")
+    p.add_argument("--limit", type=int, default=200)
+    args = p.parse_args()
 
     from database import PostgresDatabase
     db = PostgresDatabase()
     await db.connect()
-
     try:
+        e = ZillowRedfinEnricher()
         if args.batch:
-            r = await enrich_all_preforeclosures(db, limit=args.limit)
+            r = await e.enrich_all_preforeclosures(db, limit=args.limit)
         elif args.address:
-            r = await enrich_property(db, args.address, args.city, args.state)
+            r = await e.enrich(db, args.address, args.city, args.state)
         else:
-            print("Usage:")
-            print("  python -m importers.zillow_enricher --address '3915 Meadowbrook Dr'")
-            print("  python -m importers.zillow_enricher --batch --limit 50")
+            print("Usage: --address '3915 Meadowbrook Dr' or --batch --limit 50")
             return
         print(json.dumps(r, indent=2, default=str))
     finally:
