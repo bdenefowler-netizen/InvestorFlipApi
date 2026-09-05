@@ -81,24 +81,15 @@ async def run_all(limit: int = 2000) -> dict:
     logger.info("Apify import disabled (cost too high). Use manual /api/import/apify if needed.")
     results["sources"]["apify"] = {"ok": True, "status": "DISABLED", "reason": "Cost too high — all sources now free"}
     
-    # ── Tarrant County Tax Roll (official delinquent-tax data) ──
-    logger.info("Importing Tarrant County tax roll (official ZIP)...")
-    try:
-        import argparse
-        from importers.tax_roll_sync import run as run_tax_roll
-        tax_args = argparse.Namespace(
-            url=None, layout=None, max_records=None, force=False,
-            apply=True, dry_run=False,
-        )
-        tax_result = await run_tax_roll(tax_args)
-        results["sources"]["tax_roll"] = {
-            "ok": bool(tax_result.get("ok", False)),
-            **tax_result,
-        }
-        logger.info("Tax roll → %s", tax_result.get("matches", tax_result))
-    except Exception as e:
-        logger.error("Tax roll failed: %s", traceback.format_exc())
-        results["sources"]["tax_roll"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    # ── Tarrant County Tax Roll ── DISABLED 2026-09-05
+    # The official ZIP download from tarrantcountytx.gov fails on Railway
+    # (network restrictions / external ZIP download not supported in this env).
+    # Disable entirely — it should NOT touch the tax roll from this cron.
+    # Run manually if needed: python -m importers.tax_roll_sync --apply
+    results["sources"]["tax_roll"] = {
+        "ok": True, "skipped": True,
+        "reason": "Disabled on Railway (external ZIP download not supported)",
+    }
 
     # ── Live Listings (OpenWeb Ninja → RapidAPI fallback) ──
     # Re-enabled per QA audit 2026-08-02: production's last live sync was
