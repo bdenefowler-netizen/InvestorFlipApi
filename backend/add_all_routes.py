@@ -1591,3 +1591,148 @@ async def import_brightdata_mcp_route(
         include_hubzu=include_hubzu,
         max_pages=max_pages,
     )
+
+
+# =====================================================================
+# NEW: Property Details API (RapidAPI Real-Time Real Estate Data Mega)
+# =====================================================================
+
+@router.get("/property-details")
+async def property_details_by_address(
+    address: str = Query(..., description="Full property address"),
+):
+    """Get rich property details from RapidAPI (appliances, builder, HOA,
+    schools, comparables, agent phone numbers, etc.)."""
+    from importers.property_details_api import fetch_property_details
+    details = await fetch_property_details(address)
+    if not details:
+        raise HTTPException(status_code=404, detail="Property details not found")
+    return details
+
+
+@router.post("/property-details/enrich")
+async def enrich_property_details_endpoint(
+    limit: int = Query(100, ge=1, le=200),
+):
+    """Enrich properties that lack rich detail fields (zpid, appliances,
+    builder, etc.) with RapidAPI property details. Uses concurrency 3."""
+    from database import PostgresDatabase
+    from importers.property_details_api import enrich_properties_batch
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        missing_rich = {
+            "$or": [
+                {"zpid": {"$exists": False}},
+                {"appliances": {"$exists": False}},
+                {"builder_name": {"$exists": False}},
+            ]
+        }
+        props = await db.properties.find(
+            missing_rich,
+            {"_id": 0, "id": 1, "situs_address": 1, "address": 1},
+        ).to_list(length=limit)
+
+        if not props:
+            return {"message": "No properties need enrichment", "count": 0}
+
+        enriched = await enrich_properties_batch(props)
+        return {
+            "message": f"Enriched {enriched['enriched']} properties",
+            "enriched": enriched["enriched"],
+            "skipped": enriched["skipped"],
+            "failed": enriched["failed"],
+        }
+    finally:
+        await db.close()
+
+
+@router.get("/property-details/status")
+async def property_details_status():
+    """Check if property details enrichment is configured."""
+    key_set = bool(os.environ.get("RAPIDAPI_KEY"))
+    return {
+        "enabled": key_set,
+        "provider": "real-time-real-estate-data-mega",
+        "note": "RapidAPI property enricher — needs RAPIDAPI_KEY env var",
+    }
+
+
+# =====================================================================
+# NEW: Skip Trace API (TruePeopleSearch via RapidAPI)
+# =====================================================================
+
+@router.get("/skip-trace/search")
+async def skip_trace_search(
+    name: str = Query(..., description="Person name to search"),
+):
+    """Skip trace a person by name. Returns matches with phone + email."""
+    from importers.skip_trace_api import lookup_people
+    matches = await lookup_people(name)
+    return {"query": name, "count": len(matches), "matches": matches}
+
+
+@router.get("/skip-trace/property/{property_id}")
+async def skip_trace_property_route(property_id: str):
+    """Skip trace the owner(s) of a property by its ID. Returns phone + email."""
+    from database import PostgresDatabase
+    from importers.skip_trace_api import lookup_people
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        prop = await db.properties.find_one({"id": property_id}, {"_id": 0})
+        if not prop:
+            raise HTTPException(status_code=404, detail="Property not found")
+
+        owner_name = prop.get("owner_name") or prop.get("purchaser") or ""
+        if not owner_name or len(owner_name.strip()) < 3:
+            return {"property_id": property_id, "message": "No owner name found", "contacts": []}
+
+        matches = await lookup_people(owner_name.strip())
+        return {
+            "property_id": property_id,
+            "owner_name": owner_name,
+            "count": len(matches),
+            "contacts": matches,
+        }
+    finally:
+        await db.close()
+
+
+@router.post("/skip-trace/enrich")
+async def skip_trace_enrich_endpoint(limit: int = Query(50, ge=1, le=100)):
+    """Skip trace owners for properties missing owner_contacts."""
+    from database import PostgresDatabase
+    from importers.skip_trace_api import enrich_property_owners
+
+    db = PostgresDatabase()
+    try:
+        await db.connect()
+        props = await db.properties.find(
+            {
+                "owner_name": {"$exists": True, "$ne": ""},
+                "owner_contacts": {"$exists": False},
+            },
+            {"_id": 0, "id": 1, "owner_name": 1, "situs_address": 1},
+        ).to_list(length=limit)
+
+        if not props:
+            return {"message": "No properties need skip trace", "count": 0}
+
+        enriched = await enrich_property_owners(props)
+        return {"message": f"Skip traced {enriched} owners", "enriched": enriched}
+    finally:
+        await db.close()
+
+
+@router.get("/skip-trace/status")
+async def skip_trace_status():
+    """Check if skip trace API is configured."""
+    key_set = bool(os.environ.get("RAPIDAPI_KEY"))
+    return {
+        "enabled": key_set,
+        "provider": "skip-tracing-working-api",
+        "note": "TruePeopleSearch via RapidAPI — needs RAPIDAPI_KEY env var",
+    }

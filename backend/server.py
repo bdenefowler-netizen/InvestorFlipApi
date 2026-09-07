@@ -1527,6 +1527,8 @@ async def live_status():
 async def list_properties(
     filter: str = Query("opportunities"),
     search: Optional[str] = Query(None),
+    min_price: Optional[float] = Query(None, description="Minimum price filter"),
+    max_price: Optional[float] = Query(None, description="Maximum price filter"),
     limit: int = Query(200, ge=1, le=200),
 ):
     q: Dict[str, Any] = {}
@@ -1540,6 +1542,20 @@ async def list_properties(
             {"zip": regex},
             {"owner_name": regex},
         ]
+
+    # Min/Max price filters
+    if min_price is not None:
+        q["price"] = q.get("price", {})
+        if isinstance(q.get("price"), dict):
+            q["price"]["$gte"] = min_price
+        else:
+            q["price"] = {"$gte": min_price}
+    if max_price is not None:
+        q["price"] = q.get("price", {})
+        if isinstance(q.get("price"), dict):
+            q["price"]["$lte"] = max_price
+        else:
+            q["price"] = {"$lte": max_price}
 
     # Apply the same visibility and opportunity rules before counting so the
     # app's total always matches what it can actually show.
@@ -2661,6 +2677,53 @@ async def analyze_quick(body: Dict[str, Any]):
         mortgage_estimate=0,
     )
     return analyze_property_with_quill(req)
+
+
+@api_router.get("/calculator/lookup")
+async def calculator_lookup(address: str = Query(..., min_length=5)):
+    """
+    Look up property details for the Calculator screen.
+    Auto-fills ARV estimate from the property details API (uses listing
+    price + beds/baths/sqft as fallback). Also returns skip-trace hint.
+    """
+    from importers.property_details_api import fetch_property_details
+
+    if not address or len(address) < 5:
+        return {"error": "Address too short"}
+
+    # Try RapidAPI property details first
+    details = await fetch_property_details(address)
+    if details:
+        return {
+            "address": address,
+            "source": "rapidapi_property_details",
+            "price": details.get("price"),
+            "arv_estimate": details.get("price"),  # Use listing price as ARV starting point
+            "bedrooms": details.get("bedrooms"),
+            "bathrooms": details.get("bathrooms"),
+            "living_area": details.get("living_area"),
+            "lot_size": details.get("lot_size"),
+            "year_built": details.get("year_built"),
+            "stories": details.get("stories"),
+            "subdivision": details.get("subdivision"),
+            "home_type": details.get("home_type"),
+            "home_status": details.get("home_status"),
+            "tax_annual": details.get("tax_annual_amount"),
+            "tax_assessed": details.get("tax_assessed_value"),
+            "hoa_fee": details.get("hoa_fee"),
+            "mls_id": details.get("mls_id"),
+            "mls_name": details.get("mls_name"),
+            "builder_name": details.get("builder_name"),
+            "details": details,  # Full details
+        }
+    else:
+        return {
+            "address": address,
+            "source": "fallback",
+            "message": "Property details not available — user can enter manually",
+            "price": None,
+            "arv_estimate": None,
+        }
 
 
 @api_router.post("/scout/quill-analysis", response_model=QuillAnalyzeResponse)

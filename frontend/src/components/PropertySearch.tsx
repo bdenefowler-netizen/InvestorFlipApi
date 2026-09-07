@@ -81,6 +81,17 @@ export default function PropertySearch() {
     { key: 'wholesale', label: '📋 Wholesale' },
   ];
 
+  const priceFilters: { key: string; label: string; min?: number; max?: number }[] = [
+    { key: 'all', label: 'Any Price' },
+    { key: 'under-100k', label: 'Under $100K', max: 100000 },
+    { key: '100k-250k', label: '$100K–$250K', min: 100000, max: 250000 },
+    { key: '250k-500k', label: '$250K–$500K', min: 250000, max: 500000 },
+    { key: '500k-1m', label: '$500K–$1M', min: 500000, max: 1000000 },
+    { key: 'over-1m', label: 'Over $1M', min: 1000000 },
+  ];
+
+  const [activePriceFilter, setActivePriceFilter] = useState('all');
+
   // ─── API Calls ────────────────────────────────────────
 
   const search = useCallback(async () => {
@@ -99,6 +110,12 @@ export default function PropertySearch() {
         const params = new URLSearchParams();
         if (query.trim()) params.set('search', query);
         if (activeFilter !== 'all') params.set('filter', activeFilter);
+        // Min/Max price filters
+        const pf = priceFilters.find(p => p.key === activePriceFilter);
+        if (pf && pf.key !== 'all') {
+          if (pf.min !== undefined) params.set('min_price', String(pf.min));
+          if (pf.max !== undefined) params.set('max_price', String(pf.max));
+        }
         params.set('limit', '50');
         const res = await fetch(`${API_BASE}/api/properties?${params}`);
         const data = await res.json();
@@ -295,16 +312,49 @@ export default function PropertySearch() {
         keyExtractor={item => item.id}
         contentContainerStyle={styles.resultsList}
         ListHeaderComponent={
-          results.length > 0 ? (
-            <View style={styles.resultsHeader}>
-              <Text style={styles.resultsCount}>
-                {results.length} result{results.length !== 1 ? 's' : ''}
-              </Text>
-              <TouchableOpacity onPress={search}>
-                <Text style={styles.refreshBtn}>🔄 Refresh</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null
+          <View>
+            {/* Price Filter Chips */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.priceChips}>
+              {priceFilters.map(pf => (
+                <TouchableOpacity
+                  key={pf.key}
+                  style={[
+                    styles.priceChip,
+                    activePriceFilter === pf.key && styles.priceChipActive,
+                  ]}
+                  onPress={() => {
+                    setActivePriceFilter(pf.key);
+                    setTimeout(() => search(), 50);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.priceChipText,
+                      activePriceFilter === pf.key && styles.priceChipTextActive,
+                    ]}
+                  >
+                    {pf.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            {/* Results header */}
+            {results.length > 0 ? (
+              <View style={styles.resultsHeader}>
+                <Text style={styles.resultsCount}>
+                  {results.length} result{results.length !== 1 ? 's' : ''}
+                  {activePriceFilter !== 'all' && (
+                    <Text style={{ fontWeight: '400', color: '#2D7DD2' }}>
+                      {' '}({priceFilters.find(p => p.key === activePriceFilter)?.label ?? activePriceFilter})
+                    </Text>
+                  )}
+                </Text>
+                <TouchableOpacity onPress={search}>
+                  <Text style={styles.refreshBtn}>🔄 Refresh</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+          </View>
         }
         ListEmptyComponent={
           !loading ? (
@@ -500,6 +550,28 @@ const styles = StyleSheet.create({
   searchBtnText: { fontSize: 18 },
 
   chips: { paddingVertical: 12, paddingHorizontal: 16 },
+  priceChips: { paddingHorizontal: 16, paddingBottom: 4 },
+  priceChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: '#f0f0f0',
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  priceChipActive: {
+    backgroundColor: '#2D7DD2',
+    borderColor: '#2D7DD2',
+  },
+  priceChipText: {
+    fontSize: 13,
+    color: '#666',
+    fontWeight: '500',
+  },
+  priceChipTextActive: {
+    color: '#fff',
+  },
   chip: {
     paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20,
     borderWidth: 1.5, borderColor: '#e0e0e0', backgroundColor: '#fff',
