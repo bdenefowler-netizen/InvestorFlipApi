@@ -21,7 +21,7 @@ Include this in server.py:
 import json
 import os
 import re
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Query
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 
