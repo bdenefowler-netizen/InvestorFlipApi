@@ -40,6 +40,10 @@ export default function ListingsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [minPrice, setMinPrice] = useState("");
+  const [maxPrice, setMaxPrice] = useState("");
+  const [minBeds, setMinBeds] = useState("");
+  const [minBaths, setMinBaths] = useState("");
 
   const loadFilters = useCallback(async () => {
     try {
@@ -58,7 +62,12 @@ export default function ListingsScreen() {
   const loadProperties = useCallback(async () => {
     setError(null);
     try {
-      const data = await getProperties(active, search.trim());
+      const data = await getProperties(active, search.trim(), {
+        minPrice: minPrice ? Number(minPrice) : null,
+        maxPrice: maxPrice ? Number(maxPrice) : null,
+        minBeds: minBeds ? Number(minBeds) : null,
+        minBaths: minBaths ? Number(minBaths) : null,
+      });
       setItems(data.items ?? []);
     } catch (e: any) {
       setError("Unable to load listings.");
@@ -66,7 +75,7 @@ export default function ListingsScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [active, search]);
+  }, [active, search, minPrice, maxPrice, minBeds, minBaths]);
 
   useEffect(() => {
     loadFilters();
@@ -210,6 +219,67 @@ export default function ListingsScreen() {
         </ScrollView>
       </View>
 
+      {/* ── Deal Number Filters ── */}
+      <View style={styles.numberFilters}>
+        <View style={styles.numberFilterField}>
+          <Text style={styles.numberFilterLabel}>MIN $</Text>
+          <TextInput
+            value={minPrice}
+            onChangeText={setMinPrice}
+            keyboardType="numeric"
+            placeholder="0"
+            placeholderTextColor={colors.muted}
+            style={styles.numberFilterInput}
+          />
+        </View>
+        <View style={styles.numberFilterField}>
+          <Text style={styles.numberFilterLabel}>MAX $</Text>
+          <TextInput
+            value={maxPrice}
+            onChangeText={setMaxPrice}
+            keyboardType="numeric"
+            placeholder="Any"
+            placeholderTextColor={colors.muted}
+            style={styles.numberFilterInput}
+          />
+        </View>
+        <View style={styles.numberFilterFieldSmall}>
+          <Text style={styles.numberFilterLabel}>BEDS</Text>
+          <TextInput
+            value={minBeds}
+            onChangeText={setMinBeds}
+            keyboardType="numeric"
+            placeholder="Any"
+            placeholderTextColor={colors.muted}
+            style={styles.numberFilterInput}
+          />
+        </View>
+        <View style={styles.numberFilterFieldSmall}>
+          <Text style={styles.numberFilterLabel}>BATHS</Text>
+          <TextInput
+            value={minBaths}
+            onChangeText={setMinBaths}
+            keyboardType="decimal-pad"
+            placeholder="Any"
+            placeholderTextColor={colors.muted}
+            style={styles.numberFilterInput}
+          />
+        </View>
+        {(minPrice || maxPrice || minBeds || minBaths) ? (
+          <Pressable
+            onPress={() => {
+              setMinPrice("");
+              setMaxPrice("");
+              setMinBeds("");
+              setMinBaths("");
+            }}
+            style={styles.clearNumberFilters}
+          >
+            <Ionicons name="close" size={14} color={colors.muted} />
+          </Pressable>
+        ) : null}
+      </View>
+
       {/* ── Content ── */}
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.brandPrimary} /></View>
@@ -249,6 +319,44 @@ export default function ListingsScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
+  numberFilters: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "flex-end",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  numberFilterField: { flex: 1 },
+  numberFilterFieldSmall: { width: 70 },
+  numberFilterLabel: {
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    color: colors.muted,
+    marginBottom: 3,
+  },
+  numberFilterInput: {
+    minHeight: 36,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: 9,
+    color: colors.onSurface,
+    backgroundColor: colors.surface,
+    fontSize: 12,
+  },
+  clearNumberFilters: {
+    width: 34,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+  },
   header: {
     backgroundColor: colors.surface,
     paddingHorizontal: spacing.lg,
