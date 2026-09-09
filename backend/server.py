@@ -1863,7 +1863,6 @@ async def _enrich_imported_properties(property_ids: List[str]) -> Dict[str, Any]
     }
 
 
-@api_router.post("/intake/upload")
 async def _read_dataframe(raw: bytes, suffix: str, filename: str) -> list[dict]:
     """Parse CSV/XLS/XLSX raw bytes into a list of row dicts."""
     if suffix == ".csv":
@@ -1878,6 +1877,7 @@ async def _read_dataframe(raw: bytes, suffix: str, filename: str) -> list[dict]:
     return frame.to_dict(orient="records")
 
 
+@api_router.post("/intake/upload")
 async def intake_upload(file: UploadFile = File(...)):
     """
     Import CSV/XLS/XLSX rows, or extract & import all CSVs from a ZIP file.
