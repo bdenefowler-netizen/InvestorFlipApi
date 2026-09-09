@@ -5,11 +5,6 @@ on:
     branches:
       - web
   workflow_dispatch:
-    inputs:
-      app_ref:
-        description: Branch or tag of the app to build the website from
-        required: false
-        default: feature/investorflip-v1
 
 concurrency:
   group: deploy-web
@@ -22,10 +17,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - name: Checkout app code (read-only)
+      - name: Checkout web branch
         uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.inputs.app_ref || 'feature/investorflip-v1' }}
 
       - name: Setup Node
         uses: actions/setup-node@v5
