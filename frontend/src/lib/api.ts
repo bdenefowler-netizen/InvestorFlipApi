@@ -315,16 +315,31 @@ export async function getFilters(): Promise<{ filters: FilterDef[] }> {
   return jsonGet(`${API}/filters`);
 }
 
+export type PropertySearchOptions = {
+  minPrice?: number | null;
+  maxPrice?: number | null;
+  minBeds?: number | null;
+  minBaths?: number | null;
+};
+
 export async function getProperties(
   filter: string,
   search: string,
+  options: PropertySearchOptions = {},
 ): Promise<{ count: number; total?: number; items: Property[] }> {
   const params = new URLSearchParams({ filter, limit: "200" });
   if (search) params.set("search", search);
+  if (options.minPrice != null) params.set("min_price", String(options.minPrice));
+  if (options.maxPrice != null) params.set("max_price", String(options.maxPrice));
   const data = await jsonGet<{ count: number; total?: number; items: Property[] }>(
     `${API}/properties?${params.toString()}`,
   );
-  return { ...data, items: data.items.map(normalizeProperty) };
+  const normalized = data.items.map(normalizeProperty).filter((item) => {
+    if (options.minBeds != null && Number(item.beds || 0) < options.minBeds) return false;
+    if (options.minBaths != null && Number(item.baths || 0) < options.minBaths) return false;
+    return true;
+  });
+  return { ...data, count: normalized.length, items: normalized };
 }
 
 export async function getCountyRecords(
@@ -361,6 +376,53 @@ export async function getAddressSuggestions(
   const res = await fetch(`${API}/address-suggestions?${params.toString()}`, { signal, headers });
   if (!res.ok) throw new Error(`address suggestions failed (${res.status})`);
   return res.json();
+}
+
+export type CalculatorLookup = {
+  address: string;
+  source?: string;
+  price?: number | null;
+  arv_estimate?: number | null;
+  bedrooms?: number | null;
+  bathrooms?: number | null;
+  living_area?: number | null;
+  lot_size?: number | string | null;
+  year_built?: number | null;
+  stories?: number | null;
+  subdivision?: string | null;
+  home_type?: string | null;
+  home_status?: string | null;
+  tax_annual?: number | null;
+  tax_assessed?: number | null;
+  county_record?: CountyRecord | null;
+};
+
+export async function lookupCalculatorProperty(address: string): Promise<CalculatorLookup> {
+  const [detailResult, countyResult] = await Promise.allSettled([
+    jsonGet<CalculatorLookup>(`${API}/calculator/lookup?address=${encodeURIComponent(address)}`),
+    getCountyRecords("all", address, 1, 5),
+  ]);
+
+  const details = detailResult.status === "fulfilled"
+    ? detailResult.value
+    : ({ address, source: "unavailable" } as CalculatorLookup);
+
+  const countyItems = countyResult.status === "fulfilled" ? countyResult.value.items : [];
+  const needle = address.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const county = countyItems.find((item) => {
+    const candidate = String(item.situs_address || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    return candidate && (needle.includes(candidate) || candidate.includes(needle));
+  }) || countyItems[0] || null;
+
+  return {
+    ...details,
+    county_record: county,
+    bedrooms: details.bedrooms ?? county?.beds ?? null,
+    bathrooms: details.bathrooms ?? county?.baths ?? null,
+    living_area: details.living_area ?? county?.sqft ?? null,
+    year_built: details.year_built ?? county?.year_built ?? null,
+    tax_assessed: details.tax_assessed ?? county?.market_value ?? county?.appraised_value ?? null,
+  };
 }
 
 export async function getProperty(id: string): Promise<Property> {
