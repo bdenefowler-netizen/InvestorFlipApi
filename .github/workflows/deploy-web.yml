@@ -1,0 +1,44 @@
+name: Deploy web to EAS Hosting
+
+on:
+  push:
+    branches:
+      - feature/investorflip-v1
+  workflow_dispatch:
+
+concurrency:
+  group: eas-hosting-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Export static web build
+        env:
+          EXPO_PUBLIC_BACKEND_URL: https://investorflipapi-production-4970.up.railway.app
+        run: npx expo export --platform web --output-dir dist
+
+      - name: Deploy to EAS Hosting
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: eas deploy --prod --non-interactive
