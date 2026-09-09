@@ -21,6 +21,7 @@ import {
   addPropertyLink,
   pastePropertyCsv,
   syncAllListingSources,
+  uploadPropertyFile,
   type AllSourceSyncResult,
   type LinkIntakeResult,
   type PasteIntakeResult,
@@ -29,7 +30,7 @@ import {
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 import { adminRequestHeaders } from "@/src/lib/admin";
 
-type Busy = "sync" | "link" | "paste" | "url" | null;
+type Busy = "sync" | "link" | "paste" | "url" | "file" | null;
 
 function ResultBox({ children, error = false }: { children: React.ReactNode; error?: boolean }) {
   return <View style={[styles.result, error && styles.resultError]}>{children}</View>;
@@ -55,6 +56,10 @@ export default function AddScreen() {
   const [pasteText, setPasteText] = useState("");
   const [pasteBusy, setPasteBusy] = useState(false);
   const [pasteResult, setPasteResult] = useState<PasteIntakeResult | null>(null);
+
+  // Local file upload
+  const [fileBusy, setFileBusy] = useState(false);
+  const [fileResult, setFileResult] = useState<UploadIntakeResult | null>(null);
 
   // URL import — new feature
   const [urlInput, setUrlInput] = useState("");
@@ -103,6 +108,59 @@ export default function AddScreen() {
     } finally {
       setPasteBusy(false);
     }
+  };
+
+  // ── Pick a local file (browser staging site) ───────────
+  const chooseLocalFile = async () => {
+    begin("file");
+    setFileResult(null);
+
+    if (Platform.OS !== "web") {
+      Alert.alert(
+        "Local file picker",
+        "The website can upload CSV, Excel, and ZIP files directly now. Native Android file picking will be enabled in the next APK build."
+      );
+      return;
+    }
+
+    const doc = (globalThis as any).document;
+    if (!doc?.createElement) {
+      setError("This browser does not expose a file picker.");
+      return;
+    }
+
+    const input = doc.createElement("input");
+    input.type = "file";
+    input.accept = ".csv,.xls,.xlsx,.zip";
+    input.multiple = false;
+    input.style.display = "none";
+    doc.body?.appendChild(input);
+
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) {
+        input.remove?.();
+        return;
+      }
+      setFileBusy(true);
+      try {
+        const result = await uploadPropertyFile({
+          uri: "",
+          name: file.name,
+          mimeType: file.type || "application/octet-stream",
+          file,
+        });
+        setFileResult(result);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      } catch (e: any) {
+        setError(e?.message || "That file could not be uploaded.");
+      } finally {
+        setFileBusy(false);
+        input.remove?.();
+      }
+    };
+
+    input.click();
   };
 
   // ── Import via URL (CSV / XLSX / ZIP) ─────────────────
@@ -173,7 +231,7 @@ export default function AddScreen() {
           <Text style={styles.eyebrow}>ADD · IMPORT · ENRICH</Text>
           <Text style={styles.title}>Bring in a Deal</Text>
           <Text style={styles.subtitle}>
-            Run all sources, paste a CSV, import from a URL, or add a single property link.
+            Upload a file, run all sources, paste rows, import from a URL, or add a single property link.
           </Text>
         </View>
 
@@ -221,6 +279,51 @@ export default function AddScreen() {
                     <Text style={styles.providerCount}>{p.accepted ?? p.fetched ?? 0}</Text>
                   </View>
                 ))}
+              </ResultBox>
+            ) : null}
+          </View>
+
+          {/* ── Upload Local File ── */}
+          <View style={styles.card}>
+            <View style={styles.cardTitleRow}>
+              <View style={[styles.icon, { backgroundColor: "#E8F0EB" }]}>
+                <Ionicons name="cloud-upload-outline" size={19} color="#355C44" />
+              </View>
+              <View style={styles.cardHeading}>
+                <Text style={styles.cardTitle}>Upload a file</Text>
+                <Text style={styles.cardText}>
+                  Choose a CSV, Excel, or ZIP file from this computer. ZIP files can contain multiple CSV/XLS/XLSX files.
+                </Text>
+              </View>
+            </View>
+            <View style={styles.pillRow}>
+              <FileTypePill label="CSV" icon="document-text-outline" />
+              <FileTypePill label="Excel" icon="grid-outline" />
+              <FileTypePill label="ZIP" icon="folder-outline" />
+            </View>
+            <Pressable
+              disabled={fileBusy || syncBusy || pasteBusy || urlBusy || linkBusy}
+              onPress={chooseLocalFile}
+              style={[styles.primaryButton, (fileBusy || syncBusy || pasteBusy || urlBusy || linkBusy) && styles.disabled]}
+            >
+              {fileBusy
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <Ionicons name="folder-open-outline" size={16} color="#fff" />}
+              <Text style={styles.primaryButtonText}>
+                {fileBusy ? "Uploading…" : "Choose File"}
+              </Text>
+            </Pressable>
+            {Platform.OS !== "web" ? (
+              <Text style={[styles.cardText, { marginTop: 8 }]}>
+                Local file selection is active on the web staging site; URL import remains available in this Android build.
+              </Text>
+            ) : null}
+            {fileResult ? (
+              <ResultBox>
+                <Text style={styles.resultTitle}>✅ {fileResult.filename}</Text>
+                <Text style={styles.resultText}>
+                  {fileResult.accepted} accepted · {fileResult.inserted} new · {fileResult.updated} updated · {fileResult.rejected} rejected
+                </Text>
               </ResultBox>
             ) : null}
           </View>
