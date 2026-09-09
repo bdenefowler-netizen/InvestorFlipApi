@@ -597,6 +597,7 @@ export type UploadIntakeResult = {
   updated: number;
   property_ids: string[];
   rejections: { row: number; reason: string }[];
+  files?: Array<{ file: string; status: string; rows?: number; accepted?: number; inserted?: number; updated?: number; reason?: string }>;
   enrichment: IntakeEnrichment;
 };
 
@@ -648,7 +649,20 @@ export async function uploadPropertyFile(asset: {
   const res = await fetch(`${API}/intake/upload`, { method: "POST", headers, body: form });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `upload failed (${res.status})`);
-  return data;
+  const files = Array.isArray(data.files) ? data.files : [];
+  const rowsRead = data.rows_read ?? files.reduce((sum: number, item: any) => sum + Number(item.rows || 0), 0);
+  return {
+    ...data,
+    rows_read: Number(rowsRead || 0),
+    accepted: Number(data.accepted ?? data.total_accepted ?? 0),
+    rejected: Number(data.rejected ?? data.total_rejected ?? 0),
+    duplicates_merged: Number(data.duplicates_merged ?? 0),
+    inserted: Number(data.inserted ?? data.total_inserted ?? 0),
+    updated: Number(data.updated ?? data.total_updated ?? 0),
+    property_ids: Array.isArray(data.property_ids) ? data.property_ids : [],
+    rejections: Array.isArray(data.rejections) ? data.rejections : [],
+    files,
+  } as UploadIntakeResult;
 }
 
 export async function pastePropertyCsv(csvText: string, filename = "pasted-leads.csv"): Promise<PasteIntakeResult> {
