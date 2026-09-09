@@ -15,20 +15,17 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
-import { API_BASE } from "@/src/lib/api";
+import { API_BASE, lookupCalculatorProperty } from "@/src/lib/api";
 
 interface AddressSuggestion {
-  address: string;
+  type?: string;
+  title: string;
+  street_address: string;
   city?: string;
   state?: string;
   zip?: string;
-  zpid?: string;
-  price?: number;
-  beds?: number;
-  baths?: number;
-  sqft?: number;
-  listing_type?: string;
-  source?: string;
+  county?: string;
+  property_reach_id?: number | string | null;
 }
 
 interface AnalysisResult {
@@ -52,6 +49,9 @@ export default function CalculateScreen() {
   const [suggesting, setSuggesting] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [selectedProperty, setSelectedProperty] = useState<AddressSuggestion | null>(null);
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const [lookupSource, setLookupSource] = useState("");
+  const [countyOwner, setCountyOwner] = useState("");
   
   // Form state
   const [purchasePrice, setPurchasePrice] = useState("");
@@ -80,15 +80,15 @@ export default function CalculateScreen() {
     setLoadingSuggestions(true);
     try {
       const res = await fetch(
-        `${API_BASE}/api/address-suggestions?query=${encodeURIComponent(query)}&search_type=address`
+        `${API_BASE}/api/address-suggestions?query=${encodeURIComponent(query)}&limit=6`
       );
       const data = await res.json();
       const items: AddressSuggestion[] = data.items || [];
       // Deduplicate by address
       const seen = new Set<string>();
       const unique = items.filter((p) => {
-        const key = (p.situs_address || "").toUpperCase();
-        if (seen.has(key)) return false;
+        const key = (p.street_address || p.title || "").toUpperCase();
+        if (!key || seen.has(key)) return false;
         seen.add(key);
         return true;
       }).slice(0, 6);
@@ -108,23 +108,42 @@ export default function CalculateScreen() {
     searchTimeout.current = setTimeout(() => searchAddress(text), 400);
   };
 
-  const selectProperty = (prop: AddressSuggestion) => {
+  const selectProperty = async (prop: AddressSuggestion) => {
     setSelectedProperty(prop);
-    const fullAddress = [prop.address, prop.city, prop.state, prop.zip].filter(Boolean).join(", ");
-    setAddressInput(fullAddress || prop.address || "");
+    const fullAddress = [prop.street_address || prop.title, prop.city, prop.state, prop.zip]
+      .filter(Boolean)
+      .join(", ");
+    setAddressInput(fullAddress || prop.title || "");
     setSuggestions([]);
     setSuggesting(false);
-    
-    // Auto-fill ARV from listing price (best available estimate)
-    if (prop.price) setArv(String(prop.price));
-    
-    // Auto-fill beds/baths/sqft if available
-    if (prop.beds) setBeds(String(prop.beds));
-    if (prop.baths) setBaths(String(prop.baths));
-    if (prop.sqft) setSqft(String(prop.sqft));
-    
-    setStep("form");
+    setLookupBusy(true);
+    setLookupSource("");
+    setCountyOwner("");
+    setAnalysisError(null);
     Keyboard.dismiss();
+
+    try {
+      const lookup = await lookupCalculatorProperty(fullAddress || prop.title);
+      const county = lookup.county_record;
+      if (lookup.price) setPurchasePrice(String(lookup.price));
+      if (lookup.bedrooms) setBeds(String(lookup.bedrooms));
+      if (lookup.bathrooms) setBaths(String(lookup.bathrooms));
+      if (lookup.living_area) setSqft(String(lookup.living_area));
+
+      const benchmark = lookup.tax_assessed || lookup.arv_estimate;
+      if (benchmark) setArv(String(benchmark));
+
+      const sources: string[] = [];
+      if (lookup.source && lookup.source !== "unavailable") sources.push("Real Estate API");
+      if (county) sources.push("TAD / County");
+      setLookupSource(sources.join(" + ") || "No provider match");
+      setCountyOwner(county?.owner_name || "");
+    } catch (err: any) {
+      setAnalysisError(err?.message || "Property lookup failed. You can still enter the numbers manually.");
+    } finally {
+      setLookupBusy(false);
+      setStep("form");
+    }
   };
 
   const handleAnalyze = async () => {
@@ -175,6 +194,9 @@ export default function CalculateScreen() {
     setAddressInput("");
     setSuggestions([]);
     setSelectedProperty(null);
+    setLookupBusy(false);
+    setLookupSource("");
+    setCountyOwner("");
     setPurchasePrice("");
     setArv("");
     setRepairs("");
@@ -212,7 +234,7 @@ export default function CalculateScreen() {
           <View style={styles.header}>
             <Text style={styles.headerTitle}>🏠 Deal Calculator</Text>
             <Text style={styles.headerSub}>
-              Enter any Fort Worth address to auto-fill property data
+              Search any Tarrant County address to pull property data
             </Text>
           </View>
 
@@ -222,7 +244,7 @@ export default function CalculateScreen() {
               <Ionicons name="search" size={18} color={colors.muted} style={styles.searchIcon} />
               <TextInput
                 style={styles.searchInput}
-                placeholder="123 Main St, Fort Worth TX"
+                placeholder="123 Main St, Arlington TX"
                 placeholderTextColor={colors.muted}
                 value={addressInput}
                 onChangeText={handleAddressChange}
@@ -256,23 +278,14 @@ export default function CalculateScreen() {
                         <Ionicons name="location" size={16} color={colors.brandPrimary} />
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.suggestionAddress}>{prop.situs_address}</Text>
+                        <Text style={styles.suggestionAddress}>{prop.street_address || prop.title}</Text>
                         <View style={styles.suggestionMeta}>
-                          {prop.assessed_value && (
-                            <Text style={styles.suggestionMetaText}>
-                              💰 {prop.assessed_value.toLocaleString()}
-                            </Text>
-                          )}
-                          {prop.beds && (
-                            <Text style={styles.suggestionMetaText}>
-                              🛏 {prop.beds}bd
-                            </Text>
-                          )}
-                          {prop.sqft && (
-                            <Text style={styles.suggestionMetaText}>
-                              📐 {prop.sqft.toLocaleString()}sf
-                            </Text>
-                          )}
+                          <Text style={styles.suggestionMetaText}>
+                            {[prop.city, prop.state, prop.zip].filter(Boolean).join(" ")}
+                          </Text>
+                          {prop.county ? (
+                            <Text style={styles.suggestionMetaText}> · {prop.county}</Text>
+                          ) : null}
                         </View>
                       </View>
                       <Ionicons name="chevron-forward" size={14} color={colors.muted} />
@@ -285,10 +298,10 @@ export default function CalculateScreen() {
             {suggesting && suggestions.length === 0 && !loadingSuggestions && addressInput.length >= 5 && (
               <View style={styles.noSuggestions}>
                 <Text style={styles.noSuggestionsText}>
-                  No TAD records found for "{addressInput}"
+                  No matching property found for "{addressInput}"
                 </Text>
                 <Text style={styles.noSuggestionsSub}>
-                  Enter price + ARV manually below
+                  Try a fuller Tarrant County address, or enter the numbers manually
                 </Text>
               </View>
             )}
@@ -304,29 +317,28 @@ export default function CalculateScreen() {
                 </Pressable>
               </View>
               <View style={styles.propertyCardBody}>
-                <Text style={styles.propertyAddress}>{[selectedProperty.address, selectedProperty.city].filter(Boolean).join(", ")}</Text>
-                {selectedProperty.listing_type && (
-                  <Text style={styles.propertyOwner}>
-                    🏷️ {selectedProperty.listing_type || 'For Sale'}
-                  </Text>
-                )}
+                <Text style={styles.propertyAddress}>
+                  {[selectedProperty.street_address || selectedProperty.title, selectedProperty.city]
+                    .filter(Boolean)
+                    .join(", ")}
+                </Text>
+                {lookupBusy ? (
+                  <Text style={styles.propertyOwner}>🔎 Pulling Real Estate API + TAD data…</Text>
+                ) : lookupSource ? (
+                  <Text style={styles.propertyOwner}>✓ {lookupSource}</Text>
+                ) : null}
+                {countyOwner ? (
+                  <Text style={styles.propertyOwner}>TAD Owner: {countyOwner}</Text>
+                ) : null}
                 <View style={styles.propertyStats}>
-                  {selectedProperty.beds && (
-                    <View style={styles.statPill}><Text style={styles.statPillText}>🛏 {selectedProperty.beds} bd</Text></View>
-                  )}
-                  {selectedProperty.baths && (
-                    <View style={styles.statPill}><Text style={styles.statPillText}>🚿 {selectedProperty.baths} ba</Text></View>
-                  )}
-                  {selectedProperty.sqft && (
-                    <View style={styles.statPill}><Text style={styles.statPillText}>📐 {selectedProperty.sqft.toLocaleString()} sf</Text></View>
-                  )}
-                  {selectedProperty.price && (
+                  {beds ? <View style={styles.statPill}><Text style={styles.statPillText}>🛏 {beds} bd</Text></View> : null}
+                  {baths ? <View style={styles.statPill}><Text style={styles.statPillText}>🚿 {baths} ba</Text></View> : null}
+                  {sqft ? <View style={styles.statPill}><Text style={styles.statPillText}>📐 {Number(sqft).toLocaleString()} sf</Text></View> : null}
+                  {purchasePrice ? (
                     <View style={[styles.statPill, styles.statPillHighlight]}>
-                      <Text style={styles.statPillHighlightText}>
-                        💰 ${selectedProperty.price.toLocaleString()}
-                      </Text>
+                      <Text style={styles.statPillHighlightText}>💰 ${Number(purchasePrice).toLocaleString()}</Text>
                     </View>
-                  )}
+                  ) : null}
                 </View>
               </View>
             </View>
@@ -355,7 +367,7 @@ export default function CalculateScreen() {
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>
                 After Repair Value (ARV) *
-                {selectedProperty && " (auto-filled from TAD)"}
+                {selectedProperty && " (starting benchmark — verify ARV)"}
               </Text>
               <View style={styles.inputWrap}>
                 <Text style={styles.inputPrefix}>$</Text>
