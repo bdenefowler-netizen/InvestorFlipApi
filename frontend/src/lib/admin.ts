@@ -9,18 +9,59 @@ async function secureStorage() {
   return storage;
 }
 
+function browserStorage(): Storage | null {
+  try {
+    return typeof globalThis !== "undefined" && (globalThis as any).localStorage
+      ? (globalThis as any).localStorage as Storage
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function showAdminKeyWarning() {
+  try {
+    const alertFn = (globalThis as any)?.alert;
+    if (typeof alertFn === "function") {
+      alertFn("Upload blocked: set your Railway admin key in Settings, then try Upload Selected File again.");
+    }
+  } catch {}
+}
+
 
 export async function getStoredAdminKey(): Promise<string> {
+  // On web, prefer localStorage so a browser refresh/reboot does not silently
+  // strand protected actions if the AsyncStorage shim has not hydrated yet.
+  const browser = browserStorage();
+  const browserKey = String(browser?.getItem(ADMIN_KEY_STORAGE) || "").trim();
+  if (browserKey) return browserKey;
+
   const storage = await secureStorage();
-  return String(await storage.secureGet(ADMIN_KEY_STORAGE, "") || "").trim();
+  const key = String(await storage.secureGet(ADMIN_KEY_STORAGE, "") || "").trim();
+  if (key && browser) {
+    try { browser.setItem(ADMIN_KEY_STORAGE, key); } catch {}
+  }
+  return key;
 }
 
 
 export async function saveAdminKey(value: string): Promise<boolean> {
   const storage = await secureStorage();
+  const browser = browserStorage();
   const key = value.trim();
-  if (!key) return storage.secureRemove(ADMIN_KEY_STORAGE);
-  return storage.secureSet(ADMIN_KEY_STORAGE, key);
+
+  if (!key) {
+    try { browser?.removeItem(ADMIN_KEY_STORAGE); } catch {}
+    return storage.secureRemove(ADMIN_KEY_STORAGE);
+  }
+
+  let browserSaved = false;
+  try {
+    browser?.setItem(ADMIN_KEY_STORAGE, key);
+    browserSaved = Boolean(browser);
+  } catch {}
+  const secureSaved = await storage.secureSet(ADMIN_KEY_STORAGE, key);
+  return secureSaved || browserSaved;
 }
 
 
@@ -29,6 +70,7 @@ export async function adminRequestHeaders(
 ): Promise<Record<string, string>> {
   const key = await getStoredAdminKey();
   if (!key) {
+    showAdminKeyWarning();
     throw new Error("Set your Railway admin key in Settings before running imports or enrichment.");
   }
   return { ...initial, "X-Admin-Key": key };
