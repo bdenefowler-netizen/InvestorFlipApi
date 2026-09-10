@@ -27,6 +27,7 @@ def _display_record(record: Dict[str, Any]) -> Dict[str, Any]:
         for enabled, label in (
             (item.get("has_tad"), "TAD"),
             (item.get("has_tax_roll"), "Tax Roll"),
+            (item.get("has_code_violations"), "Fort Worth Code Violations"),
         )
         if enabled
     ]
@@ -42,6 +43,8 @@ def _source_query(source: str) -> Dict[str, Any]:
         return {"has_tax_roll": True}
     if source == "tax_delinquent":
         return {"tax_delinquent": True}
+    if source == "code_violations":
+        return {"has_code_violations": True}
     return {}
 
 
@@ -57,6 +60,8 @@ async def county_record_stats():
             "with_tad": await db.county_records.count_documents({"has_tad": True}),
             "with_tax_roll": await db.county_records.count_documents({"has_tax_roll": True}),
             "tax_delinquent": await db.county_records.count_documents({"tax_delinquent": True}),
+            "with_code_violations": await db.county_records.count_documents({"has_code_violations": True}),
+            "open_code_violations": await db.county_records.count_documents({"open_code_violation_count": {"$gt": 0}}),
             "tad_next_offset": cursor.get("next_offset", 0),
             "tad_snapshot_completed_at": cursor.get("last_completed_snapshot"),
             "recent_syncs": latest,
@@ -67,7 +72,7 @@ async def county_record_stats():
 
 @router.get("/county-records")
 async def list_county_records(
-    source: str = Query("all", pattern="^(all|tad|tax_roll|tax_delinquent)$"),
+    source: str = Query("all", pattern="^(all|tad|tax_roll|tax_delinquent|code_violations)$"),
     search: Optional[str] = Query(None, max_length=160),
     page: int = Query(1, ge=1),
     limit: int = Query(75, ge=1, le=200),
@@ -85,6 +90,10 @@ async def list_county_records(
                 {"account_id": regex},
                 {"parcel_id": regex},
                 {"zip": regex},
+                {"code_latest_complaint": regex},
+                {"code_latest_status": regex},
+                {"code_case_ids": regex},
+                {"code_violation_ids": regex},
             ]}
             query = {"$and": [query, search_query]} if query else search_query
         total = await db.county_records.count_documents(query)
@@ -107,7 +116,7 @@ async def list_county_records(
 
 
 @router.get("/county-records/export.csv")
-async def export_county_records(source: str = Query("all", pattern="^(all|tad|tax_roll|tax_delinquent)$")):
+async def export_county_records(source: str = Query("all", pattern="^(all|tad|tax_roll|tax_delinquent|code_violations)$")):
     fields = [
         "account_id", "parcel_id", "situs_address", "city", "state", "zip",
         "owner_name", "owner_mailing_address", "mailing_city", "mailing_state", "mailing_zip",
@@ -116,7 +125,13 @@ async def export_county_records(source: str = Query("all", pattern="^(all|tad|ta
         "annual_taxes", "current_tax_amount_due", "prior_tax_amount_due", "tax_delinquent",
         "delinquency_date", "legal_description", "school_district", "deed_date",
         "absentee_owner", "out_of_state_owner", "trust_owned", "company_owned",
-        "has_tad", "has_tax_roll", "tad_updated_at", "tax_roll_updated_at",
+        "has_code_violations", "code_violation_count", "open_code_violation_count",
+        "code_latest_complaint", "code_latest_status", "code_oldest_open_date",
+        "code_latest_update", "code_next_activity_due", "code_geocode_score",
+        "code_case_ids", "code_violation_ids", "code_complaint_types",
+        "code_substandard_building", "code_property_maintenance", "code_high_grass_weeds",
+        "code_health_hazard", "code_solid_waste", "code_zoning", "code_vehicle", "code_multifamily",
+        "has_tad", "has_tax_roll", "tad_updated_at", "tax_roll_updated_at", "code_violation_updated_at",
         "tad_raw_json", "tax_roll_raw_json",
     ]
 
@@ -135,6 +150,7 @@ async def export_county_records(source: str = Query("all", pattern="^(all|tad|ta
         projection.update({
             "has_tad": 1,
             "has_tax_roll": 1,
+            "has_code_violations": 1,
             "tad_raw": 1,
             "tax_roll_raw": 1,
         })
@@ -195,8 +211,9 @@ async def get_county_record(record_id: str):
 
 @router.post("/admin/county-records/sync")
 async def sync_county_records(
-    source: str = Query("all", pattern="^(all|tad|tax_roll)$"),
+    source: str = Query("all", pattern="^(all|tad|tax_roll|code_violations)$"),
     tad_records: int = Query(20000, ge=100, le=50000),
+    code_records: Optional[int] = Query(None, ge=1, le=200000),
 ):
     db = PostgresDatabase()
     results: Dict[str, Any] = {}
@@ -204,6 +221,9 @@ async def sync_county_records(
         await db.connect()
         if source in {"all", "tad"}:
             results["tad"] = await sync_tad_county_records(db, records_per_run=tad_records)
+        if source in {"all", "code_violations"}:
+            from importers.fort_worth_code_violations import sync_fort_worth_code_violations
+            results["code_violations"] = await sync_fort_worth_code_violations(db, limit=code_records)
     finally:
         await db.close()
     if source in {"all", "tax_roll"}:
