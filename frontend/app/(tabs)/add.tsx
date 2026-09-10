@@ -60,6 +60,7 @@ export default function AddScreen() {
   // Local file upload
   const [fileBusy, setFileBusy] = useState(false);
   const [fileResult, setFileResult] = useState<UploadIntakeResult | null>(null);
+  const [selectedFile, setSelectedFile] = useState<any | null>(null);
 
   // URL import — new feature
   const [urlInput, setUrlInput] = useState("");
@@ -114,6 +115,7 @@ export default function AddScreen() {
   const chooseLocalFile = async () => {
     begin("file");
     setFileResult(null);
+    setSelectedFile(null);
 
     if (Platform.OS !== "web") {
       Alert.alert(
@@ -142,25 +144,35 @@ export default function AddScreen() {
         input.remove?.();
         return;
       }
-      setFileBusy(true);
-      try {
-        const result = await uploadPropertyFile({
-          uri: "",
-          name: file.name,
-          mimeType: file.type || "application/octet-stream",
-          file,
-        });
-        setFileResult(result);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      } catch (e: any) {
-        setError(e?.message || "That file could not be uploaded.");
-      } finally {
-        setFileBusy(false);
-        input.remove?.();
-      }
+      setSelectedFile(file);
+      input.remove?.();
     };
 
     input.click();
+  };
+
+  const submitLocalFile = async () => {
+    if (!selectedFile) {
+      setError("Choose a CSV, Excel, or ZIP file first.");
+      return;
+    }
+    setFileBusy(true);
+    setFileResult(null);
+    setError(null);
+    try {
+      const result = await uploadPropertyFile({
+        uri: "",
+        name: selectedFile.name,
+        mimeType: selectedFile.type || "application/octet-stream",
+        file: selectedFile,
+      });
+      setFileResult(result);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    } catch (e: any) {
+      setError(e?.message || "That file could not be uploaded.");
+    } finally {
+      setFileBusy(false);
+    }
   };
 
   // ── Import via URL (CSV / XLSX / ZIP) ─────────────────
@@ -304,13 +316,36 @@ export default function AddScreen() {
             <Pressable
               disabled={fileBusy || syncBusy || pasteBusy || urlBusy || linkBusy}
               onPress={chooseLocalFile}
-              style={[styles.primaryButton, (fileBusy || syncBusy || pasteBusy || urlBusy || linkBusy) && styles.disabled]}
+              style={[styles.secondaryButton, (fileBusy || syncBusy || pasteBusy || urlBusy || linkBusy) && styles.disabled]}
+            >
+              <Ionicons name="folder-open-outline" size={16} color={colors.brandPrimary} />
+              <Text style={styles.secondaryButtonText}>Choose File</Text>
+            </Pressable>
+            {selectedFile ? (
+              <View style={styles.selectedFileBox}>
+                <Ionicons name="document-attach-outline" size={16} color={colors.brandPrimary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.selectedFileName}>{selectedFile.name}</Text>
+                  <Text style={styles.selectedFileMeta}>
+                    {Math.max(1, Math.round((selectedFile.size || 0) / 1024)).toLocaleString()} KB selected · not uploaded yet
+                  </Text>
+                </View>
+              </View>
+            ) : null}
+            <Pressable
+              disabled={!selectedFile || fileBusy || syncBusy || pasteBusy || urlBusy || linkBusy}
+              onPress={submitLocalFile}
+              style={[
+                styles.primaryButton,
+                (!selectedFile || fileBusy || syncBusy || pasteBusy || urlBusy || linkBusy) && styles.disabled,
+                { marginTop: 8 },
+              ]}
             >
               {fileBusy
                 ? <ActivityIndicator color="#fff" size="small" />
-                : <Ionicons name="folder-open-outline" size={16} color="#fff" />}
+                : <Ionicons name="cloud-upload-outline" size={16} color="#fff" />}
               <Text style={styles.primaryButtonText}>
-                {fileBusy ? "Uploading…" : "Choose File"}
+                {fileBusy ? "Uploading and enriching…" : "Upload Selected File"}
               </Text>
             </Pressable>
             {Platform.OS !== "web" ? (
@@ -597,6 +632,19 @@ const styles = StyleSheet.create({
   fileRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
   fileName: { flex: 1, fontSize: 11, color: colors.onSurface },
   fileCount: { fontSize: 10, color: colors.muted, fontWeight: "700" },
+  selectedFileBox: {
+    marginTop: 8,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  selectedFileName: { color: colors.onSurface, fontSize: 12, fontWeight: "800" },
+  selectedFileMeta: { color: colors.muted, fontSize: 10, marginTop: 2 },
 
   openButton: {
     alignSelf: "flex-start", marginTop: spacing.md,
