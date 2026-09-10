@@ -2,7 +2,7 @@
 
 Pulls the City's public code-violation dataset in pages, aggregates records by
 property address, and merges distress signals into the durable county-record
-store.  This is an address-based public-record signal; it must not be treated as
+store. This is an address-based public-record signal; it must not be treated as
 proof of vacancy by itself.
 """
 from __future__ import annotations
@@ -66,17 +66,26 @@ def _signal_flags(complaint: str) -> Dict[str, bool]:
     }
 
 
+def _zip_from_attrs(attrs: Mapping[str, Any]) -> str:
+    direct = _text(attrs.get("ZipCode") or attrs.get("ZIP") or attrs.get("Zip"))[:5]
+    if re.fullmatch(r"\d{5}", direct):
+        return direct
+    location = _text(attrs.get("Location_1"))
+    match = re.search(r"\b(\d{5})(?:-\d{4})?\b", location)
+    return match.group(1) if match else ""
+
+
 def _aggregate(features: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     grouped: Dict[str, Dict[str, Any]] = {}
 
     for feature in features:
         attrs = dict(feature.get("attributes") or feature)
-        street = _text(attrs.get("Address"))
-        if not street or street in {"0", "N/A", "NA"}:
+        street = _text(attrs.get("Violation_Address") or attrs.get("Address"))
+        if not street or street.upper() in {"0", "N/A", "NA"}:
             continue
         city = _text(attrs.get("City")) or "Fort Worth"
         state = _text(attrs.get("State")) or "TX"
-        zip_code = _text(attrs.get("ZipCode"))[:5]
+        zip_code = _zip_from_attrs(attrs)
         full_address = ", ".join(part for part in (street, city, f"{state} {zip_code}".strip()) if part)
         key = f"{canonical_street_key(full_address)}|{zip_code}"
         if not key.strip("|"):
@@ -161,15 +170,17 @@ async def fetch_code_violation_features(limit: Optional[int] = None) -> List[Dic
                 break
             response = await client.get(ARCGIS_QUERY_URL, params={
                 "where": "1=1",
-                "outFields": "Case_ID,Violation_ID,Address,City,State,Location_1,Case_Created_Date,Complaint_Type_Description,Violation_Current_Status,Case_Current_Status,Violation_Created_Date,Update_Date,ZipCode,Next_Activity_Due_Date,GeoCodeScore",
+                "outFields": "*",
                 "returnGeometry": "false",
                 "f": "json",
                 "resultOffset": offset,
                 "resultRecordCount": batch_size,
-                "orderByFields": "OBJECTID",
+                "orderByFields": "ObjectId",
             })
             response.raise_for_status()
             payload = response.json()
+            if payload.get("error"):
+                raise RuntimeError(f"ArcGIS code violations error: {payload['error']}")
             features = payload.get("features") or []
             if not features:
                 break
