@@ -16,35 +16,56 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter, type Href } from "expo-router";
 
 import {
+  API_BASE,
   countyRecordsCsvUrl,
   getCountyRecords,
   getCountyRecordStats,
   type CountyRecord,
   type CountyRecordStats,
 } from "@/src/lib/api";
+import { adminRequestHeaders } from "@/src/lib/admin";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 
 
-type CountySource = "all" | "tad" | "tax_roll" | "tax_delinquent";
+type CountySource = "all" | "code_violations" | "tad" | "tax_roll" | "tax_delinquent";
+type CountyCodeRecord = CountyRecord & {
+  has_code_violations?: boolean;
+  code_violation_count?: number;
+  open_code_violation_count?: number;
+  code_latest_complaint?: string;
+  code_latest_status?: string;
+  code_oldest_open_date?: string;
+  code_latest_update?: string;
+  code_next_activity_due?: string;
+  code_geocode_score?: number;
+};
+type ExtendedStats = CountyRecordStats & {
+  with_code_violations?: number;
+  open_code_violations?: number;
+};
 
 const SOURCES: { key: CountySource; label: string }[] = [
   { key: "all", label: "All records" },
+  { key: "code_violations", label: "Code violations" },
+  { key: "tax_delinquent", label: "Tax due" },
   { key: "tad", label: "TAD" },
   { key: "tax_roll", label: "Tax roll" },
-  { key: "tax_delinquent", label: "Tax due" },
 ];
 
 const COLUMNS = {
   address: 230,
   owner: 185,
   account: 115,
+  openCode: 82,
+  complaint: 180,
+  codeStatus: 125,
   year: 72,
   sqft: 82,
   appraised: 112,
   market: 112,
   currentDue: 104,
   priorDue: 104,
-  source: 130,
+  source: 145,
   quality: 82,
 };
 
@@ -94,6 +115,8 @@ export default function CountyRecordsScreen() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncingCode, setSyncingCode] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (nextPage = 1, append = false) => {
@@ -102,7 +125,7 @@ export default function CountyRecordsScreen() {
     setError(null);
     try {
       const [records, summary] = await Promise.all([
-        getCountyRecords(source, search, nextPage),
+        getCountyRecords(source as any, search, nextPage),
         append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
       ]);
       setItems((current) => append ? [...current, ...records.items] : records.items);
@@ -125,6 +148,7 @@ export default function CountyRecordsScreen() {
   }, [source, search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const latestSync = useMemo(() => stats?.recent_syncs?.[0], [stats]);
+  const extendedStats = stats as ExtendedStats | null;
   const loadMore = () => {
     if (!loading && !loadingMore && page < pages) load(page + 1, true);
   };
@@ -133,35 +157,64 @@ export default function CountyRecordsScreen() {
     load(1, false);
   };
 
-  const renderRow = ({ item, index }: { item: CountyRecord; index: number }) => (
-    <Pressable
-      onPress={() => router.push(`/county/${encodeURIComponent(item.id)}` as Href)}
-      style={({ pressed }) => [
-        styles.row,
-        index % 2 === 1 && styles.rowAlternate,
-        pressed && styles.rowPressed,
-      ]}
-    >
-      <Cell width={COLUMNS.address} strong>{plain(item.situs_address)}</Cell>
-      <Cell width={COLUMNS.owner}>{plain(item.owner_name)}</Cell>
-      <Cell width={COLUMNS.account}>{plain(item.account_id || item.parcel_id)}</Cell>
-      <Cell width={COLUMNS.year}>{plain(item.year_built)}</Cell>
-      <Cell width={COLUMNS.sqft}>{plain(item.sqft)}</Cell>
-      <Cell width={COLUMNS.appraised}>{money(item.appraised_value)}</Cell>
-      <Cell width={COLUMNS.market}>{money(item.market_value || item.tax_roll_market_value)}</Cell>
-      <Cell width={COLUMNS.currentDue} danger={Boolean(item.current_tax_amount_due)}>{money(item.current_tax_amount_due)}</Cell>
-      <Cell width={COLUMNS.priorDue} danger={Boolean(item.prior_tax_amount_due)}>{money(item.prior_tax_amount_due)}</Cell>
-      <Cell width={COLUMNS.source}>{item.sources?.join(" + ") || "—"}</Cell>
-      <Cell width={COLUMNS.quality}>{item.completeness_score != null ? `${item.completeness_score}%` : "—"}</Cell>
-    </Pressable>
-  );
+  const syncCodeViolations = async () => {
+    setSyncingCode(true);
+    setSyncMessage(null);
+    setError(null);
+    try {
+      const headers = await adminRequestHeaders();
+      const response = await fetch(`${API_BASE}/api/admin/county-records/sync?source=code_violations`, {
+        method: "POST",
+        headers,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.detail || `Code sync failed (${response.status})`);
+      const result = payload?.results?.code_violations || {};
+      setSyncMessage(`${Number(result.fetched || 0).toLocaleString()} violations pulled · ${Number(result.properties || 0).toLocaleString()} properties matched/created`);
+      setSource("code_violations");
+      await load(1, false);
+    } catch (e: any) {
+      setError(e?.message || "Fort Worth code violations could not be synced.");
+    } finally {
+      setSyncingCode(false);
+    }
+  };
+
+  const renderRow = ({ item, index }: { item: CountyRecord; index: number }) => {
+    const code = item as CountyCodeRecord;
+    return (
+      <Pressable
+        onPress={() => router.push(`/county/${encodeURIComponent(item.id)}` as Href)}
+        style={({ pressed }) => [
+          styles.row,
+          index % 2 === 1 && styles.rowAlternate,
+          pressed && styles.rowPressed,
+        ]}
+      >
+        <Cell width={COLUMNS.address} strong>{plain(item.situs_address)}</Cell>
+        <Cell width={COLUMNS.owner}>{plain(item.owner_name)}</Cell>
+        <Cell width={COLUMNS.account}>{plain(item.account_id || item.parcel_id)}</Cell>
+        <Cell width={COLUMNS.openCode} danger={Boolean(code.open_code_violation_count)}>{plain(code.open_code_violation_count)}</Cell>
+        <Cell width={COLUMNS.complaint}>{plain(code.code_latest_complaint)}</Cell>
+        <Cell width={COLUMNS.codeStatus} danger={Boolean(code.open_code_violation_count)}>{plain(code.code_latest_status)}</Cell>
+        <Cell width={COLUMNS.year}>{plain(item.year_built)}</Cell>
+        <Cell width={COLUMNS.sqft}>{plain(item.sqft)}</Cell>
+        <Cell width={COLUMNS.appraised}>{money(item.appraised_value)}</Cell>
+        <Cell width={COLUMNS.market}>{money(item.market_value || item.tax_roll_market_value)}</Cell>
+        <Cell width={COLUMNS.currentDue} danger={Boolean(item.current_tax_amount_due)}>{money(item.current_tax_amount_due)}</Cell>
+        <Cell width={COLUMNS.priorDue} danger={Boolean(item.prior_tax_amount_due)}>{money(item.prior_tax_amount_due)}</Cell>
+        <Cell width={COLUMNS.source}>{item.sources?.join(" + ") || "—"}</Cell>
+        <Cell width={COLUMNS.quality}>{item.completeness_score != null ? `${item.completeness_score}%` : "—"}</Cell>
+      </Pressable>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.top}>
         <View style={styles.titleRow}>
           <View>
-            <Text style={styles.eyebrow}>TARRANT COUNTY PUBLIC RECORDS</Text>
+            <Text style={styles.eyebrow}>TARRANT COUNTY · FORT WORTH PUBLIC RECORDS</Text>
             <Text style={styles.title}>County Records</Text>
           </View>
           <View style={styles.titleActions}>
@@ -172,7 +225,16 @@ export default function CountyRecordsScreen() {
             >
               <Ionicons name="search" size={16} color={colors.onSurface} />
             </Pressable>
-            <Pressable style={styles.exportButton} onPress={() => Linking.openURL(countyRecordsCsvUrl(source))}>
+            <Pressable
+              style={[styles.codeSyncButton, syncingCode && styles.disabled]}
+              disabled={syncingCode}
+              onPress={syncCodeViolations}
+              testID="sync-code-violations"
+            >
+              {syncingCode ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="warning-outline" size={16} color="#fff" />}
+              <Text style={styles.exportText}>{syncingCode ? "Syncing…" : "Sync Code"}</Text>
+            </Pressable>
+            <Pressable style={styles.exportButton} onPress={() => Linking.openURL(countyRecordsCsvUrl(source as any))}>
               <Ionicons name="download-outline" size={17} color={colors.onBrandPrimary} />
               <Text style={styles.exportText}>CSV</Text>
             </Pressable>
@@ -183,6 +245,7 @@ export default function CountyRecordsScreen() {
           <View style={styles.stat}><Text style={styles.statValue}>{stats?.with_tad ?? "—"}</Text><Text style={styles.statLabel}>TAD</Text></View>
           <View style={styles.stat}><Text style={styles.statValue}>{stats?.with_tax_roll ?? "—"}</Text><Text style={styles.statLabel}>Tax roll</Text></View>
           <View style={styles.stat}><Text style={[styles.statValue, styles.due]}>{stats?.tax_delinquent ?? "—"}</Text><Text style={styles.statLabel}>Tax due</Text></View>
+          <View style={styles.stat}><Text style={[styles.statValue, styles.due]}>{extendedStats?.with_code_violations ?? "—"}</Text><Text style={styles.statLabel}>Code props</Text></View>
           <View style={styles.stat}><Text style={styles.statValue}>{total}</Text><Text style={styles.statLabel}>Shown set</Text></View>
         </View>
 
@@ -191,7 +254,7 @@ export default function CountyRecordsScreen() {
           <TextInput
             value={search}
             onChangeText={setSearch}
-            placeholder="Address, owner, account, parcel, ZIP"
+            placeholder="Address, owner, account, case, violation, complaint"
             placeholderTextColor={colors.muted}
             style={styles.searchInput}
           />
@@ -209,10 +272,11 @@ export default function CountyRecordsScreen() {
             </Pressable>
           ))}
         </ScrollView>
+        {syncMessage ? <Text style={styles.syncSuccess}>{syncMessage}</Text> : null}
         <Text style={styles.syncText} numberOfLines={1}>
           {latestSync
             ? `Last ${latestSync.source} sync: ${new Date(latestSync.created_at).toLocaleString()} · tap any row for every source field`
-            : "The county snapshot fills in batches; tap any row for every source field."}
+            : "Sync Code pulls the Fort Worth ArcGIS violation feed; tap any row for every source field."}
         </Text>
       </View>
 
@@ -230,6 +294,9 @@ export default function CountyRecordsScreen() {
               <HeaderCell width={COLUMNS.address}>PROPERTY ADDRESS</HeaderCell>
               <HeaderCell width={COLUMNS.owner}>OWNER</HeaderCell>
               <HeaderCell width={COLUMNS.account}>ACCOUNT / PARCEL</HeaderCell>
+              <HeaderCell width={COLUMNS.openCode}>OPEN CODE</HeaderCell>
+              <HeaderCell width={COLUMNS.complaint}>LATEST COMPLAINT</HeaderCell>
+              <HeaderCell width={COLUMNS.codeStatus}>CODE STATUS</HeaderCell>
               <HeaderCell width={COLUMNS.year}>BUILT</HeaderCell>
               <HeaderCell width={COLUMNS.sqft}>SQFT</HeaderCell>
               <HeaderCell width={COLUMNS.appraised}>APPRAISED</HeaderCell>
@@ -246,7 +313,7 @@ export default function CountyRecordsScreen() {
               onEndReached={loadMore}
               onEndReachedThreshold={0.35}
               refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.brandPrimary} />}
-              ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>No complete county rows match.</Text><Text style={styles.emptyText}>Try another source or search.</Text></View>}
+              ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>No county rows match.</Text><Text style={styles.emptyText}>Try another source or run Sync Code.</Text></View>}
               ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.more} color={colors.brandPrimary} /> : null}
             />
           </View>
@@ -264,6 +331,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: "800", color: colors.onSurface, marginTop: 2 },
   titleActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   officialButton: { width: 38, height: 38, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+  codeSyncButton: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.error, paddingHorizontal: 11, paddingVertical: 8, borderRadius: radius.md },
   exportButton: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.brandPrimary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md },
   exportText: { color: colors.onBrandPrimary, fontWeight: "800", fontSize: 12 },
   statsRow: { flexDirection: "row", gap: 7, marginTop: spacing.md },
@@ -279,6 +347,8 @@ const styles = StyleSheet.create({
   filterText: { fontSize: 11, fontWeight: "700", color: colors.onSurfaceTertiary },
   filterTextActive: { color: colors.onBrandPrimary },
   syncText: { fontSize: 10, color: colors.muted, marginTop: 7 },
+  syncSuccess: { fontSize: 10, color: colors.success, fontWeight: "700", marginTop: 7 },
+  disabled: { opacity: 0.55 },
   tableScroll: { flex: 1 },
   tableHeader: { height: 42, flexDirection: "row", backgroundColor: colors.brandPrimary, borderBottomWidth: 1, borderBottomColor: colors.borderStrong },
   headerCell: { justifyContent: "center", paddingHorizontal: 8, borderRightWidth: StyleSheet.hairlineWidth, borderRightColor: "rgba(255,255,255,0.22)" },
