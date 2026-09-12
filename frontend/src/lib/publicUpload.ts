@@ -1,6 +1,5 @@
 import { API_BASE } from "./api";
 
-
 export type PublicUploadAsset = {
   uri: string;
   name?: string | null;
@@ -12,6 +11,7 @@ export type PublicUploadAsset = {
 export type PublicUploadResult = {
   ok: boolean;
   filename: string;
+  categories?: string[];
   rows_read: number;
   accepted: number;
   rejected: number;
@@ -21,6 +21,7 @@ export type PublicUploadResult = {
   files?: Array<{
     file: string;
     status: string;
+    categories?: string[];
     rows?: number;
     accepted?: number;
     inserted?: number;
@@ -53,8 +54,8 @@ export async function uploadCountyFile(asset: PublicUploadAsset): Promise<Public
     );
   }
 
-  // Intentionally no admin headers here. The ADD upload is user intake, not an admin operation.
-  const response = await fetch(`${API_BASE}/api/intake/upload`, {
+  // User-facing ADD intake is intentionally public and does not send admin credentials.
+  const response = await fetch(`${API_BASE}/api/import/bulk/upload-workbook`, {
     method: "POST",
     body: form,
   });
