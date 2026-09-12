@@ -7,6 +7,11 @@ import re
 
 def requires_admin_key(path: str, method: str = "GET") -> bool:
     """Return whether a route can mutate data or consume paid-provider credit."""
+    # Development/demo exception: spreadsheet intake is intentionally open for now.
+    # Keep the rest of the paid/mutating admin surface protected.
+    if path == "/api/intake/upload":
+        return False
+
     if path.startswith("/api/") and method.upper() not in {"GET", "HEAD", "OPTIONS"}:
         return True
     protected_prefixes = (
