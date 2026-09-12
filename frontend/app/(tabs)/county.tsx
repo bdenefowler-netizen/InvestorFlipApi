@@ -27,7 +27,7 @@ import { adminRequestHeaders } from "@/src/lib/admin";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 
 
-type CountySource = "all" | "code_violations" | "tad" | "tax_roll" | "tax_delinquent";
+type CountySource = "all" | "uploaded" | "code_violations" | "tad" | "tax_roll" | "tax_delinquent";
 type CountyCodeRecord = CountyRecord & {
   has_code_violations?: boolean;
   code_violation_count?: number;
@@ -40,12 +40,14 @@ type CountyCodeRecord = CountyRecord & {
   code_geocode_score?: number;
 };
 type ExtendedStats = CountyRecordStats & {
+  uploaded?: number;
   with_code_violations?: number;
   open_code_violations?: number;
 };
 
 const SOURCES: { key: CountySource; label: string }[] = [
   { key: "all", label: "All records" },
+  { key: "uploaded", label: "Uploaded" },
   { key: "code_violations", label: "Code violations" },
   { key: "tax_delinquent", label: "Tax due" },
   { key: "tad", label: "TAD" },
@@ -242,6 +244,7 @@ export default function CountyRecordsScreen() {
         </View>
 
         <View style={styles.statsRow}>
+          <View style={styles.stat}><Text style={styles.statValue}>{extendedStats?.uploaded ?? "—"}</Text><Text style={styles.statLabel}>Uploaded</Text></View>
           <View style={styles.stat}><Text style={styles.statValue}>{stats?.with_tad ?? "—"}</Text><Text style={styles.statLabel}>TAD</Text></View>
           <View style={styles.stat}><Text style={styles.statValue}>{stats?.with_tax_roll ?? "—"}</Text><Text style={styles.statLabel}>Tax roll</Text></View>
           <View style={styles.stat}><Text style={[styles.statValue, styles.due]}>{stats?.tax_delinquent ?? "—"}</Text><Text style={styles.statLabel}>Tax due</Text></View>
@@ -274,9 +277,11 @@ export default function CountyRecordsScreen() {
         </ScrollView>
         {syncMessage ? <Text style={styles.syncSuccess}>{syncMessage}</Text> : null}
         <Text style={styles.syncText} numberOfLines={1}>
-          {latestSync
-            ? `Last ${latestSync.source} sync: ${new Date(latestSync.created_at).toLocaleString()} · tap any row for every source field`
-            : "Sync Code pulls the Fort Worth ArcGIS violation feed; tap any row for every source field."}
+          {source === "uploaded"
+            ? "Uploaded rows are shown immediately; official TAD, tax, and code data can enrich them after matching."
+            : latestSync
+              ? `Last ${latestSync.source} sync: ${new Date(latestSync.created_at).toLocaleString()} · tap any row for every source field`
+              : "Sync Code pulls the Fort Worth ArcGIS violation feed; tap any row for every source field."}
         </Text>
       </View>
 
@@ -313,7 +318,7 @@ export default function CountyRecordsScreen() {
               onEndReached={loadMore}
               onEndReachedThreshold={0.35}
               refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.brandPrimary} />}
-              ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>No county rows match.</Text><Text style={styles.emptyText}>Try another source or run Sync Code.</Text></View>}
+              ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{source === "uploaded" ? "No uploaded rows yet." : "No county rows match."}</Text><Text style={styles.emptyText}>{source === "uploaded" ? "Upload the Caroline test spreadsheet from Add Property, then return here." : "Try another source or run Sync Code."}</Text></View>}
               ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.more} color={colors.brandPrimary} /> : null}
             />
           </View>
