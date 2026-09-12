@@ -26,18 +26,20 @@ import {
 import { adminRequestHeaders } from "@/src/lib/admin";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 
+type CountySource =
+  | "all"
+  | "uploaded"
+  | "code_violations"
+  | "tad"
+  | "tax_roll"
+  | "tax_delinquent";
 
-type CountySource = "all" | "uploaded" | "code_violations" | "tad" | "tax_roll" | "tax_delinquent";
 type CountyCodeRecord = CountyRecord & {
   has_code_violations?: boolean;
   code_violation_count?: number;
   open_code_violation_count?: number;
   code_latest_complaint?: string;
   code_latest_status?: string;
-  code_oldest_open_date?: string;
-  code_latest_update?: string;
-  code_next_activity_due?: string;
-  code_geocode_score?: number;
   pre_foreclosure?: boolean;
   listing_type?: string;
   listing_status?: string;
@@ -46,10 +48,20 @@ type CountyCodeRecord = CountyRecord & {
   data_source?: string;
   source_platform?: string;
 };
+
 type ExtendedStats = CountyRecordStats & {
   uploaded?: number;
   with_code_violations?: number;
   open_code_violations?: number;
+};
+
+type Column = {
+  key: string;
+  label: string;
+  width: number;
+  value: (item: CountyCodeRecord) => string;
+  strong?: boolean;
+  danger?: (item: CountyCodeRecord) => boolean;
 };
 
 const SOURCES: { key: CountySource; label: string }[] = [
@@ -60,27 +72,6 @@ const SOURCES: { key: CountySource; label: string }[] = [
   { key: "tad", label: "TAD" },
   { key: "tax_roll", label: "Tax roll" },
 ];
-
-const COLUMNS = {
-  address: 230,
-  owner: 185,
-  account: 115,
-  preForeclosure: 112,
-  foreclosure: 104,
-  openCode: 82,
-  complaint: 180,
-  codeStatus: 125,
-  year: 72,
-  sqft: 82,
-  appraised: 112,
-  market: 112,
-  currentDue: 104,
-  priorDue: 104,
-  source: 145,
-  quality: 82,
-};
-
-const TABLE_WIDTH = Object.values(COLUMNS).reduce((sum, width) => sum + width, 0);
 
 function money(value?: number | null): string {
   if (value == null || !Number.isFinite(Number(value))) return "—";
@@ -93,7 +84,112 @@ function plain(value: unknown): string {
   return String(value);
 }
 
-function Cell({ width, children, strong, danger }: { width: number; children: string; strong?: boolean; danger?: boolean }) {
+function totalDue(item: CountyRecord): number {
+  return Number(item.current_tax_amount_due || 0) + Number(item.prior_tax_amount_due || 0);
+}
+
+const TAX_ROLL_COLUMNS: Column[] = [
+  { key: "address", label: "PROPERTY ADDRESS", width: 230, strong: true, value: (i) => plain(i.situs_address) },
+  { key: "tad", label: "TAD ACCOUNT #", width: 125, value: (i) => plain(i.account_id) },
+  { key: "apn", label: "APN / PARCEL", width: 125, value: (i) => plain(i.parcel_id) },
+  { key: "owner", label: "OWNER", width: 190, value: (i) => plain(i.owner_name) },
+  { key: "legal", label: "LEGAL DESCRIPTION", width: 260, value: (i) => plain(i.legal_description) },
+  { key: "roll", label: "ROLL CODE", width: 90, value: (i) => plain(i.roll_code) },
+  { key: "sqft", label: "SQ FT", width: 90, value: (i) => plain(i.sqft) },
+  { key: "year", label: "YEAR BUILT", width: 92, value: (i) => plain(i.year_built) },
+  { key: "deed", label: "DEED DATE", width: 112, value: (i) => plain(i.deed_date) },
+  { key: "land", label: "LAND VALUE", width: 118, value: (i) => money(i.land_value) },
+  { key: "improvement", label: "IMPROVEMENT", width: 125, value: (i) => money(i.improvement_value) },
+  { key: "appraised", label: "APPRIAISED", width: 118, value: (i) => money(i.appraised_value) },
+  { key: "levy", label: "ADJUSTED LEVY", width: 120, value: (i) => money(i.annual_taxes) },
+  {
+    key: "current",
+    label: "CURRENT DUE",
+    width: 112,
+    value: (i) => money(i.current_tax_amount_due),
+    danger: (i) => Number(i.current_tax_amount_due || 0) > 0,
+  },
+  {
+    key: "prior",
+    label: "PRIOR DUE",
+    width: 108,
+    value: (i) => money(i.prior_tax_amount_due),
+    danger : (i) => Number(i.prior_tax_amount_due || 0) > 0,
+  },
+  { key: "delinq", label: "DELINQUENCY DATE", width: 135, value: (i) => plain(i.delinquency_date) },
+  { key: "status", label: "ACCOUNT STATUS", width: 130, value: (i) => plain(i.account_status_codes) },
+  { key: "litigation", label: "TAD LITIGATION", width: 115, value: (i) => plain(i.tad_litigation_flag) },
+];
+
+const TAX_DUE_COLUMNS: Column[] = [
+  { key: "address", label: "PROPERTY ADDRESS", width: 230, strong: true, value: (i) => plain(i.situs_address) },
+  { key: "tad", label: "TAD ACCOUNT #", width: 125, value: (i) => plain(i.account_id) },
+  { key: "owner", label: "OWNER", width: 190, value: (i) => plain(i.owner_name) },
+  {
+    key: "current",
+    label: "CURRENT DUE",
+    width: 112,
+    value: (i) => money(i.current_tax_amount_due),
+    danger: (i) => Number(i.current_tax_amount_due || 0) > 0,
+  },
+  {
+    key: "prior",
+    label: "PRIOR DUE",
+    width: 108,
+    value: (i) => money(i.prior_tax_amount_due),
+    danger : (i) => Number(i.prior_tax_amount_due || 0) > 0,
+  },
+  {
+    key: "total",
+    label: "TOTAL DUE",
+    width: 112,
+    value: (i) => money(totalDue(i)),
+    danger: (i) => totalDue(i) > 0,
+  },
+  { key: "delinq", label: "DELINQUENCY DATE", width: 135, value: (i) => plain(i.delinquency_date) },
+  { key: "status", label: "ACCOUNT STATUS", width: 130, value: (i) => plain(i.account_status_codes) },
+  { key: "litigation", label: "TAD LITIGATION", width: 115, value: (i) => plain(i.tad_litigation_flag) },
+  { key: "legal", label: "LEGAL DESCRIPTION", width: 260, value: (i) => plain(i.legal_description) },
+];
+
+const DEFAULT_COLUMNS: Column[] = [
+  { key: "address", label: "PROPERTY ADDRESS", width: 230, strong: true, value: (i) => plain(i.situs_address) },
+  { key: "owner", label: "OWNER", width: 185, value: (i) => plain(i.owner_name) },
+  { key: "tad", label: "TAD ACCOUNT #", width: 120, value: (i) => plain(i.account_id) },
+  { key: "apn", label: "APN / PARCEL", width: 120, value: (i) => plain(i.parcel_id) },
+  { key: "legal", label: "LEGAL DESCRIPTION", width: 240, value: (i) => plain(i.legal_description) },
+  { key: "year", label: "BUILT", width: 75, value: (i) => plain(i.year_built) },
+  { key: "sqft", label: "SQ FT", width: 82, value: (i) => plain(i.sqft) },
+  { key: "appraised", label: "APPRIAISED", width: 112, value: (i) => money(i.appraised_value) },
+  { key: "market", label: "MARKET VALUE", width: 118, value: (i) => money(i.market_value || i.tax_roll_market_value) },
+  {
+    key: "current",
+    label: "CURRENT DUE",
+    width: 104,
+    value: (i) => money(i.current_tax_amount_due),
+    danger : (i) => Number(i.current_tax_amount_due || 0) > 0,
+  },
+  {
+    key: "prior",
+    label: "PRIOR DUE",
+    width: 104,
+    value: (i) => money(i.prior_tax_amount_due),
+    danger: (i) => Number(i.prior_tax_amount_due || 0) > 0,
+  },
+  { key: "source", label: "SOURCE", width: 150, value: (i) => i.sources?.join(" + ") || "—" },
+];
+
+function Cell({
+  width,
+  children,
+  strong,
+  danger,
+}: {
+  width: number;
+  children: string;
+  strong?: boolean;
+  danger ?: boolean;
+}) {
   return (
     <View style={[styles.cell, { width }]}>
       <Text
@@ -123,12 +219,18 @@ export default function CountyRecordsScreen() {
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useSstate(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [syncingCode, setSyncingCode] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const columns = useMemo(
+    () => (source === "tax_roll" ? TAX_ROLL_COLUMNS : source === "tax_delinquent" ? TAX_DUE_COLUMNS : DEFAULT_COLUMNS),
+    [source],
+  );
+  const tableWidth = useMemo(() => columns.reduce((sum, column) => sum + column.width, 0), [columns]);
 
   const load = useCallback(async (nextPage = 1, append = false) => {
     if (append) setLoadingMore(true);
@@ -139,7 +241,7 @@ export default function CountyRecordsScreen() {
         getCountyRecords(source as any, search, nextPage),
         append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
       ]);
-      setItems((current) => append ? [...current, ...records.items] : records.items);
+      setItems((current) => (append ? [...current, ...records.items] : records.items));
       setStats(summary);
       setPage(records.page);
       setPages(records.pages);
@@ -156,16 +258,19 @@ export default function CountyRecordsScreen() {
   useEffect(() => {
     const timer = setTimeout(() => load(1, false), 300);
     return () => clearTimeout(timer);
-  }, [source, search]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [source, search]);
+  // eslint-disable-line react-hooks/exhaustive-deps
 
   const latestSync = useMemo(() => stats?.recent_syncs?.[0], [stats]);
   const extendedStats = stats as ExtendedStats | null;
-  const loadMore = () => {
-    if (!loading && !loadingMore && page < pages) load(page + 1, true);
-  };
+
   const refresh = () => {
     setRefreshing(true);
     load(1, false);
+  };
+
+  const loadMore = () => {
+    if (!loading && !loadingMore && page < pages) load(page + 1, true);
   };
 
   const syncCodeViolations = async () => {
@@ -174,7 +279,7 @@ export default function CountyRecordsScreen() {
     setError(null);
     try {
       const headers = await adminRequestHeaders();
-      const response = await fetch(`${API_BASE}/api/admin/county-records/sync?source=code_violations`, {
+      const response = await fetch(`${API_BASE/api/admin/county-records/sync?source=code_violations`, {
         method: "POST",
         headers,
       });
@@ -192,25 +297,7 @@ export default function CountyRecordsScreen() {
   };
 
   const renderRow = ({ item, index }: { item: CountyRecord; index: number }) => {
-    const code = item as CountyCodeRecord;
-    const distressText = [
-      code.listing_type,
-      code.listing_status,
-      code.sale_status,
-      code.data_source,
-      code.source_platform,
-    ].filter(Boolean).join(" ").toLowerCase();
-    const preForeclosure = Boolean(
-      code.pre_foreclosure || distressText.includes("pre-foreclos") || distressText.includes("preforeclos")
-    );
-    const foreclosure = Boolean(
-      !preForeclosure && (
-        distressText.includes("foreclos") ||
-        distressText.includes("bank owned") ||
-        distressText.includes("reo") ||
-        code.auction_date
-      )
-    );
+    const record = item as CountyCodeRecord;
     return (
       <Pressable
         onPress={() => router.push(`/county/${encodeURIComponent(item.id)}` as Href)}
@@ -220,22 +307,16 @@ export default function CountyRecordsScreen() {
           pressed && styles.rowPressed,
         ]}
       >
-        <Cell width={COLUMNS.address} strong>{plain(item.situs_address)}</Cell>
-        <Cell width={COLUMNS.owner}>{plain(item.owner_name)}</Cell>
-        <Cell width={COLUMNS.account}>{plain(item.account_id || item.parcel_id)}</Cell>
-        <Cell width={COLUMNS.preForeclosure} danger={preForeclosure}>{preForeclosure ? "YES" : "—"}</Cell>
-        <Cell width={COLUMNS.foreclosure} danger={foreclosure}>{foreclosure ? "YES" : "—"}</Cell>
-        <Cell width={COLUMNS.openCode} danger={Boolean(code.open_code_violation_count)}>{plain(code.open_code_violation_count)}</Cell>
-        <Cell width={COLUMNS.complaint}>{plain(code.code_latest_complaint)}</Cell>
-        <Cell width={COLUMNS.codeStatus} danger={Boolean(code.open_code_violation_count)}>{plain(code.code_latest_status)}</Cell>
-        <Cell width={COLUMNS.year}>{plain(item.year_built)}</Cell>
-        <Cell width={COLUMNS.sqft}>{plain(item.sqft)}</Cell>
-        <Cell width={COLUMNS.appraised}>{money(item.appraised_value)}</Cell>
-        <Cell width={COLUMNS.market}>{money(item.market_value || item.tax_roll_market_value)}</Cell>
-        <Cell width={COLUMNS.currentDue} danger={Boolean(item.current_tax_amount_due)}>{money(item.current_tax_amount_due)}</Cell>
-        <Cell width={COLUMNS.priorDue} danger={Boolean(item.prior_tax_amount_due)}>{money(item.prior_tax_amount_due)}</Cell>
-        <Cell width={COLUMNS.source}>{item.sources?.join(" + ") || "—"}</Cell>
-        <Cell width={COLUMNS.quality}>{item.completeness_score != null ? `${item.completeness_score}%` : "—"}</Cell>
+        {columns.map((column) => (
+          <Cell
+            key={column.key}
+            width={column.width}
+            strong={column.strong}
+            danger={column.danger?.(record)}
+          >
+            {column.value(record)}
+          </Cell>
+        ))}
       </Pressable>
     );
   };
@@ -262,7 +343,11 @@ export default function CountyRecordsScreen() {
               onPress={syncCodeViolations}
               testID="sync-code-violations"
             >
-              {syncingCode ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="warning-outline" size={16} color="#fff" />}
+              {syncingCode ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="warning-outline" size={16} color="#fff" />
+              )}
               <Text style={styles.exportText}>{syncingCode ? "Syncing…" : "Sync Code"}</Text>
             </Pressable>
             <Pressable style={styles.exportButton} onPress={() => Linking.openURL(countyRecordsCsvUrl(source as any))}>
@@ -286,11 +371,11 @@ export default function CountyRecordsScreen() {
           <TextInput
             value={search}
             onChangeText={setSearch}
-            placeholder="Address, owner, account, foreclosure, case, violation, complaint"
+            placeholder="Address, owner, TAD account, APN, legal description"
             placeholderTextColor={colors.muted}
             style={styles.searchInput}
           />
-          {search ? <Pressable onPress={() => setSearch("")}><Ionicons name="close-circle" size={18} color={colors.muted} /></Pressable> : null}
+          {search ? <Pressable onPress={() => setSearch("")}><Ionicons name="close-circle" size={18} color={colors.muted} /></Pressabl> : null}
         </View>
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
@@ -304,43 +389,44 @@ export default function CountyRecordsScreen() {
             </Pressable>
           ))}
         </ScrollView>
+
+        {source === "tax_roll" ? (
+          <Text style={styles.syncText}>
+            Tax Roll keeps Property Address · TAD Account # · APN · Owner · Legal Description together with the official county tax values.
+          </Text>
+        ) : source === "tax_delinquent" ? (
+          <Text style={styles.syncText}>
+            Tax Due is linked by the same TAD Account / property record and shows Current Due · Prior Due · Delinquency information.
+          </Text>
+        ) : (
+          <Text style={styles.syncText} numberOfLines={1}>
+            {latestSync
+              ? `Last ${latestSync.source} sync: ${new Date(latestSync.created_at).toLocaleString()}`
+              : "Tap a row for every available county field."}
+          </Text>
+        )}
         {syncMessage ? <Text style={styles.syncSuccess}>{syncMessage}</Text> : null}
-        <Text style={styles.syncText} numberOfLines={1}>
-          {source === "uploaded"
-            ? "Uploaded rows are shown immediately; distress, TAD, tax, and code fields appear as matching data becomes available."
-            : latestSync
-              ? `Last ${latestSync.source} sync: ${new Date(latestSync.created_at).toLocaleString()} · tap any row for every source field`
-              : "Sync Code pulls the Fort Worth ArcGIS violation feed; tap any row for every source field."}
-        </Text>
       </View>
 
       {loading ? (
-        <View style={styles.center}><ActivityIndicator color={colors.brandPrimary} /><Text style={styles.loadingText}>Loading county rows…</Text></View>
+        <View style={styles.center}>
+          <ActivityIndicator color={colors.brandPrimary} />
+          <Text style={styles.loadingText}>Loading county rows…</Text>
+        </View>
       ) : error ? (
         <View style={styles.center}>
           <Text style={styles.errorText}>{error}</Text>
-          <Pressable style={styles.retry} onPress={() => load(1, false)}><Text style={styles.retryText}>Try again</Text></Pressable>
+          <Pressable style={styles.retry} onPress={() => load(1, false)}>
+            <Text style={styles.retryText}>Try again</Text>
+          </Pressable>
         </View>
       ) : (
-        <ScrollView horizontal style={styles.tableScroll} contentContainerStyle={{ width: TABLE_WIDTH }}>
-          <View style={{ width: TABLE_WIDTH, flex: 1 }}>
+        <ScrollView horizontal style={styles.tableScroll} contentContainerStyle={{ width: tableWidth }}>
+          <View style={{ width: tableWidth, flex: 1 }}>
             <View style={styles.tableHeader}>
-              <HeaderCell width={COLUMNS.address}>PROPERTY ADDRESS</HeaderCell>
-              <HeaderCell width={COLUMNS.owner}>OWNER</HeaderCell>
-              <HeaderCell width={COLUMNS.account}>ACCOUNT / PARCEL</HeaderCell>
-              <HeaderCell width={COLUMNS.preForeclosure}>PRE-FORECLOSURE</HeaderCell>
-              <HeaderCell width={COLUMNS.foreclosure}>FORECLOSURE</HeaderCell>
-              <HeaderCell width={COLUMNS.openCode}>OPEN CODE</HeaderCell>
-              <HeaderCell width={COLUMNS.complaint}>LATEST COMPLAINT</HeaderCell>
-              <HeaderCell width={COLUMNS.codeStatus}>CODE STATUS</HeaderCell>
-              <HeaderCell width={COLUMNS.year}>BUILT</HeaderCell>
-              <HeaderCell width={COLUMNS.sqft}>SQFT</HeaderCell>
-              <HeaderCell width={COLUMNS.appraised}>APPRAISED</HeaderCell>
-              <HeaderCell width={COLUMNS.market}>MARKET VALUE</HeaderCell>
-              <HeaderCell width={COLUMNS.currentDue}>CURRENT DUE</HeaderCell>
-              <HeaderCell width={COLUMNS.priorDue}>PRIOR DUE</HeaderCell>
-              <HeaderCell width={COLUMNS.source}>SOURCE</HeaderCell>
-              <HeaderCell width={COLUMNS.quality}>COMPLETE</HeaderCell>
+              {columns.map((column) => (
+                <HeaderCell key={column.key} width={column.width}>{column.label}</HeaderCell>
+              ))}
             </View>
             <FlatList
               data={items}
@@ -349,7 +435,12 @@ export default function CountyRecordsScreen() {
               onEndReached={loadMore}
               onEndReachedThreshold={0.35}
               refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.brandPrimary} />}
-              ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{source === "uploaded" ? "No uploaded rows yet." : "No county rows match."}</Text><Text style={styles.emptyText}>{source === "uploaded" ? "Upload the Caroline test spreadsheet from Add Property, then return here." : "Try another source or run Sync Code."}</Text></View>}
+              ListEmptyComponent={
+                <View style={[styles.empty, { width: tableWidth }]}>
+                  <Text style={styles.emptyTitle}>No county rows match.</Text>
+                  <Text style={styles.emptyText}>Try another source or search term.</Text>
+                </View>
+              }
               ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.more} color={colors.brandPrimary} /> : null}
             />
           </View>
@@ -370,6 +461,7 @@ const styles = StyleSheet.create({
   codeSyncButton: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.error, paddingHorizontal: 11, paddingVertical: 8, borderRadius: radius.md },
   exportButton: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.brandPrimary, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md },
   exportText: { color: colors.onBrandPrimary, fontWeight: "800", fontSize: 12 },
+  disabled: { opacity: 0.55 },
   statsRow: { flexDirection: "row", gap: 7, marginTop: spacing.md },
   stat: { flex: 1, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingVertical: 7, paddingHorizontal: 8 },
   statValue: { fontSize: 14, fontWeight: "800", color: colors.onSurface, ...tabularNums },
@@ -384,7 +476,6 @@ const styles = StyleSheet.create({
   filterTextActive: { color: colors.onBrandPrimary },
   syncText: { fontSize: 10, color: colors.muted, marginTop: 7 },
   syncSuccess: { fontSize: 10, color: colors.success, fontWeight: "700", marginTop: 7 },
-  disabled: { opacity: 0.55 },
   tableScroll: { flex: 1 },
   tableHeader: { height: 42, flexDirection: "row", backgroundColor: colors.brandPrimary, borderBottomWidth: 1, borderBottomColor: colors.borderStrong },
   headerCell: { justifyContent: "center", paddingHorizontal: 8, borderRightWidth: StyleSheet.hairlineWidth, borderRightColor: "rgba(255,255,255,0.22)" },
@@ -401,7 +492,7 @@ const styles = StyleSheet.create({
   errorText: { color: colors.error, fontSize: 13, textAlign: "center" },
   retry: { marginTop: spacing.md, backgroundColor: colors.brandPrimary, borderRadius: radius.md, paddingHorizontal: 16, paddingVertical: 9 },
   retryText: { color: colors.onBrandPrimary, fontWeight: "700" },
-  empty: { width: TABLE_WIDTH, paddingVertical: spacing.xxxl, paddingHorizontal: spacing.xl },
+  empty: { paddingVertical: spacing.xxxl, paddingHorizontal: spacing.xl },
   emptyTitle: { fontSize: 15, fontWeight: "700", color: colors.onSurface },
   emptyText: { fontSize: 12, color: colors.muted, marginTop: 4 },
   more: { marginVertical: spacing.lg },
