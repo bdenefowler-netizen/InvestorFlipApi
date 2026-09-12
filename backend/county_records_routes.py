@@ -1,4 +1,4 @@
-"""Read-only county-record table API plus protected sync controls."""
+"""County-record workspace, upload intake bridge, and protected sync controls."""
 
 from __future__ import annotations
 
@@ -7,17 +7,302 @@ import csv
 import io
 import json
 import re
-from typing import Any, AsyncIterator, Dict, Optional
+import zipfile
+from io import BytesIO
+from pathlib import Path
+from typing import Any, AsyncIterator, Dict, Iterable, List, Mapping, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+import pandas as pd
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
+from address_utils import canonical_street_key
 from database import PostgresDatabase
 from export_safety import spreadsheet_safe
-from importers.county_records import completeness, sync_tad_county_records
+from intake import upsert_import_records
+from importers.county_records import (
+    completeness,
+    enrich_live_properties_from_county_records,
+    sync_tad_county_records,
+)
 
 
 router = APIRouter(prefix="/api")
+
+
+_ACCOUNT_HEADERS = {
+    "account", "account id", "account number", "account num", "account_num",
+    "acct num", "acct_num", "tax account", "tax account apn", "tax account/apn",
+    "apn", "pin", "pin number", "tad account", "tad #", "property id", "prop_id",
+}
+_ADDRESS_HEADERS = {
+    "address", "property address", "situs address", "street address", "site address",
+    "full address", "matched address",
+}
+
+
+def _header(value: Any) -> str:
+    return re.sub(r"[_\s]+", " ", str(value or "").strip().lower())
+
+
+def _clean_cell(value: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except (TypeError, ValueError):
+            pass
+    if hasattr(value, "isoformat") and not isinstance(value, (str, bytes)):
+        try:
+            return value.isoformat()
+        except (TypeError, ValueError):
+            return str(value)
+    text = str(value).strip()
+    return None if not text or text.lower() in {"nan", "none", "null", "n/a"} else value
+
+
+def _first_value(row: Mapping[str, Any], headers: Iterable[str]) -> Any:
+    wanted = {_header(name) for name in headers}
+    for key, value in row.items():
+        if _header(key) in wanted:
+            cleaned = _clean_cell(value)
+            if cleaned is not None:
+                return cleaned
+    return None
+
+
+def _normalized_account(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper()).lstrip("0")
+
+
+def _row_identity(row: Mapping[str, Any]) -> str:
+    account = _normalized_account(_first_value(row, _ACCOUNT_HEADERS))
+    if account:
+        return f"account:{account}"
+    address = str(_first_value(row, _ADDRESS_HEADERS) or "").strip()
+    street_key = canonical_street_key(address)
+    return f"address:{street_key}" if street_key else ""
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "x", "active", "open"}
+
+
+def _canonicalize_research_row(row: Mapping[str, Any], sheet_name: str) -> Dict[str, Any]:
+    """Keep every original field while adding canonical aliases used by intake.py."""
+    out = {str(key): _clean_cell(value) for key, value in row.items()}
+    out["__sheet_name"] = sheet_name
+
+    aliases = {
+        "address": ("property address", "situs address", "matched address", "street address"),
+        "owner": ("grantor/owner", "grantor", "current owner", "owner name"),
+        "account id": ("tax account/apn", "tax account apn", "account number", "account_num", "pin", "apn"),
+        "legal description": ("legal description", "property/legal description"),
+        "subdivision": ("subdivision",),
+        "land use code": ("land use code",),
+        "sqft": ("total structure area", "living area", "building sqft", "structure area"),
+        "year built": ("year built",),
+        "effective year": ("year updated", "effective year", "effective year built"),
+        "beds": ("bedrooms",),
+        "baths": ("bathrooms",),
+        "garage": ("parking", "garage spaces", "garage"),
+        "pool": ("pool",),
+        "quality": ("structure quality", "quality", "building quality"),
+        "condition": ("structure condition", "condition", "building condition"),
+        "improvement type": ("improvements", "improvement type"),
+        "land value": ("land value",),
+        "improvement value": ("improvement value",),
+        "assessed value": ("total assessed value", "assessed value"),
+        "market value": ("market value",),
+        "sale date": ("sale date", "auction date"),
+        "purchaser": ("buyer information", "buyer", "purchaser"),
+        "sale amount": ("latest sale price", "sale price", "sale amount"),
+        "sale status": ("latest sale type", "sale type", "sale status"),
+    }
+    for canonical, names in aliases.items():
+        if _clean_cell(out.get(canonical)) is not None:
+            continue
+        value = _first_value(row, names)
+        if value is not None:
+            out[canonical] = value
+
+    heating = _first_value(row, ("heating",))
+    cooling = _first_value(row, ("air conditioning", "cooling",))
+    if heating or cooling:
+        out.setdefault("hvac", " / ".join(str(v) for v in (heating, cooling) if v))
+
+    distress_parts: List[str] = []
+    pre_value = _first_value(row, ("pre-foreclosure", "pre foreclosure", "preforeclosure"))
+    foreclosure_value = _first_value(row, ("foreclosure", "foreclosed", "foreclosure status"))
+    status_value = _first_value(row, ("status", "property status", "listing status", "sale status"))
+    status_text = str(status_value or "").lower()
+    if _truthy(pre_value) or "pre-foreclos" in status_text or "preforeclos" in status_text:
+        distress_parts.append("Pre-Foreclosure")
+    if _truthy(foreclosure_value) or ("foreclos" in status_text and "pre" not in status_text):
+        distress_parts.append("Foreclosure")
+    if distress_parts:
+        out["status"] = " ".join(distress_parts)
+
+    # Preserve research/audit columns even when intake.py does not yet have a
+    # first-class field for them. raw_import_row stores this complete mapping.
+    out.setdefault("Research Source Tab", sheet_name)
+    return out
+
+
+def _merge_workbook_rows(sheet_rows: Iterable[tuple[str, Mapping[str, Any]]]) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    identity_to_index: Dict[str, int] = {}
+    for sheet_name, raw in sheet_rows:
+        row = _canonicalize_research_row(raw, sheet_name)
+        identity = _row_identity(row)
+        if identity and identity in identity_to_index:
+            current = merged[identity_to_index[identity]]
+            sheets = [part.strip() for part in str(current.get("Research Source Tab") or "").split("|") if part.strip()]
+            if sheet_name not in sheets:
+                sheets.append(sheet_name)
+            current["Research Source Tab"] = " | ".join(sheets)
+            for key, value in row.items():
+                if _clean_cell(value) is None:
+                    continue
+                if _clean_cell(current.get(key)) is None:
+                    current[key] = value
+                elif current.get(key) != value and not key.startswith("__"):
+                    # Keep the first value in the canonical column and retain a
+                    # conflicting source value under its worksheet-qualified name.
+                    current.setdefault(f"{sheet_name} :: {key}", value)
+            continue
+        if identity:
+            identity_to_index[identity] = len(merged)
+        merged.append(row)
+    return merged
+
+
+def _read_upload_rows(raw: bytes, suffix: str, filename: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Read CSV or every sheet in an Excel workbook and return merged rows + tab report."""
+    reports: List[Dict[str, Any]] = []
+    if suffix == ".csv":
+        try:
+            frame = pd.read_csv(BytesIO(raw), encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            frame = pd.read_csv(BytesIO(raw), encoding="latin1")
+        rows = [_canonicalize_research_row(row, "CSV") for row in frame.to_dict(orient="records")]
+        reports.append({"sheet": "CSV", "rows": len(rows)})
+        return rows, reports
+    if suffix not in {".xls", ".xlsx"}:
+        raise ValueError(f"Unsupported file type: {suffix}")
+
+    workbook = pd.read_excel(BytesIO(raw), sheet_name=None)
+    all_rows: List[tuple[str, Mapping[str, Any]]] = []
+    for sheet_name, frame in workbook.items():
+        sheet_records = frame.to_dict(orient="records")
+        reports.append({"sheet": str(sheet_name), "rows": len(sheet_records)})
+        all_rows.extend((str(sheet_name), row) for row in sheet_records)
+    return _merge_workbook_rows(all_rows), reports
+
+
+@router.post("/intake/upload")
+async def county_workbook_upload(file: UploadFile = File(...)):
+    """Smart upload path: read every workbook tab, merge by PIN/account/address, then enrich."""
+    filename = Path(file.filename or "upload.xlsx").name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".csv", ".xls", ".xlsx", ".zip"}:
+        raise HTTPException(400, "Upload .csv, .xls, .xlsx, or .zip")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "The uploaded file is empty")
+    if len(raw) > 200 * 1024 * 1024:
+        raise HTTPException(413, "The upload is larger than 200 MB")
+
+    db = PostgresDatabase()
+    await db.connect()
+    try:
+        source_name = f"User upload: {filename}"
+        property_ids: List[str] = []
+        total_accepted = total_rejected = total_inserted = total_updated = 0
+        file_reports: List[Dict[str, Any]] = []
+
+        async def import_one(name: str, payload: bytes, ext: str) -> None:
+            nonlocal total_accepted, total_rejected, total_inserted, total_updated
+            rows, sheet_reports = _read_upload_rows(payload, ext, name)
+            if len(rows) > 250:
+                raise ValueError(f"{len(rows)} merged properties exceeds the 250-property test limit")
+            report = await upsert_import_records(db, rows, f"{source_name} / {name}")
+            property_ids.extend(report["property_ids"])
+            total_accepted += report["accepted"]
+            total_rejected += report["rejected"]
+            total_inserted += report["inserted"]
+            total_updated += report["updated"]
+            file_reports.append({
+                "file": name,
+                "status": "ok",
+                "rows": report["rows_read"],
+                "accepted": report["accepted"],
+                "inserted": report["inserted"],
+                "updated": report["updated"],
+                "sheets": sheet_reports,
+            })
+
+        if suffix == ".zip":
+            try:
+                with zipfile.ZipFile(BytesIO(raw)) as zf:
+                    members = [
+                        member for member in zf.namelist()
+                        if not member.endswith("/") and Path(member).suffix.lower() in {".csv", ".xls", ".xlsx"}
+                    ]
+                    if not members:
+                        raise HTTPException(400, "ZIP contains no CSV or Excel files")
+                    for member in members:
+                        try:
+                            await import_one(member, zf.read(member), Path(member).suffix.lower())
+                        except Exception as exc:
+                            file_reports.append({"file": member, "status": "error", "reason": str(exc)[:240]})
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(400, f"Could not read ZIP: {str(exc)[:180]}") from exc
+        else:
+            try:
+                await import_one(filename, raw, suffix)
+            except Exception as exc:
+                raise HTTPException(400, f"Could not import workbook: {str(exc)[:180]}") from exc
+
+        unique_ids = list(dict.fromkeys(property_ids))
+        county = await enrich_live_properties_from_county_records(
+            db,
+            property_ids=unique_ids,
+            lookup_missing_tad=True,
+        ) if unique_ids else {"live_checked": 0, "enriched": 0, "tad_lookups": 0, "missing": 0}
+
+        return {
+            "ok": bool(total_accepted),
+            "filename": filename,
+            "files": file_reports,
+            "rows_read": total_accepted + total_rejected,
+            "accepted": total_accepted,
+            "rejected": total_rejected,
+            "inserted": total_inserted,
+            "updated": total_updated,
+            "total_accepted": total_accepted,
+            "total_rejected": total_rejected,
+            "total_inserted": total_inserted,
+            "total_updated": total_updated,
+            "property_ids": unique_ids,
+            "enrichment": {
+                "county": county,
+                "details": {"attempted": 0, "found": 0, "not_found": 0, "errors": []},
+            },
+        }
+    finally:
+        await db.close()
 
 
 def _display_record(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -146,8 +431,6 @@ async def list_county_records(
         )
         items = [_display_record(item) for item in docs]
 
-        # Uploaded spreadsheets are user research inputs, so surface them in the
-        # County workspace immediately even before a TAD/tax match exists.
         if source == "all" and page == 1:
             uploaded_query: Dict[str, Any] = {"raw_import_row": {"$exists": True}}
             if search_query:
@@ -190,6 +473,7 @@ async def export_county_records(source: str = Query("all", pattern="^(all|upload
         "annual_taxes", "current_tax_amount_due", "prior_tax_amount_due", "tax_delinquent",
         "delinquency_date", "legal_description", "school_district", "deed_date",
         "absentee_owner", "out_of_state_owner", "trust_owned", "company_owned",
+        "pre_foreclosure", "listing_type", "listing_status", "sale_status", "auction_date",
         "has_code_violations", "code_violation_count", "open_code_violation_count",
         "code_latest_complaint", "code_latest_status", "code_oldest_open_date",
         "code_latest_update", "code_next_activity_due", "code_geocode_score",
@@ -197,7 +481,7 @@ async def export_county_records(source: str = Query("all", pattern="^(all|upload
         "code_substandard_building", "code_property_maintenance", "code_high_grass_weeds",
         "code_health_hazard", "code_solid_waste", "code_zoning", "code_vehicle", "code_multifamily",
         "has_tad", "has_tax_roll", "tad_updated_at", "tax_roll_updated_at", "code_violation_updated_at",
-        "tad_raw_json", "tax_roll_raw_json",
+        "raw_import_row", "tad_raw_json", "tax_roll_raw_json",
     ]
 
     async def rows() -> AsyncIterator[str]:
@@ -235,6 +519,8 @@ async def export_county_records(source: str = Query("all", pattern="^(all|upload
                     break
                 for item in docs:
                     display = _display_uploaded(item) if source == "uploaded" else _display_record(item)
+                    if display.get("raw_import_row"):
+                        display["raw_import_row"] = json.dumps(display["raw_import_row"], ensure_ascii=False, default=str)
                     display["tad_raw_json"] = (
                         json.dumps(item.get("tad_raw"), ensure_ascii=False, default=str)
                         if item.get("tad_raw") else None
@@ -257,7 +543,7 @@ async def export_county_records(source: str = Query("all", pattern="^(all|upload
         rows(),
         media_type="text/csv",
         headers={
-            "Content-Disposition": f'attachment; filename="investorflip-{source}-county-records.csv"',
+            "Content-Disposition": f'investorflip-{source}-county-records.csv',
             "X-Export-Complete": "true",
         },
     )
