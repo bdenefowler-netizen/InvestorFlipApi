@@ -19,15 +19,6 @@ function browserStorage(): Storage | null {
   }
 }
 
-function showAdminKeyWarning() {
-  try {
-    const alertFn = (globalThis as any)?.alert;
-    if (typeof alertFn === "function") {
-      alertFn("Upload blocked: set your Railway admin key in Settings, then try Upload Selected File again.");
-    }
-  } catch {}
-}
-
 
 export async function getStoredAdminKey(): Promise<string> {
   // On web, prefer localStorage so a browser refresh/reboot does not silently
@@ -68,10 +59,9 @@ export async function saveAdminKey(value: string): Promise<boolean> {
 export async function adminRequestHeaders(
   initial: Record<string, string> = {},
 ): Promise<Record<string, string>> {
+  // During the private/demo phase, callers may proceed without a stored key.
+  // Backend routes that still require admin auth will reject the request; the
+  // spreadsheet intake upload is intentionally open for now.
   const key = await getStoredAdminKey();
-  if (!key) {
-    showAdminKeyWarning();
-    throw new Error("Set your Railway admin key in Settings before running imports or enrichment.");
-  }
-  return { ...initial, "X-Admin-Key": key };
+  return key ? { ...initial, "X-Admin-Key": key } : initial;
 }
