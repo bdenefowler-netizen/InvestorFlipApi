@@ -38,6 +38,13 @@ type CountyCodeRecord = CountyRecord & {
   code_latest_update?: string;
   code_next_activity_due?: string;
   code_geocode_score?: number;
+  pre_foreclosure?: boolean;
+  listing_type?: string;
+  listing_status?: string;
+  sale_status?: string;
+  auction_date?: string;
+  data_source?: string;
+  source_platform?: string;
 };
 type ExtendedStats = CountyRecordStats & {
   uploaded?: number;
@@ -58,6 +65,8 @@ const COLUMNS = {
   address: 230,
   owner: 185,
   account: 115,
+  preForeclosure: 112,
+  foreclosure: 104,
   openCode: 82,
   complaint: 180,
   codeStatus: 125,
@@ -184,6 +193,24 @@ export default function CountyRecordsScreen() {
 
   const renderRow = ({ item, index }: { item: CountyRecord; index: number }) => {
     const code = item as CountyCodeRecord;
+    const distressText = [
+      code.listing_type,
+      code.listing_status,
+      code.sale_status,
+      code.data_source,
+      code.source_platform,
+    ].filter(Boolean).join(" ").toLowerCase();
+    const preForeclosure = Boolean(
+      code.pre_foreclosure || distressText.includes("pre-foreclos") || distressText.includes("preforeclos")
+    );
+    const foreclosure = Boolean(
+      !preForeclosure && (
+        distressText.includes("foreclos") ||
+        distressText.includes("bank owned") ||
+        distressText.includes("reo") ||
+        code.auction_date
+      )
+    );
     return (
       <Pressable
         onPress={() => router.push(`/county/${encodeURIComponent(item.id)}` as Href)}
@@ -196,6 +223,8 @@ export default function CountyRecordsScreen() {
         <Cell width={COLUMNS.address} strong>{plain(item.situs_address)}</Cell>
         <Cell width={COLUMNS.owner}>{plain(item.owner_name)}</Cell>
         <Cell width={COLUMNS.account}>{plain(item.account_id || item.parcel_id)}</Cell>
+        <Cell width={COLUMNS.preForeclosure} danger={preForeclosure}>{preForeclosure ? "YES" : "—"}</Cell>
+        <Cell width={COLUMNS.foreclosure} danger={foreclosure}>{foreclosure ? "YES" : "—"}</Cell>
         <Cell width={COLUMNS.openCode} danger={Boolean(code.open_code_violation_count)}>{plain(code.open_code_violation_count)}</Cell>
         <Cell width={COLUMNS.complaint}>{plain(code.code_latest_complaint)}</Cell>
         <Cell width={COLUMNS.codeStatus} danger={Boolean(code.open_code_violation_count)}>{plain(code.code_latest_status)}</Cell>
@@ -257,7 +286,7 @@ export default function CountyRecordsScreen() {
           <TextInput
             value={search}
             onChangeText={setSearch}
-            placeholder="Address, owner, account, case, violation, complaint"
+            placeholder="Address, owner, account, foreclosure, case, violation, complaint"
             placeholderTextColor={colors.muted}
             style={styles.searchInput}
           />
@@ -278,7 +307,7 @@ export default function CountyRecordsScreen() {
         {syncMessage ? <Text style={styles.syncSuccess}>{syncMessage}</Text> : null}
         <Text style={styles.syncText} numberOfLines={1}>
           {source === "uploaded"
-            ? "Uploaded rows are shown immediately; official TAD, tax, and code data can enrich them after matching."
+            ? "Uploaded rows are shown immediately; distress, TAD, tax, and code fields appear as matching data becomes available."
             : latestSync
               ? `Last ${latestSync.source} sync: ${new Date(latestSync.created_at).toLocaleString()} · tap any row for every source field`
               : "Sync Code pulls the Fort Worth ArcGIS violation feed; tap any row for every source field."}
@@ -299,6 +328,8 @@ export default function CountyRecordsScreen() {
               <HeaderCell width={COLUMNS.address}>PROPERTY ADDRESS</HeaderCell>
               <HeaderCell width={COLUMNS.owner}>OWNER</HeaderCell>
               <HeaderCell width={COLUMNS.account}>ACCOUNT / PARCEL</HeaderCell>
+              <HeaderCell width={COLUMNS.preForeclosure}>PRE-FORECLOSURE</HeaderCell>
+              <HeaderCell width={COLUMNS.foreclosure}>FORECLOSURE</HeaderCell>
               <HeaderCell width={COLUMNS.openCode}>OPEN CODE</HeaderCell>
               <HeaderCell width={COLUMNS.complaint}>LATEST COMPLAINT</HeaderCell>
               <HeaderCell width={COLUMNS.codeStatus}>CODE STATUS</HeaderCell>
