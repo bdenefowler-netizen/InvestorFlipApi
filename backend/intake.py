@@ -316,8 +316,7 @@ async def upsert_import_records(
     ids: List[str] = []
     inserted = updated = 0
     for record in unique.values():
-        existing: Optional[Dict[str, Any]] = None
-
+        existing = None
         # Try matching by TAD account_id first (most precise)
         account_id = record.get("account_id")
         if account_id:
@@ -357,4 +356,62 @@ async def upsert_import_records(
         "updated": updated,
         "property_ids": ids,
         "rejections": rejected[:25],
+    }
+
+
+SUPPORTED_LINK_HOSTS = (
+    "zillow.com", "realtor.com", "redfin.com", "auction.com",
+    "xome.com", "trulia.com", "homes.com", "har.com",
+)
+
+
+def property_link_seed(url: str) -> Dict[str, Any]:
+    parsed = urlparse(_text(url))
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    if parsed.scheme not in {"http", "https"} or not any(host == item or host.endswith(f".{item}") for item in SUPPORTED_LINK_HOSTS):
+        raise ValueError("Use a Zillow, Realtor, Redfin, Auction.com, Xome, Trulia, Homes.com, or HAR property link.")
+
+    decoded = unquote(parsed.path)
+    zpid_match = re.search(r"(?:/|_)(\d+)_zpid", decoded, re.I)
+    zpid = zpid_match.group(1) if zpid_match else ""
+    candidate = ""
+    if "zillow.com" in host:
+        match = re.search(r"/homedetails/([^/]+?)(?:/|_zpid)", decoded, re.I)
+        candidate = match.group(1) if match else ""
+    elif "realtor.com" in host:
+        match = re.search(r"/realestateandhomes-detail/([^/]+)", decoded, re.I)
+        candidate = match.group(1).split("_M", 1)[0] if match else ""
+    elif "redfin.com" in host:
+        segments = [part for part in decoded.split("/") if part]
+        candidate = " ".join(segments[-2:-1]) if len(segments) > 2 else ""
+        # Redfin usually stores city/state immediately before the street slug.
+        if "home" in segments:
+            index = segments.index("home")
+            if index >= 3:
+                candidate = f"{segments[index - 1]}, {segments[index - 2]}, {segments[index - 3]}"
+    else:
+        match = re.search(r"/(?:property|home|homes|listing)/([^/?]+)", decoded, re.I)
+        candidate = match.group(1) if match else ""
+
+    candidate = re.sub(r"[_-]+", " ", candidate).strip()
+    city_match = re.match(
+        r"^(.+?)\s+(Fort Worth|Arlington|Mansfield|Bedford|Euless|Hurst|"
+        r"North Richland Hills|Grapevine)\s+([A-Z]{2})\s+(\d{5})$",
+        candidate,
+        re.I,
+    )
+    if city_match:
+        candidate = (
+            f"{city_match.group(1)}, {city_match.group(2)}, "
+            f"{city_match.group(3).upper()} {city_match.group(4)}"
+        )
+    zip_match = re.search(r"\b(\d{5})\b", candidate)
+    state_match = re.search(r"\b([A-Z]{2})\b", candidate.upper())
+    return {
+        "url": url,
+        "host": host,
+        "zpid": zpid,
+        "address": candidate,
+        "zip": zip_match.group(1) if zip_match else "",
+        "state": state_match.group(1) if state_match else "TX",
     }
