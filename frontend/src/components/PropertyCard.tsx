@@ -1,35 +1,19 @@
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Image } from "expo-image";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, radius, spacing, tabularNums } from "../theme/tokens";
 import { OwnerBadge } from "./OwnerBadge";
 import { propertyImageUrl, type Property } from "../lib/api";
+import { getDealEligibility } from "../lib/dealEligibility";
 
 export function fmtMoney(n: number | null | undefined): string {
-  if (n == null || Number.isNaN(n) || n <= 0) return "Price unavailable";
-  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000) return `$${Math.round(n / 1000)}K`;
-  return `$${n}`;
+  if (n == null || Number.isNaN(n)) return "—";
+  const sign = n < 0 ? "-" : "";
+  const v = Math.abs(n);
+  if (v >= 1_000_000) return `${sign}$${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `${sign}$${Math.round(v / 1_000)}K`;
+  return `${sign}$${Math.round(v)}`;
 }
-
-function labelText(value: unknown, fallback = "Opportunity"): string {
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-
-const LISTING_TYPE_COLORS: Record<string, string> = {
-  REO: "#A3413B",
-  "REO / Bank-Owned": "#A3413B",
-  Foreclosure: "#7A2A24",
-  "As-Is": "#4A4A4A",
-  Investor: "#2B3831",
-  "Investor Special": "#2B3831",
-  "Cash House": "#355C44",
-  "Cash Offer": "#355C44",
-  "Motivated Seller": "#75521D",
-  "Distressed Property": "#7A2A24",
-  "Tax Lien / Delinquent": "#7A2A24",
-};
 
 export function PropertyCard({
   property,
@@ -44,24 +28,23 @@ export function PropertyCard({
   onToggleSave: () => void;
   testID?: string;
 }) {
-  const p = property;
-  const photo = propertyImageUrl(p);
-  const spread = p.value_spread;
-  const signals = p.opportunity_signals || [];
-  const primarySignal = labelText(signals[0] || p.listing_type);
-  const typeColor = LISTING_TYPE_COLORS[primarySignal] || colors.brandPrimary;
+  const p = property as any;
+  const eligibility = getDealEligibility(property);
+
+  // Listings is intentionally a DEAL feed, not a general MLS feed.
+  if (!eligibility.allowed) return null;
+
+  const photo = propertyImageUrl(property);
+  const basis = eligibility.acquisition_basis;
+  const spread = eligibility.spread;
+  const exit = eligibility.exit_value;
+  const category = eligibility.category || "Opportunity";
+
   return (
     <Pressable testID={testID} onPress={onPress} style={styles.card}>
       <View style={styles.imageWrap}>
-        <Image source={photo ? { uri: photo } : undefined} style={styles.image} contentFit="cover" transition={200} />
-        <LinearGradient
-          colors={["transparent", "rgba(26,28,26,0.85)"]}
-          style={styles.scrim}
-          pointerEvents="none"
-        />
-        <View style={[styles.listingPill, { backgroundColor: typeColor }]}>
-          <Text style={styles.listingPillText}>{primarySignal.toUpperCase()}</Text>
-        </View>
+        <Image source={photo ? { uri: photo } : undefined} style={styles.image} contentFit="cover" transition={150} />
+        <View style={styles.categoryPill}><Text style={styles.categoryText}>{category.toUpperCase()}</Text></View>
         <Pressable
           testID={`${testID}-save`}
           onPress={(e) => { e.stopPropagation(); onToggleSave(); }}
@@ -70,66 +53,49 @@ export function PropertyCard({
         >
           <Ionicons name={saved ? "bookmark" : "bookmark-outline"} size={18} color="#fff" />
         </Pressable>
-        <View style={styles.priceRow}>
-          <View>
-            <Text style={styles.price}>{fmtMoney(p.price)}</Text>
-            <Text style={styles.priceLabel}>asking</Text>
-          </View>
-          <View style={{ alignItems: "flex-end" }}>
-            <Text style={styles.roi}>{p.discount_to_benchmark_pct != null ? `${p.discount_to_benchmark_pct.toFixed(1)}%` : "—"}</Text>
-            <Text style={styles.priceLabel}>value spread</Text>
-          </View>
-        </View>
       </View>
+
       <View style={styles.body}>
-        <Text style={styles.address} numberOfLines={1}>{p.situs_address || p.address || p.street_address || "—"}</Text>
-        <View style={styles.metaRow}>
-          <Text style={styles.meta}>
-            {p.beds ? `${p.beds} bd` : "— bd"} · {p.baths ? `${p.baths} ba` : "— ba"} · {p.sqft ? `${p.sqft.toLocaleString()} sqft` : "— sqft"}
-          </Text>
+        <Text style={styles.address} numberOfLines={1}>
+          {p.situs_address || p.address || p.street_address || "Address unavailable"}
+        </Text>
+        <Text style={styles.meta}>
+          {p.beds ? `${p.beds} bd` : "— bd"} · {p.baths ? `${p.baths} ba` : "— ba"} · {p.sqft ? `${Number(p.sqft).toLocaleString()} sqft` : "— sqft"}
+        </Text>
+
+        <View style={styles.priceRow}>
+          <View style={styles.metric}>
+            <Text style={styles.label}>{eligibility.basis_source === "purchase_price" ? "PURCHASE" : "ASSESSED BASIS"}</Text>
+            <Text style={styles.value}>{fmtMoney(basis)}</Text>
+          </View>
+          <View style={styles.metric}>
+            <Text style={styles.label}>EXIT VALUE</Text>
+            <Text style={styles.value}>{fmtMoney(exit)}</Text>
+          </View>
+          <View style={styles.metric}>
+            <Text style={styles.label}>SPREAD</Text>
+            <Text style={[styles.value, spread != null && spread < 0 && styles.negative]}>{fmtMoney(spread)}</Text>
+          </View>
         </View>
-        <View style={styles.badgeRow}>
-          {signals.slice(0, 3).map((signal, index) => (
-            <View key={`${signal || "signal"}-${index}`} style={[styles.miniBadge, styles.opportunityBadge]}>
-              <Text style={[styles.miniBadgeText, styles.opportunityBadgeText]}>{labelText(signal).toUpperCase()}</Text>
-            </View>
-          ))}
+
+        <View style={styles.badges}>
           <OwnerBadge type={p.owner_type} compact />
-          {p.out_of_state_owner ? (
-            <View style={[styles.miniBadge, { backgroundColor: colors.surfaceTertiary }]}>
-              <Text style={styles.miniBadgeText}>OUT-OF-STATE</Text>
-            </View>
-          ) : null}
-          {p.tax_delinquent ? (
-            <View style={[styles.miniBadge, { backgroundColor: "#F1D9D5" }]}>
-              <Text style={[styles.miniBadgeText, { color: "#7A2A24" }]}>TAX DELINQUENT</Text>
-            </View>
-          ) : null}
-          {p.vacant ? (
-            <View style={[styles.miniBadge, { backgroundColor: "#F2E0BD" }]}>
-              <Text style={[styles.miniBadgeText, { color: "#5A3F0E" }]}>VACANT</Text>
-            </View>
-          ) : null}
+          {p.pre_foreclosure ? <Badge text="PRE-FC" /> : null}
+          {p.tax_delinquent || Number(p.current_tax_amount_due || 0) > 0 || Number(p.prior_tax_amount_due || 0) > 0 ? <Badge text="TAX LIEN" /> : null}
+          {p.has_probate ? <Badge text="PROBATE" /> : null}
+          {p.has_code_violations || Number(p.code_violation_count || 0) > 0 ? <Badge text="CODE" /> : null}
         </View>
-        <View style={styles.statsRow}>
-          <View style={styles.stat}>
-            <Text style={styles.statLabel}>Investment</Text>
-            <Text style={[styles.statValue, tabularNums]}>{p.investment_score ?? "—"}</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.stat}>
-            <Text style={styles.statLabel}>Spread</Text>
-            <Text style={[styles.statValue, tabularNums]}>{spread != null ? fmtMoney(spread) : "—"}</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.stat}>
-            <Text style={styles.statLabel}>Risk</Text>
-            <Text style={[styles.statValue, tabularNums]}>{p.risk_score ?? "—"}</Text>
-          </View>
-        </View>
+
+        <Text style={styles.basisNote}>
+          Spread = exit value − {eligibility.basis_source === "purchase_price" ? "purchase price" : "assessed value fallback"}.
+        </Text>
       </View>
     </Pressable>
   );
+}
+
+function Badge({ text }: { text: string }) {
+  return <View style={styles.badge}><Text style={styles.badgeText}>{text}</Text></View>;
 }
 
 const styles = StyleSheet.create({
@@ -141,63 +107,32 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  imageWrap: { height: 160, width: "100%" },
+  imageWrap: { height: 150, width: "100%", backgroundColor: colors.surfaceTertiary },
   image: { width: "100%", height: "100%" },
-  scrim: { position: "absolute", left: 0, right: 0, bottom: 0, height: 90 },
-  listingPill: {
-    position: "absolute",
-    top: 10,
-    left: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: radius.sm,
+  categoryPill: {
+    position: "absolute", top: 10, left: 10,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    borderRadius: radius.pill, paddingHorizontal: 9, paddingVertical: 5,
   },
-  listingPillText: { color: "#fff", fontWeight: "800", fontSize: 10, letterSpacing: 0.6 },
+  categoryText: { color: "#fff", fontSize: 10, fontWeight: "900", letterSpacing: 0.5 },
   saveBtn: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    alignItems: "center",
-    justifyContent: "center",
+    position: "absolute", top: 10, right: 10, width: 34, height: 34, borderRadius: 17,
+    backgroundColor: "rgba(0,0,0,0.52)", alignItems: "center", justifyContent: "center",
   },
-  priceRow: {
-    position: "absolute",
-    left: 12,
-    right: 12,
-    bottom: 10,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
-  },
-  price: { color: "#fff", fontSize: 22, fontWeight: "800", letterSpacing: -0.5, ...tabularNums },
-  roi: { color: "#fff", fontSize: 20, fontWeight: "800", ...tabularNums },
-  priceLabel: { color: "rgba(255,255,255,0.75)", fontSize: 10, letterSpacing: 0.4, marginTop: 1 },
   body: { padding: spacing.md },
-  address: { fontSize: 15, fontWeight: "700", color: colors.onSurface },
-  metaRow: { marginTop: 2 },
-  meta: { fontSize: 12, color: colors.muted, ...tabularNums },
-  badgeRow: { flexDirection: "row", flexWrap: "wrap", marginTop: 8, gap: 6 },
-  miniBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: radius.sm,
+  address: { fontSize: 16, fontWeight: "800", color: collors.onSurface },
+  meta: { marginTop: 3, fontSize: 12, color: colors.muted },
+  priceRow: {
+    flexDirection: "row", marginTop: spacing.md, paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
   },
-  miniBadgeText: { fontSize: 10, fontWeight: "700", color: colors.onSurfaceTertiary, letterSpacing: 0.3 },
-  opportunityBadge: { backgroundColor: "#E7DDD0" },
-  opportunityBadgeText: { color: "#5C3C17" },
-  statsRow: {
-    marginTop: spacing.md,
-    flexDirection: "row",
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    paddingVertical: 8,
-  },
-  stat: { flex: 1, alignItems: "center" },
-  statDivider: { width: 1, backgroundColor: colors.divider, marginVertical: 4 },
-  statLabel: { fontSize: 10, color: colors.muted, letterSpacing: 0.4, fontWeight: "600" },
-  statValue: { fontSize: 14, color: colors.onSurface, fontWeight: "800", marginTop: 2 },
+  metric: { flex: 1 },
+  label: { fontSize: 9, fontWeight: "800", color: colors.muted, letterSpacing: 0.5 },
+  value: { marginTop: 3, fontSize: 16, fontWeight: "900", color: colors.onSurface, ...tabularNums },
+  negative: { color: colors.error },
+  badges: { flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: 10, alignItems: "center" },
+  badge: { backgroundColor: colors.brandTertiary, borderRadius: radius.pill, paddingHorizontal: 7, paddingVertical: 3 },
+  badgeText: { fontSize: 9, fontWeight: "800", color: colors.onBrandTertiary },
+  basisNote: { marginTop: 8, fontSize: 9, color: colors.muted },
 });
