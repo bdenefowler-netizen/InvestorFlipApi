@@ -4,7 +4,7 @@ const ADMIN_KEY_STORAGE = "investorflip_admin_key";
 async function secureStorage() {
   // Keep native secure-storage initialization out of the app bootstrap path.
   // The API client imports this module on the first screen, but SecureStore is
-  // only needed when a private operation or Settings actually requests it.
+  // only needed when Settings actually requests it.
   const { storage } = await import("@/src/utils/storage");
   return storage;
 }
@@ -21,8 +21,6 @@ function browserStorage(): Storage | null {
 
 
 export async function getStoredAdminKey(): Promise<string> {
-  // On web, prefer localStorage so a browser refresh/reboot does not silently
-  // strand protected actions if the AsyncStorage shim has not hydrated yet.
   const browser = browserStorage();
   const browserKey = String(browser?.getItem(ADMIN_KEY_STORAGE) || "").trim();
   if (browserKey) return browserKey;
@@ -59,9 +57,9 @@ export async function saveAdminKey(value: string): Promise<boolean> {
 export async function adminRequestHeaders(
   initial: Record<string, string> = {},
 ): Promise<Record<string, string>> {
-  // During the private/demo phase, callers may proceed without a stored key.
-  // Backend routes that still require admin auth will reject the request; the
-  // spreadsheet intake upload is intentionally open for now.
-  const key = await getStoredAdminKey();
-  return key ? { ...initial, "X-Admin-Key": key } : initial;
+  // TEMPORARY DEMO MODE: do not attach X-Admin-Key at all.
+  // This keeps spreadsheet uploads as a plain multipart POST and avoids the
+  // stale-key/custom-header path while we get data flowing. Backend protection
+  // can be restored after the upload workflow is proven reliable.
+  return initial;
 }
