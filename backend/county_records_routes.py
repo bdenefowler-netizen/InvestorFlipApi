@@ -25,6 +25,7 @@ def _display_record(record: Dict[str, Any]) -> Dict[str, Any]:
     item["sources"] = [
         label
         for enabled, label in (
+            (item.get("has_uploaded"), "Uploaded"),
             (item.get("has_tad"), "TAD"),
             (item.get("has_tax_roll"), "Tax Roll"),
             (item.get("has_code_violations"), "Fort Worth Code Violations"),
@@ -32,6 +33,17 @@ def _display_record(record: Dict[str, Any]) -> Dict[str, Any]:
         if enabled
     ]
     item["market_value"] = item.get("market_value") or item.get("tax_roll_market_value")
+    item.update(completeness(item))
+    return item
+
+
+def _display_uploaded(record: Dict[str, Any]) -> Dict[str, Any]:
+    item = dict(record)
+    item["has_uploaded"] = True
+    item["record_kind"] = "uploaded"
+    item["sources"] = ["Uploaded"]
+    item["appraised_value"] = item.get("appraised_value") or item.get("assessed_value")
+    item["market_value"] = item.get("market_value") or item.get("assessed_value")
     item.update(completeness(item))
     return item
 
@@ -48,6 +60,24 @@ def _source_query(source: str) -> Dict[str, Any]:
     return {}
 
 
+def _search_query(search: Optional[str]) -> Dict[str, Any]:
+    if not search or not search.strip():
+        return {}
+    regex = {"$regex": re.escape(search.strip()), "$options": "i"}
+    return {"$or": [
+        {"situs_address": regex},
+        {"owner_name": regex},
+        {"owner_mailing_address": regex},
+        {"account_id": regex},
+        {"parcel_id": regex},
+        {"zip": regex},
+        {"code_latest_complaint": regex},
+        {"code_latest_status": regex},
+        {"code_case_ids": regex},
+        {"code_violation_ids": regex},
+    ]}
+
+
 @router.get("/county-records/stats")
 async def county_record_stats():
     db = PostgresDatabase()
@@ -57,6 +87,7 @@ async def county_record_stats():
         cursor = await db.sync_log.find_one({"name": "county_tad_cursor"}) or {}
         return {
             "total": await db.county_records.count_documents({}),
+            "uploaded": await db.properties.count_documents({"raw_import_row": {"$exists": True}}),
             "with_tad": await db.county_records.count_documents({"has_tad": True}),
             "with_tax_roll": await db.county_records.count_documents({"has_tax_roll": True}),
             "tax_delinquent": await db.county_records.count_documents({"tax_delinquent": True}),
@@ -72,7 +103,7 @@ async def county_record_stats():
 
 @router.get("/county-records")
 async def list_county_records(
-    source: str = Query("all", pattern="^(all|tad|tax_roll|tax_delinquent|code_violations)$"),
+    source: str = Query("all", pattern="^(all|uploaded|tad|tax_roll|tax_delinquent|code_violations)$"),
     search: Optional[str] = Query(None, max_length=160),
     page: int = Query(1, ge=1),
     limit: int = Query(75, ge=1, le=200),
@@ -80,21 +111,30 @@ async def list_county_records(
     db = PostgresDatabase()
     try:
         await db.connect()
+        search_query = _search_query(search)
+
+        if source == "uploaded":
+            query: Dict[str, Any] = {"raw_import_row": {"$exists": True}}
+            if search_query:
+                query = {"$and": [query, search_query]}
+            total = await db.properties.count_documents(query)
+            docs = await (
+                db.properties.find(query, {"_id": 0})
+                .sort("situs_address", 1)
+                .skip((page - 1) * limit)
+                .limit(limit)
+                .to_list(length=limit)
+            )
+            return {
+                "count": len(docs),
+                "total": total,
+                "page": page,
+                "pages": max(1, (total + limit - 1) // limit),
+                "items": [_display_uploaded(item) for item in docs],
+            }
+
         query = _source_query(source)
-        if search and search.strip():
-            regex = {"$regex": re.escape(search.strip()), "$options": "i"}
-            search_query = {"$or": [
-                {"situs_address": regex},
-                {"owner_name": regex},
-                {"owner_mailing_address": regex},
-                {"account_id": regex},
-                {"parcel_id": regex},
-                {"zip": regex},
-                {"code_latest_complaint": regex},
-                {"code_latest_status": regex},
-                {"code_case_ids": regex},
-                {"code_violation_ids": regex},
-            ]}
+        if search_query:
             query = {"$and": [query, search_query]} if query else search_query
         total = await db.county_records.count_documents(query)
         docs = await (
@@ -104,19 +144,44 @@ async def list_county_records(
             .limit(limit)
             .to_list(length=limit)
         )
+        items = [_display_record(item) for item in docs]
+
+        # Uploaded spreadsheets are user research inputs, so surface them in the
+        # County workspace immediately even before a TAD/tax match exists.
+        if source == "all" and page == 1:
+            uploaded_query: Dict[str, Any] = {"raw_import_row": {"$exists": True}}
+            if search_query:
+                uploaded_query = {"$and": [uploaded_query, search_query]}
+            uploaded_docs = await (
+                db.properties.find(uploaded_query, {"_id": 0})
+                .sort("situs_address", 1)
+                .limit(limit)
+                .to_list(length=limit)
+            )
+            existing_keys = {
+                (str(item.get("account_id") or ""), str(item.get("address_key") or ""))
+                for item in items
+            }
+            for uploaded in uploaded_docs:
+                key = (str(uploaded.get("account_id") or ""), str(uploaded.get("address_key") or ""))
+                if key not in existing_keys:
+                    items.append(_display_uploaded(uploaded))
+                    existing_keys.add(key)
+            total += len(uploaded_docs)
+
         return {
-            "count": len(docs),
+            "count": len(items),
             "total": total,
             "page": page,
             "pages": max(1, (total + limit - 1) // limit),
-            "items": [_display_record(item) for item in docs],
+            "items": items,
         }
     finally:
         await db.close()
 
 
 @router.get("/county-records/export.csv")
-async def export_county_records(source: str = Query("all", pattern="^(all|tad|tax_roll|tax_delinquent|code_violations)$")):
+async def export_county_records(source: str = Query("all", pattern="^(all|uploaded|tad|tax_roll|tax_delinquent|code_violations)$")):
     fields = [
         "account_id", "parcel_id", "situs_address", "city", "state", "zip",
         "owner_name", "owner_mailing_address", "mailing_city", "mailing_state", "mailing_zip",
@@ -156,9 +221,11 @@ async def export_county_records(source: str = Query("all", pattern="^(all|tad|ta
         })
         try:
             await db.connect()
+            collection = db.properties if source == "uploaded" else db.county_records
+            query = {"raw_import_row": {"$exists": True}} if source == "uploaded" else _source_query(source)
             while True:
                 docs = await (
-                    db.county_records.find(_source_query(source), projection)
+                    collection.find(query, projection)
                     .sort("situs_address", 1)
                     .skip(page * batch_size)
                     .limit(batch_size)
@@ -167,7 +234,7 @@ async def export_county_records(source: str = Query("all", pattern="^(all|tad|ta
                 if not docs:
                     break
                 for item in docs:
-                    display = _display_record(item)
+                    display = _display_uploaded(item) if source == "uploaded" else _display_record(item)
                     display["tad_raw_json"] = (
                         json.dumps(item.get("tad_raw"), ensure_ascii=False, default=str)
                         if item.get("tad_raw") else None
@@ -202,9 +269,12 @@ async def get_county_record(record_id: str):
     try:
         await db.connect()
         record = await db.county_records.find_one({"id": record_id}, {"_id": 0})
-        if not record:
-            raise HTTPException(status_code=404, detail="County record not found")
-        return _display_record(record)
+        if record:
+            return _display_record(record)
+        uploaded = await db.properties.find_one({"id": record_id, "raw_import_row": {"$exists": True}}, {"_id": 0})
+        if uploaded:
+            return _display_uploaded(uploaded)
+        raise HTTPException(status_code=404, detail="County record not found")
     finally:
         await db.close()
 
