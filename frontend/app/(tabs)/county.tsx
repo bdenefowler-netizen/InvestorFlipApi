@@ -375,7 +375,7 @@ export default function CountyRecordsScreen() {
             placeholderTextColor={colors.muted}
             style={styles.searchInput}
           />
-          {search ? <Pressable onPress={() => setSearch("")}><Ionicons name="close-circle" size={18} color={colors.muted} /></Pressabl> : null}
+          {search ? <Pressable onPress={() => setSearch("")}><Ionicons name="close-circle" size={18} color={colors.muted} /></Pressable> : null}
         </View>
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
