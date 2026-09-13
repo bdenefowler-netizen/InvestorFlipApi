@@ -279,7 +279,7 @@ export default function CountyRecordsScreen() {
     setError(null);
     try {
       const headers = await adminRequestHeaders();
-      const response = await fetch(`${API_BASE/api/admin/county-records/sync?source=code_violations`, {
+      const response = await fetch(`${API_BASE}/api/admin/county-records/sync?source=code_violations`, {
         method: "POST",
         headers,
       });
