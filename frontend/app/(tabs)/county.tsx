@@ -20,6 +20,7 @@ import {
   countyRecordsCsvUrl,
   getCountyRecords,
   getCountyRecordStats,
+  getProperties,
   type CountyRecord,
   type CountyRecordStats,
 } from "@/src/lib/api";
@@ -30,6 +31,7 @@ type CountySource =
   | "all"
   | "uploaded"
   | "code_violations"
+  | "pre_foreclosure"
   | "tad"
   | "tax_roll"
   | "tax_delinquent";
@@ -68,6 +70,7 @@ const SOURCES: { key: CountySource; label: string }[] = [
   { key: "all", label: "All records" },
   { key: "uploaded", label: "Uploaded" },
   { key: "code_violations", label: "Code violations" },
+  { key: "pre_foreclosure", label: "Pre-Foreclosure" },
   { key: "tax_delinquent", label: "Tax due" },
   { key: "tad", label: "TAD" },
   { key: "tax_roll", label: "Tax roll" },
@@ -237,15 +240,18 @@ export default function CountyRecordsScreen() {
     else setLoading(true);
     setError(null);
     try {
-      const [records, summary] = await Promise.all([
-        getCountyRecords(source as any, search, nextPage),
-        append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
-      ]);
-      setItems((current) => (append ? [...current, ...records.items] : records.items));
-      setStats(summary);
-      setPage(records.page);
-      setPages(records.pages);
-      setTotal(records.total);
+      if (source === "pre_foreclosure") {
+        const [properties, summary] = await Promise.all([getProperties("pre_foreclosure", search), getCountyRecordStats()]);
+        setItems(properties.items as unknown as CountyRecord[]);
+        setStats(summary); setPage(1); setPages(1); setTotal(properties.total ?? properties.count);
+      } else {
+        const [records, summary] = await Promise.all([
+          getCountyRecords(source as any, search, nextPage),
+          append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
+        ]);
+        setItems((current) => (append ? [...current, ...records.items] : records.items));
+        setStats(summary); setPage(records.page); setPages(records.pages); setTotal(records.total);
+      }
     } catch (e: any) {
       setError(e?.message || "County records could not be loaded.");
     } finally {
@@ -270,7 +276,7 @@ export default function CountyRecordsScreen() {
   };
 
   const loadMore = () => {
-    if (!loading && !loadingMore && page < pages) load(page + 1, true);
+    if (source !== "pre_foreclosure" && !loading && !loadingMore && page < pages) load(page + 1, true);
   };
 
   const syncCodeViolations = async () => {
@@ -300,7 +306,7 @@ export default function CountyRecordsScreen() {
     const record = item as CountyCodeRecord;
     return (
       <Pressable
-        onPress={() => router.push(`/county/${encodeURIComponent(item.id)}` as Href)}
+        onPress={() => router.push((source === "pre_foreclosure" ? `/property/${encodeURIComponent(item.id)}` : `/county/${encodeURIComponent(item.id)}`) as Href)}
         style={({ pressed }) => [
           styles.row,
           index % 2 === 1 && styles.rowAlternate,
@@ -350,9 +356,9 @@ export default function CountyRecordsScreen() {
               )}
               <Text style={styles.exportText}>{syncingCode ? "Syncing…" : "Sync Code"}</Text>
             </Pressable>
-            <Pressable style={styles.exportButton} onPress={() => Linking.openURL(countyRecordsCsvUrl(source as any))}>
+            <Pressable style={styles.exportButton} onPress={() => Linking.openURL(source === "pre_foreclosure" ? `${API_BASE}/api/export.xlsx?filter=pre_foreclosure` : countyRecordsCsvUrl(source as any))}>
               <Ionicons name="download-outline" size={17} color={colors.onBrandPrimary} />
-              <Text style={styles.exportText}>CSV</Text>
+              <Text style={styles.exportText}>{source === "pre_foreclosure" ? "XLSX" : "CSV"}</Text>
             </Pressable>
           </View>
         </View>
