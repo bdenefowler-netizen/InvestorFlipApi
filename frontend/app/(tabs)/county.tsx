@@ -20,6 +20,7 @@ import {
   countyRecordsCsvUrl,
   getCountyRecords,
   getCountyRecordStats,
+  getProperties,
   type CountyRecord,
   type CountyRecordStats,
 } from "@/src/lib/api";
@@ -30,6 +31,7 @@ type CountySource =
   | "all"
   | "uploaded"
   | "code_violations"
+  | "pre_foreclosure"
   | "tad"
   | "tax_roll"
   | "tax_delinquent";
@@ -68,6 +70,7 @@ const SOURCES: { key: CountySource; label: string }[] = [
   { key: "all", label: "All records" },
   { key: "uploaded", label: "Uploaded" },
   { key: "code_violations", label: "Code violations" },
+  { key: "pre_foreclosure", label: "Pre-Foreclosure" },
   { key: "tax_delinquent", label: "Tax due" },
   { key: "tad", label: "TAD" },
   { key: "tax_roll", label: "Tax roll" },
@@ -152,6 +155,52 @@ const TAX_DUE_COLUMNS: Column[] = [
   { key: "legal", label: "LEGAL DESCRIPTION", width: 260, value: (i) => plain(i.legal_description) },
 ];
 
+function preField(item: CountyCodeRecord, ...keys: string[]): unknown {
+  const record = item as any;
+  for (const key of keys) {
+    const value =
+      record[key] ??
+      record.raw_import_row?.[key] ??
+      record.feed_extra?.[key] ??
+      record.raw_source_excerpt?.[key];
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return null;
+}
+
+function preMoney(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "—";
+  const numeric = Number(String(value).replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(numeric) ? `$${Math.round(numeric).toLocaleString()}` : plain(value);
+}
+
+const PRE_FORECLOSURE_COLUMNS: Column[] = [
+  { key: "address", label: "PROPERTY ADDRESS", width: 230, strong: true, value: (i) => plain(preField(i, "situs_address", "address", "Property Address")) },
+  { key: "tad", label: "TAD ACCOUNT #", width: 125, value: (i) => plain(preField(i, "account_id", "TAD Account #", "TAD Account Number")) },
+  { key: "apn", label: "TAX ACCOUNT / APN", width: 135, value: (i) => plain(preField(i, "parcel_id", "apn", "Tax Account/APN")) },
+  { key: "cause", label: "COUNTY CAUSE NUMBER", width: 155, value: (i) => plain(preField(i, "cause_number", "county_cause_number", "County Cause Number")) },
+  { key: "legal", label: "LEGAL DESCRIPTION", width: 245, value: (i) => plain(preField(i, "legal_description", "Legal Description")) },
+  { key: "owner", label: "CURRENT OWNER", width: 190, value: (i) => plain(preField(i, "owner_name", "owner", "Current Owner")) },
+  { key: "mailing", label: "TAD OWNER MAILING ADDRESS", width: 230, value: (i) => plain(preField(i, "owner_mailing_address", "TAD Owner Mailing Address")) },
+  { key: "auction", label: "SCHEDULED AUCTION", width: 140, value: (i) => plain(preField(i, "auction_date", "scheduled_auction", "Scheduled Auction")) },
+  { key: "saleStatus", label: "SALE STATUS", width: 120, value: (i) => plain(preField(i, "sale_status", "Sale Status")) },
+  { key: "saleDate", label: "SALE DATE", width: 110, value: (i) => plain(preField(i, "sale_date", "Sale Date")) },
+  { key: "filed", label: "FILED DATE", width: 110, value: (i) => plain(preField(i, "filed_date", "Filed Date")) },
+  { key: "foreclosure", label: "FORECLOSURE STATUS", width: 155, value: (i) => plain(preField(i, "foreclosure_status", "listing_status", "Foreclosure Status")) },
+  { key: "lender", label: "LENDER", width: 185, value: (i) => plain(preField(i, "lender", "Lender")) },
+  { key: "loan", label: "LOAN AMOUNT", width: 125, value: (i) => preMoney(preField(i, "loan_amount", "Loan Amount")) },
+  { key: "loanType", label: "LOAN TYPE", width: 115, value: (i) => plain(preField(i, "loan_type", "Loan Type")) },
+  { key: "loanDue", label: "LOAN DUE DATE", width: 125, value: (i) => plain(preField(i, "loan_due_date", "Loan Due Date")) },
+  { key: "latestSale", label: "LATEST SALE PRICE", width: 135, value: (i) => preMoney(preField(i, "latest_sale_price", "Latest Sale Price")) },
+  { key: "recording", label: "LATEST RECORDING DATE", width: 145, value: (i) => plain(preField(i, "latest_recording_date", "Latest Recording Date")) },
+  { key: "propertyTax", label: "PROPERTY TAX AMOUNT", width: 145, value: (i) => preMoney(preField(i, "property_tax_amount", "annual_taxes", "Property Tax Amount")) },
+  { key: "land", label: "LAND VALUE", width: 120, value: (i) => preMoney(preField(i, "land_value", "Land Value")) },
+  { key: "improvement", label: "IMPROVEMENT VALUE", width: 140, value: (i) => preMoney(preField(i, "improvement_value", "Improvement Value")) },
+  { key: "assessed", label: "TOTAL ASSESSED VALUE", width: 150, value: (i) => preMoney(preField(i, "assessed_value", "appraised_value", "Total Assessed Value")) },
+  { key: "market", label: "MARKET VALUE", width: 125, value: (i) => preMoney(preField(i, "market_value", "tax_roll_market_value", "Market Value")) },
+  { key: "distress", label: "DISTRESS SCORE", width: 115, value: (i) => plain(preField(i, "distress_score", "Distress Score")) },
+];
+
 const DEFAULT_COLUMNS: Column[] = [
   { key: "address", label: "PROPERTY ADDRESS", width: 230, strong: true, value: (i) => plain(i.situs_address) },
   { key: "owner", label: "OWNER", width: 185, value: (i) => plain(i.owner_name) },
@@ -227,7 +276,14 @@ export default function CountyRecordsScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const columns = useMemo(
-    () => (source === "tax_roll" ? TAX_ROLL_COLUMNS : source === "tax_delinquent" ? TAX_DUE_COLUMNS : DEFAULT_COLUMNS),
+    () =>
+      source === "tax_roll"
+        ? TAX_ROLL_COLUMNS
+        : source === "tax_delinquent"
+          ? TAX_DUE_COLUMNS
+          : source === "pre_foreclosure"
+            ? PRE_FORECLOSURE_COLUMNS
+            : DEFAULT_COLUMNS,
     [source],
   );
   const tableWidth = useMemo(() => columns.reduce((sum, column) => sum + column.width, 0), [columns]);
@@ -237,15 +293,18 @@ export default function CountyRecordsScreen() {
     else setLoading(true);
     setError(null);
     try {
-      const [records, summary] = await Promise.all([
-        getCountyRecords(source as any, search, nextPage),
-        append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
-      ]);
-      setItems((current) => (append ? [...current, ...records.items] : records.items));
-      setStats(summary);
-      setPage(records.page);
-      setPages(records.pages);
-      setTotal(records.total);
+      if (source === "pre_foreclosure") {
+        const [properties, summary] = await Promise.all([getProperties("pre_foreclosure", search), getCountyRecordStats()]);
+        setItems(properties.items as unknown as CountyRecord[]);
+        setStats(summary); setPage(1); setPages(1); setTotal(properties.total ?? properties.count);
+      } else {
+        const [records, summary] = await Promise.all([
+          getCountyRecords(source as any, search, nextPage),
+          append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
+        ]);
+        setItems((current) => (append ? [...current, ...records.items] : records.items));
+        setStats(summary); setPage(records.page); setPages(records.pages); setTotal(records.total);
+      }
     } catch (e: any) {
       setError(e?.message || "County records could not be loaded.");
     } finally {
@@ -270,7 +329,7 @@ export default function CountyRecordsScreen() {
   };
 
   const loadMore = () => {
-    if (!loading && !loadingMore && page < pages) load(page + 1, true);
+    if (source !== "pre_foreclosure" && !loading && !loadingMore && page < pages) load(page + 1, true);
   };
 
   const syncCodeViolations = async () => {
@@ -300,7 +359,7 @@ export default function CountyRecordsScreen() {
     const record = item as CountyCodeRecord;
     return (
       <Pressable
-        onPress={() => router.push(`/county/${encodeURIComponent(item.id)}` as Href)}
+        onPress={() => router.push((source === "pre_foreclosure" ? `/property/${encodeURIComponent(item.id)}` : `/county/${encodeURIComponent(item.id)}`) as Href)}
         style={({ pressed }) => [
           styles.row,
           index % 2 === 1 && styles.rowAlternate,
@@ -350,9 +409,9 @@ export default function CountyRecordsScreen() {
               )}
               <Text style={styles.exportText}>{syncingCode ? "Syncing…" : "Sync Code"}</Text>
             </Pressable>
-            <Pressable style={styles.exportButton} onPress={() => Linking.openURL(countyRecordsCsvUrl(source as any))}>
+            <Pressable style={styles.exportButton} onPress={() => Linking.openURL(source === "pre_foreclosure" ? `${API_BASE}/api/export.xlsx?filter=pre_foreclosure` : countyRecordsCsvUrl(source as any))}>
               <Ionicons name="download-outline" size={17} color={colors.onBrandPrimary} />
-              <Text style={styles.exportText}>CSV</Text>
+              <Text style={styles.exportText}>{source === "pre_foreclosure" ? "XLSX" : "CSV"}</Text>
             </Pressable>
           </View>
         </View>
