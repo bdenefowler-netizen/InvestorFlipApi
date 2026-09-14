@@ -14,7 +14,11 @@ if "const PRE_FORECLOSURE_COLUMNS: Column[] = [" not in text:
     block = r'''function preField(item: CountyCodeRecord, ...keys: string[]): unknown {
   const record = item as any;
   for (const key of keys) {
-    const value = record[key] ?? record.raw_import_row?.[key] ?? record.feed_extra?.[key];
+    const value =
+      record[key] ??
+      record.raw_import_row?.[key] ??
+      record.feed_extra?.[key] ??
+      record.raw_source_excerpt?.[key];
     if (value !== undefined && value !== null && value !== "") return value;
   }
   return null;
@@ -76,20 +80,5 @@ if 'source === "pre_foreclosure"\n            ? PRE_FORECLOSURE_COLUMNS' not in 
         raise SystemExit(f"Expected one columns selector, found {text.count(old_selector)}")
     text = text.replace(old_selector, new_selector, 1)
 
-old_desc = '''        ) : (
-          <Text style={styles.syncText} numberOfLines={1}>
-            {latestSync'''
-new_desc = '''        ) : source === "pre_foreclosure" ? (
-          <Text style={styles.syncText}>
-            Pre-Foreclosure combines the uploaded foreclosure workbook with TAD-enriched property details, cause number, auction status, lender, values, and distress score.
-          </Text>
-        ) : (
-          <Text style={styles.syncText} numberOfLines={1}>
-            {latestSync'''
-if "Pre-Foreclosure combines the uploaded foreclosure workbook" not in text:
-    if text.count(old_desc) != 1:
-        raise SystemExit(f"Expected one description insertion point, found {text.count(old_desc)}")
-    text = text.replace(old_desc, new_desc, 1)
-
 path.write_text(text)
-print("County Pre-Foreclosure columns patched.")
+print("County Pre-Foreclosure columns patched cleanly.")
