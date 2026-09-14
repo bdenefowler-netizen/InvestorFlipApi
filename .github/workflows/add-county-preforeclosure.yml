@@ -6,6 +6,7 @@ on:
       - feature/investorflip-v1
     paths:
       - .github/workflows/add-county-preforeclosure.yml
+      - trigger-county-preforeclosure.txt
   workflow_dispatch:
 
 permissions:
