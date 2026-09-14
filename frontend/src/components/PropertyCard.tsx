@@ -120,7 +120,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.52)", alignItems: "center", justifyContent: "center",
   },
   body: { padding: spacing.md },
-  address: { fontSize: 16, fontWeight: "800", color: collors.onSurface },
+  address: { fontSize: 16, fontWeight: "800", color: colors.onSurface },
   meta: { marginTop: 3, fontSize: 12, color: colors.muted },
   priceRow: {
     flexDirection: "row", marginTop: spacing.md, paddingVertical: 10,
