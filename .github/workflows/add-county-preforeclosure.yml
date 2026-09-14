@@ -7,6 +7,8 @@ on:
     paths:
       - .github/workflows/add-county-preforeclosure.yml
       - trigger-county-preforeclosure.txt
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -41,7 +43,7 @@ jobs:
           if "PRE_FORECLOSURE_COLUMNS" not in text:
               marker = "const DEFAULT_COLUMNS: Column[] = ["
               if text.count(marker) != 1:
-                  raise SystemExit(f"Expected one DEFAULT_COLUMNS marker, found {text.count(marker)}")
+                  raise SystemExit(f"Expected one DEFAULT_COLUMMNS marker, found {text.count(marker)}")
 
               block = r'''
           function preRaw(item: CountyCodeRecord, key: string): unknown {
