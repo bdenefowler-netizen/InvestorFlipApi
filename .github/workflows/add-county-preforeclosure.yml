@@ -157,3 +157,4 @@ jobs:
           git add 'frontend/app/(tabs)/county.tsx'
           git commit -m "feat: add County pre-foreclosure columns"
           git push origin HEAD:feature/investorflip-v1
+# trigger: apply pre-foreclosure columns
