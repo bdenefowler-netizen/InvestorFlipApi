@@ -219,7 +219,7 @@ export default function CountyRecordsScreen() {
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useSstate(true);
+  const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [syncingCode, setSyncingCode] = useState(false);
