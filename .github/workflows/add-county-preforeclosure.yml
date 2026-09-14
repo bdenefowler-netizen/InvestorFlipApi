@@ -1,5 +1,10 @@
 name: Add County Pre-Foreclosure tab
 on:
+  push:
+    branches:
+      - feature/investorflip-v1
+    paths:
+      - .github/workflows/add-county-preforeclosure.yml
   workflow_dispatch:
 permissions:
   contents: write
