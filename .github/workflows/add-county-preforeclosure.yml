@@ -65,11 +65,6 @@ jobs:
           r('<Text style={styles.exportText}>CSV</Text>','<Text style={styles.exportText}>{source === "pre_foreclosure" ? "XLSX" : "CSV"}</Text>')
           p.write_text(s)
           PY
-      - name: Validate feature
-        working-directory: frontend
-        env:
-          EXPO_PUBLIC_BACKEND_URL: https://investorflipapi-production-4970.up.railway.app
-        run: yarn install --frozen-lockfile && npx expo export --platform web --output-dir /tmp/feature-web
       - name: Commit feature
         run: |
           git config user.name "github-actions[bot]"
@@ -77,6 +72,11 @@ jobs:
           git add 'frontend/app/(tabs)/county.tsx'
           git commit -m "feat: add County pre-foreclosure tab"
           git push origin HEAD:feature/investorflip-v1
+      - name: Validate feature
+        working-directory: frontend
+        env:
+          EXPO_PUBLIC_BACKEND_URL: https://investorflipapi-production-4970.up.railway.app
+        run: yarn install --frozen-lockfile && npx expo export --platform web --output-dir /tmp/feature-web
       - name: Sync to web
         run: |
           git fetch origin web
