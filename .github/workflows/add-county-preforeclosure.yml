@@ -1,0 +1,90 @@
+name: Add County Pre-Foreclosure tab
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/investorflip-v1
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+      - name: Patch feature
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path("frontend/app/(tabs)/county.tsx"); s=p.read_text()
+          if '"pre_foreclosure"' in s:
+              print("already patched"); raise SystemExit
+          def r(a,b):
+              global s
+              assert s.count(a)==1,(a,s.count(a))
+              s=s.replace(a,b,1)
+          r('  getCountyRecordStats,\n  type CountyRecord,','  getCountyRecordStats,\n  getProperties,\n  type CountyRecord,')
+          r('  | "code_violations"\n  | "tad"','  | "code_violations"\n  | "pre_foreclosure"\n  | "tad"')
+          r('  { key: "code_violations", label: "Code violations" },\n  { key: "tax_delinquent", label: "Tax due" },','  { key: "code_violations", label: "Code violations" },\n  { key: "pre_foreclosure", label: "Pre-Foreclosure" },\n  { key: "tax_delinquent", label: "Tax due" },')
+          old='''    try {
+                const [records, summary] = await Promise.all([
+                  getCountyRecords(source as any, search, nextPage),
+                  append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
+                ]);
+                setItems((current) => (append ? [...current, ...records.items] : records.items));
+                setStats(summary);
+                setPage(records.page);
+                setPages(records.pages);
+                setTotal(records.total);'''
+          new='''    try {
+                if (source === "pre_foreclosure") {
+                  const [properties, summary] = await Promise.all([getProperties("pre_foreclosure", search), getCountyRecordStats()]);
+                  setItems(properties.items as unknown as CountyRecord[]);
+                  setStats(summary); setPage(1); setPages(1); setTotal(properties.total ?? properties.count);
+                } else {
+                  const [records, summary] = await Promise.all([
+                    getCountyRecords(source as any, search, nextPage),
+                    append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
+                  ]);
+                  setItems((current) => (append ? [...current, ...records.items] : records.items));
+                  setStats(summary); setPage(records.page); setPages(records.pages); setTotal(records.total);
+                }'''
+          r(old,new)
+          r('if (!loading && !loadingMore && page < pages) load(page + 1, true);','if (source !== "pre_foreclosure" && !loading && !loadingMore && page < pages) load(page + 1, true);')
+          r('onPress={() => router.push(`/county/${encodeURIComponent(item.id)}` as Href)}','onPress={() => router.push((source === "pre_foreclosure" ? `/property/${encodeURIComponent(item.id)}` : `/county/${encodeURIComponent(item.id)}`) as Href)}')
+          r('onPress={() => Linking.openURL(countyRecordsCsvUrl(source as any))}','onPress={() => Linking.openURL(source === "pre_foreclosure" ? `${API_BASE}/api/export.xlsx?filter=pre_foreclosure` : countyRecordsCsvUrl(source as any))}')
+          r('<Text style={styles.exportText}>CSV</Text>','<Text style={styles.exportText}>{source === "pre_foreclosure" ? "XLSX" : "CSV"}</Text>')
+          p.write_text(s)
+          PY
+      - name: Validate feature
+        working-directory: frontend
+        env:
+          EXPO_PUBLIC_BACKEND_URL: https://investorflipapi-production-4970.up.railway.app
+        run: yarn install --frozen-lockfile && npx expo export --platform web --output-dir /tmp/feature-web
+      - name: Commit feature
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add 'frontend/app/(tabs)/county.tsx'
+          git commit -m "feat: add County pre-foreclosure tab"
+          git push origin HEAD:feature/investorflip-v1
+      - name: Sync to web
+        run: |
+          git fetch origin web
+          git checkout -B web origin/web
+          git cherry-pick feature/investorflip-v1
+          git push origin HEAD:web
+      - name: Deploy web
+        working-directory: frontend
+        env:
+          EXPO_PUBLIC_BACKEND_URL: https://investorflipapi-production-4970.up.railway.app
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          yarn install --frozen-lockfile
+          npm install -g eas-cli
+          npx expo export --platform web --output-dir dist
+          eas deploy --prod --non-interactive
