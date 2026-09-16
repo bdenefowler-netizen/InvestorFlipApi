@@ -1,12 +1,6 @@
 import { API_BASE } from "./api";
 
-export type CountyUploadSource =
-  | "tad"
-  | "tax"
-  | "pre_foreclosure"
-  | "probate"
-  | "code_violations"
-  | "owner";
+export type CountyUploadSource = "tad" | "tax" | "pre_foreclosure" | "probate" | "code_violations" | "owner";
 
 export type PublicUploadAsset = {
   uri: string;
@@ -64,28 +58,23 @@ const SOURCE_PREFIX: Record<CountyUploadSource, string> = {
 
 export async function uploadCountyFile(
   asset: PublicUploadAsset,
-  source?: CountyUploadSource,
+  source: CountyUploadSource,
 ): Promise<PublicUploadResult> {
   const form = new FormData();
   const originalName = asset.name || "county-import.xlsx";
-  const uploadName = source ? `${SOURCE_PREFIX[source]}__${originalName}` : originalName;
+  const uploadName = `${SOURCE_PREFIX[source]}__${originalName}`;
 
   if (asset.file) {
     form.append("file", asset.file, uploadName);
   } else {
-    form.append(
-      "file",
-      {
-        uri: asset.uri,
-        name: uploadName,
-        type: asset.mimeType || "application/octet-stream",
-      } as any,
-    );
+    form.append("file", {
+      uri: asset.uri,
+      name: uploadName,
+      type: asset.mimeType || "application/octet-stream",
+    } as any);
   }
-  form.append("source_type", source || "auto");
+  form.append("source_type", source);
 
-  // Public intake deliberately sends no admin key. Source identity is explicit and
-  // enrichment is deferred so upload success never waits on third-party APIs.
   const response = await fetch(`${API_BASE}/api/import/bulk/upload-workbook`, {
     method: "POST",
     body: form,
