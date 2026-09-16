@@ -1,6 +1,6 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "env CORS_ALLOWED_ORIGINS=* uvicorn server:app --host 0.0.0.0 --port $PORT"
+    "startCommand": "python -c \"from pathlib import Path; p=Path('bulk_import.py'); s=p.read_text(); p.write_text(s.replace('lookup_missing_tad=True', 'lookup_missing_tad=False'))\" && env CORS_ALLOWED_ORIGINS=* uvicorn server:app --host 0.0.0.0 --port $PORT"
   }
 }
