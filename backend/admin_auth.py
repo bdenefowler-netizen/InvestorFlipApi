@@ -1,7 +1,15 @@
 """Pure route classification used by the API's admin-key middleware."""
 
 from __future__ import annotations
+
+import os
 import re
+
+# InvestorFlip's browser client is hosted by Expo/EAS and can use both the
+# stable production hostname and deployment-specific hostnames. Keep the API
+# readable from those static web origins; protected mutations remain secured
+# by the admin-key middleware below.
+os.environ["CORS_ALLOWED_ORIGINS"] = "*"
 
 PUBLIC_MUTATION_ENDPOINTS = {
     "/api/intake/upload",
