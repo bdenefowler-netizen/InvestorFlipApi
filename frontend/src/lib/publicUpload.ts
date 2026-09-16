@@ -1,5 +1,13 @@
 import { API_BASE } from "./api";
 
+export type CountyUploadSource =
+  | "tad"
+  | "tax"
+  | "pre_foreclosure"
+  | "probate"
+  | "code_violations"
+  | "owner";
+
 export type PublicUploadAsset = {
   uri: string;
   name?: string | null;
@@ -11,25 +19,31 @@ export type PublicUploadAsset = {
 export type PublicUploadResult = {
   ok: boolean;
   filename: string;
+  source_type?: CountyUploadSource | "auto";
   categories?: string[];
   rows_read: number;
   accepted: number;
   rejected: number;
   inserted: number;
   updated: number;
+  staged?: number;
   property_ids: string[];
   files?: Array<{
     file: string;
     status: string;
+    source_type?: string;
     categories?: string[];
     rows?: number;
     accepted?: number;
     inserted?: number;
     updated?: number;
+    staged?: number;
     reason?: string;
     sheets?: Array<{ sheet: string; rows: number }>;
   }>;
   enrichment?: {
+    deferred?: boolean;
+    message?: string;
     county?: {
       live_checked?: number;
       enriched?: number;
@@ -39,22 +53,39 @@ export type PublicUploadResult = {
   };
 };
 
-export async function uploadCountyFile(asset: PublicUploadAsset): Promise<PublicUploadResult> {
+const SOURCE_PREFIX: Record<CountyUploadSource, string> = {
+  tad: "tad",
+  tax: "taxroll",
+  pre_foreclosure: "preforeclosure",
+  probate: "probate",
+  code_violations: "code_violation",
+  owner: "owner",
+};
+
+export async function uploadCountyFile(
+  asset: PublicUploadAsset,
+  source?: CountyUploadSource,
+): Promise<PublicUploadResult> {
   const form = new FormData();
+  const originalName = asset.name || "county-import.xlsx";
+  const uploadName = source ? `${SOURCE_PREFIX[source]}__${originalName}` : originalName;
+
   if (asset.file) {
-    form.append("file", asset.file, asset.name || "county-import.xlsx");
+    form.append("file", asset.file, uploadName);
   } else {
     form.append(
       "file",
       {
         uri: asset.uri,
-        name: asset.name || "county-import.xlsx",
+        name: uploadName,
         type: asset.mimeType || "application/octet-stream",
       } as any,
     );
   }
+  form.append("source_type", source || "auto");
 
-  // User-facing ADD intake is intentionally public and does not send admin credentials.
+  // Public intake deliberately sends no admin key. Source identity is explicit and
+  // enrichment is deferred so upload success never waits on third-party APIs.
   const response = await fetch(`${API_BASE}/api/import/bulk/upload-workbook`, {
     method: "POST",
     body: form,
