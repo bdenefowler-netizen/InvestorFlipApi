@@ -1,6 +1,6 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "python -c \"from pathlib import Path; p=Path('bulk_import.py'); s=p.read_text(); s=s.replace('from intake import upsert_import_records','from intake_v3 import upsert_import_records'); s=s.replace('from intake_v2 import upsert_import_records','from intake_v3 import upsert_import_records'); s=s.replace('lookup_missing_tad=True','lookup_missing_tad=False'); p.write_text(s)\" && env CORS_ALLOWED_ORIGINS=* uvicorn server:app --host 0.0.0.0 --port $PORT"
+    "startCommand": "python -c \"from pathlib import Path; p=Path('bulk_import.py'); s=p.read_text(); s=s.replace('from intake import upsert_import_records','from intake_v3 import upsert_import_records'); s=s.replace('from intake_v2 import upsert_import_records','from intake_v3 import upsert_import_records'); s=s.replace('    return [\\\"uploaded\\\"]','    if \\\"owner\\\" in name: return [\\\"owner\\\"]\\\\n    return [\\\"uploaded\\\"]'); s=s.replace('lookup_missing_tad=True','lookup_missing_tad=False'); p.write_text(s)\" && env CORS_ALLOWED_ORIGINS=* uvicorn server:app --host 0.0.0.0 --port $PORT"
   }
 }
