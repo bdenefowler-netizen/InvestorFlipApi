@@ -21,7 +21,7 @@ type PreviewLead = Record<string, any>;
 const SOURCES = [
   { key: "tad", label: "TAD", note: "Tarrant Appraisal District parcel/property records" },
   { key: "tax_roll", label: "Tax Roll", note: "Official Tarrant County current + delinquent tax roll" },
-  { key: "code_violations", label: "Code Violations", note: "Fort Worth code cases and violation records" },
+  { key: "fort_worth_violations", label: "Code Violations", note: "Fort Worth code cases and violation records" },
 ] as const;
 
 const statusLabel = (item: any) => {
@@ -50,7 +50,7 @@ export default function SettingsScreen() {
     try {
       const [sourceResp, brightResp] = await Promise.all([
         fetch(`${API_BASE}/api/data-sources/status`),
-        fetch(`${API_BASE}/api/brightdata-mcp/status`),
+        fetch(`${API_BASE}/api/brightdata-deals/status`),
       ]);
 
       const sourceData = await sourceResp.json().catch(() => ({}));
@@ -59,6 +59,7 @@ export default function SettingsScreen() {
       setHealth(sourceData || {});
       setBrightReady(
         Boolean(
+          brightData?.brightdata_configured ||
           brightData?.brightdata_mcp_configured ||
           brightData?.configured ||
           brightData?.token_configured
@@ -82,6 +83,7 @@ export default function SettingsScreen() {
     setPreview([]);
     setPreviewTotal(null);
     setLabMessage("");
+
     try {
       const query = "include_offmarket=true&include_fsbo=true&include_hubzu=true&max_pages=1";
       const resp = await fetch(`${API_BASE}/api/brightdata-mcp/preview?${query}`);
@@ -128,7 +130,7 @@ export default function SettingsScreen() {
           </View>
 
           <Text style={s.help}>
-            Test the live sources here. No admin key lives in Settings. Source credentials stay server-side in Railway.
+            Test the live sources here. Source credentials stay server-side in Railway.
           </Text>
 
           <Pressable onPress={testSources} disabled={testing} style={[s.outlineButton, testing && s.disabled]}>
@@ -157,6 +159,7 @@ export default function SettingsScreen() {
           <View style={s.divider} />
 
           <Text style={s.section}>BRIGHT DATA</Text>
+
           <View style={s.sourceCard}>
             <View style={{ flex: 1 }}>
               <Text style={s.sourceName}>Web Enrichment</Text>
@@ -178,7 +181,7 @@ export default function SettingsScreen() {
               <ActivityIndicator color="#fff" />
             ) : (
               <Ionicons name="flask-outline" size={18} color="#fff" />
-            )}
+           )}
             <Text style={s.buttonText}>{previewing ? "Running preview…" : "Run Bright Data Preview"}</Text>
           </Pressable>
 
@@ -220,7 +223,10 @@ export default function SettingsScreen() {
             <Pressable onPress={() => openExport("csv")} style={[s.primaryButton, { flex: 1 }]}>
               <Text style={s.buttonText}>Export CSV</Text>
             </Pressable>
-            <Pressable onPress={() => openExport("xlsx")} style={[s.primaryButton, { flex: 1, backgroundColor: colors.brandSecondary }]}>
+            <Pressable
+              onPress={() => openExport("xlsx")}
+              style={[s.primaryButton, { flex: 1, backgroundColor: colors.brandSecondary }]}
+            >
               <Text style={s.buttonText}>Export Excel</Text>
             </Pressable>
           </View>
@@ -276,7 +282,7 @@ const s = StyleSheet.create({
     paddingVertical: 12,
     borderTopWidth: 1,
     borderTopColor: colors.border,
-    marginTop: 10,
+    marginDop: 10,
   },
   sourceName: { color: colors.onSurface, fontSize: 13, fontWeight: "800" },
   health: { maxWidth: 135, color: colors.muted, fontSize: 9, fontWeight: "900", textAlign: "right" },
