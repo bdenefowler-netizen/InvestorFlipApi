@@ -234,7 +234,7 @@
       "sequence_type": {
         "start": 40,
         "end": 42,
-         "kind": "text"
+        "kind": "text"
       },
       "sequence_number": {
         "start": 42,
@@ -316,7 +316,7 @@
         "end": 233,
         "kind": "text"
       },
-      "instalment_flag": {
+      "installment_flag": {
         "start": 233,
         "end": 234,
         "kind": "text"
