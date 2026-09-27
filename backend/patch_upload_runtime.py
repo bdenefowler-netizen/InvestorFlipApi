@@ -1,36 +1,22 @@
-"""Startup patch for the public County uploader.
+"""Deterministic Railway startup patch for the public County uploader.
 
-The upload request must only parse, match, store, and return.
-Network enrichment is intentionally deferred to background/explicit endpoints.
+At deploy time this script replaces only the /upload-workbook route with the
+staging hot path. Everything before that route remains byte-for-byte intact.
 """
+
 from pathlib import Path
-import re
 
 path = Path("bulk_import.py")
 text = path.read_text()
 
-# Always use the deterministic v3 matcher/upserter.
-text = text.replace(
-    "from intake import upsert_import_records",
-    "from intake_v3 import upsert_import_records",
-)
-text = text.replace(
-    "from intake_v2 import upsert_import_records",
-    "from intake_v3 import upsert_import_records",
-)
+marker = '@router.post("/upload-workbook")'
+if marker not in text:
+    raise RuntimeError("Could not find /upload-workbook route in bulk_import.py")
 
-# Never wait on live County/TAD/API enrichment after an upload.
-text = re.sub(
-    r'county\s*=\s*await\s+enrich_live_properties_from_county_records\([D\S]*?\)\s+if\s+unique\s+else\s+\{[D\S]*?\}',
-    'county={"live_checked":0,"enriched":0,"tad_lookups":0,"missing":0,"deferred":True}',
-    text,
-)
+prefix = text.split(marker, 1)[0]
+new_route = '@router.post("/upload-workbook")\nasync def public_county_workbook_upload(file: UploadFile = File(...)):\n    """Public ADD upload: receive -> parse -> stage -> return.\n\n    No admin key is required. The request deliberately performs no property\n    matching, owner classification, per-property tagging, County/TAD lookups,\n    or enrichment. Those steps are deferred so the browser is not held open\n    for minutes while database/network work runs.\n    """\n    import time\n\n    from county_records_routes import _read_upload_rows\n    from import_staging import stage_import_rows\n\n    request_started = time.perf_counter()\n    batch_id = str(uuid.uuid4())\n    filename = Path(file.filename or "upload.xlsx").name\n    suffix = Path(filename).suffix.lower()\n    if suffix not in {".csv", ".xls", ".xlsx", ".zip"}:\n        raise HTTPException(400, "Upload .csv, .xls, .xlsx, or .zip")\n\n    receive_started = time.perf_counter()\n    raw = await file.read(MAX_PUBLIC_UPLOAD_BYTES + 1)\n    receive_seconds = time.perf_counter() - receive_started\n    if not raw:\n        raise HTTPException(400, "The uploaded file is empty")\n    if len(raw) > MAX_PUBLIC_UPLOAD_BYTES:\n        raise HTTPException(413, "The upload is larger than 300 MiB")\n\n    db = PostgresDatabase()\n    await db.connect()\n    try:\n        reports: List[Dict[str, Any]] = []\n        seen: List[str] = []\n        totals = {"accepted": 0, "rejected": 0, "inserted": 0, "updated": 0, "staged": 0}\n        parse_seconds_total = 0.0\n        store_seconds_total = 0.0\n\n        async def import_one(name: str, payload: bytes, ext: str) -> None:\n            nonlocal parse_seconds_total, store_seconds_total\n\n            parse_started = time.perf_counter()\n            rows, sheets = _read_upload_rows(payload, ext, name)\n            categories = _upload_categories(name, rows)\n            prepared = [_prepare_row(row, categories) for row in rows]\n            parse_seconds = time.perf_counter() - parse_started\n            parse_seconds_total += parse_seconds\n\n            store_started = time.perf_counter()\n            staged = await stage_import_rows(\n                db,\n                batch_id=batch_id,\n                source_file=name,\n                categories=categories,\n                rows=prepared,\n            )\n            store_seconds = time.perf_counter() - store_started\n            store_seconds_total += store_seconds\n\n            for category in categories:\n                if category not in seen:\n                    seen.append(category)\n\n            totals["accepted"] += staged\n            totals["inserted"] += staged\n            totals["staged"] += staged\n\n            reports.append(\n                {\n                    "file": name,\n                    "status": "staged",\n                    "categories": categories,\n                    "rows": len(rows),\n                    "accepted": staged,\n                    "rejected": 0,\n                    "inserted": staged,\n                    "updated": 0,\n                    "staged": staged,\n                    "sheets": sheets,\n                    "timings": {\n                        "parse_seconds": round(parse_seconds, 3),\n                        "store_seconds": round(store_seconds, 3),\n                    },\n                }\n            )\n\n        if suffix == ".zip":\n            try:\n                with zipfile.ZipFile(BytesIO(raw)) as zf:\n                    members = [\n                        member\n                        for member in zf.infolist()\n                        if not member.is_dir()\n                        and Path(member.filename).suffix.lower() in {".csv", ".xls", ".xlsx"}\n                    ]\n                    if not members:\n                        raise HTTPException(400, "ZIP contains no CSV or Excel files")\n                    if sum(max(0, member.file_size) for member in members) > MAX_ZIP_EXPANDED_BYTES:\n                        raise HTTPException(413, "ZIP expands beyond the 750 MB safety limit")\n                    for member in members:\n                        try:\n                            await import_one(\n                                member.filename,\n                                zf.read(member),\n                                Path(member.filename).suffix.lower(),\n                            )\n                        except Exception as exc:\n                            reports.append(\n                                {\n                                    "file": member.filename,\n                                    "status": "error",\n                                    "reason": str(exc)[:300],\n                                }\n                            )\n            except HTTPException:\n                raise\n            except Exception as exc:\n                raise HTTPException(400, f"Could not read ZIP: {str(exc)[:220]}") from exc\n        else:\n            try:\n                await import_one(filename, raw, suffix)\n            except Exception as exc:\n                raise HTTPException(\n                    400,\n                    f"Could not stage workbook: {str(exc)[:220]}",\n                ) from exc\n\n        total_seconds = time.perf_counter() - request_started\n        return {\n            "ok": bool(totals["staged"]),\n            "batch_id": batch_id,\n            "filename": filename,\n            "categories": seen,\n            "files": reports,\n            "rows_read": totals["accepted"] + totals["rejected"],\n            **totals,\n            "property_ids": [],\n            "processing": {\n                "status": "staged",\n                "matching": "deferred",\n                "owner_classification": "deferred",\n                "enrichment": "deferred",\n            },\n            "enrichment": {\n                "county": {\n                    "live_checked": 0,\n                    "enriched": 0,\n                    "tad_lookups": 0,\n                    "missing": 0,\n                    "deferred": True,\n                }\n            },\n            "timings": {\n                "receive_seconds": round(receive_seconds, 3),\n                "parse_seconds": round(parse_seconds_total, 3),\n                "store_seconds": round(store_seconds_total, 3),\n                "total_seconds": round(total_seconds, 3),\n                "bytes_received": len(raw),\n            },\n        }\n    finally:\n        await db.close()\n'
 
-# The enricher import is not needed on the request hot path.
-text = text.replace(
-    "    from importers.county_records import enrich_live_properties_from_county_records\n",
-    "",
-)
-
-path.write_text(text)
-print("County uploader hot-path patch applied")
+patched = prefix + new_route
+compile(patched, str(path), "exec")
+path.write_text(patched)
+print("County uploader hot path patched: parse -> stage -> return")
