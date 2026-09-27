@@ -1,1 +1,0 @@
-upsertFrontendFile operation verified on 2026-09-27.
