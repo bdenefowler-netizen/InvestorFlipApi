@@ -1,105 +1,21 @@
-"""Add chunked transport endpoints to the already-patched public uploader."""
+"""Install chunked upload routes onto the public bulk importer at Railway startup.
+
+Large TAD XLSX uploads are reassembled from small HTTP chunks, then handed to the
+targeted streaming TAD importer so only plausible lead matches are staged.
+"""
 from pathlib import Path
-path=Path("bulk_import.py")
-text=path.read_text()
-if '@router.post("/upload-workbook/chunk")' in text:
+
+path = Path("bulk_import.py")
+text = path.read_text()
+
+marker = '@router.post("/upload-workbook/chunk")'
+if marker in text:
     print("Chunk upload routes already present")
     raise SystemExit(0)
-append=r"""
-from fastapi import Form
-import shutil
-import tempfile
 
-_CHUNK_ROOT = Path(tempfile.gettempdir()) / "investorflip-chunk-uploads"
-_CHUNK_ROOT.mkdir(parents=True, exist_ok=True)
-_MAX_CHUNK_BYTES = 10 * 1024 * 1024
-_MAX_CHUNKS = 2000
+append = '\nfrom fastapi import Form\nimport shutil\nimport tempfile\nfrom database import PostgresDatabase\nfrom tad_targeted_stream import stage_targeted_tad_xlsx\n\n_CHUNK_ROOT = Path(tempfile.gettempdir()) / "investorflip-chunk-uploads"\n_CHUNK_ROOT.mkdir(parents=True, exist_ok=True)\n_MAX_CHUNK_BYTES = 10 * 1024 * 1024\n_MAX_CHUNKS = 2000\n\n\ndef _safe_chunk_upload_id(value: str) -> str:\n    cleaned = re.sub(r"[^A-Za-z0-9_-]", "", str(value or ""))\n    if not cleaned or len(cleaned) > 120:\n        raise HTTPException(400, "Invalid upload id")\n    return cleaned\n\n\ndef _safe_chunk_filename(value: str) -> str:\n    name = Path(value or "county-import.xlsx").name\n    if Path(name).suffix.lower() not in {".csv", ".xls", ".xlsx", ".zip"}:\n        raise HTTPException(400, "Upload .csv, .xls, .xlsx, or .zip")\n    return name\n\n\n@router.post("/upload-workbook/chunk")\nasync def public_county_workbook_chunk(\n    upload_id: str = Form(...),\n    chunk_index: int = Form(...),\n    total_chunks: int = Form(...),\n    filename: str = Form(...),\n    total_size: int = Form(...),\n    chunk: UploadFile = File(...),\n):\n    upload_id = _safe_chunk_upload_id(upload_id)\n    filename = _safe_chunk_filename(filename)\n\n    if total_chunks < 1 or total_chunks > _MAX_CHUNKS:\n        raise HTTPException(400, "Invalid total chunk count")\n    if chunk_index < 0 or chunk_index >= total_chunks:\n        raise HTTPException(400, "Invalid chunk index")\n    if total_size < 1 or total_size > MAX_PUBLIC_UPLOAD_BYTES:\n        raise HTTPException(413, "The upload is larger than 300 MiB")\n\n    payload = await chunk.read(_MAX_CHUNK_BYTES + 1)\n    if not payload:\n        raise HTTPException(400, "Chunk is empty")\n    if len(payload) > _MAX_CHUNK_BYTES:\n        raise HTTPException(413, "Chunk exceeds 10 MiB")\n\n    upload_dir = _CHUNK_ROOT / upload_id\n    upload_dir.mkdir(parents=True, exist_ok=True)\n    (upload_dir / f"{chunk_index:06d}.part").write_bytes(payload)\n\n    return {\n        "ok": True,\n        "upload_id": upload_id,\n        "chunk_index": chunk_index,\n        "received_bytes": len(payload),\n        "total_chunks": total_chunks,\n        "filename": filename,\n    }\n\n\n@router.post("/upload-workbook/complete")\nasync def public_county_workbook_complete(\n    upload_id: str = Form(...),\n    total_chunks: int = Form(...),\n    filename: str = Form(...),\n    total_size: int = Form(...),\n):\n    upload_id = _safe_chunk_upload_id(upload_id)\n    filename = _safe_chunk_filename(filename)\n\n    if total_chunks < 1 or total_chunks > _MAX_CHUNKS:\n        raise HTTPException(400, "Invalid total chunk count")\n    if total_size < 1 or total_size > MAX_PUBLIC_UPLOAD_BYTES:\n        raise HTTPException(413, "The upload is larger than 300 MiB")\n\n    upload_dir = _CHUNK_ROOT / upload_id\n    if not upload_dir.exists():\n        raise HTTPException(404, "Chunk upload not found")\n\n    try:\n        parts = [upload_dir / f"{index:06d}.part" for index in range(total_chunks)]\n        missing = [index for index, part in enumerate(parts) if not part.exists()]\n        if missing:\n            raise HTTPException(409, f"Upload incomplete; missing {len(missing)} chunk(s)")\n\n        assembled_path = upload_dir / "assembled.upload"\n        with assembled_path.open("wb") as destination:\n            for part in parts:\n                with part.open("rb") as source:\n                    shutil.copyfileobj(source, destination, length=1024 * 1024)\n\n        assembled_size = assembled_path.stat().st_size\n        if assembled_size != total_size:\n            raise HTTPException(\n                409,\n                f"Upload size mismatch: expected {total_size}, received {assembled_size}",\n            )\n        if assembled_size > MAX_PUBLIC_UPLOAD_BYTES:\n            raise HTTPException(413, "The upload is larger than 300 MiB")\n\n        if filename.lower().startswith("tad__") and filename.lower().endswith(".xlsx"):\n            db = PostgresDatabase()\n            await db.connect()\n            try:\n                result = await stage_targeted_tad_xlsx(\n                    db,\n                    assembled_path,\n                    source_file=filename,\n                    prepare_row=_prepare_row,\n                )\n            finally:\n                await db.close()\n        else:\n            with assembled_path.open("rb") as source:\n                uploaded = UploadFile(file=source, filename=filename)\n                result = await public_county_workbook_upload(uploaded)\n\n        result["transport"] = {\n            **(result.get("transport") or {}),\n            "mode": "chunked",\n            "upload_id": upload_id,\n            "chunks": total_chunks,\n            "bytes_received": assembled_size,\n        }\n        return result\n    finally:\n        shutil.rmtree(upload_dir, ignore_errors=True)\n\n\n@router.delete("/upload-workbook/chunk/{upload_id}")\nasync def public_county_workbook_abort(upload_id: str):\n    upload_id = _safe_chunk_upload_id(upload_id)\n    shutil.rmtree(_CHUNK_ROOT / upload_id, ignore_errors=True)\n    return {"ok": True, "upload_id": upload_id}\n'
 
-def _safe_chunk_upload_id(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_-]", "", str(value or ""))
-    if not cleaned or len(cleaned) > 120:
-        raise HTTPException(400, "Invalid upload id")
-    return cleaned
-
-def _safe_chunk_filename(value: str) -> str:
-    name = Path(value or "county-import.xlsx").name
-    if Path(name).suffix.lower() not in {".csv", ".xls", ".xlsx", ".zip"}:
-        raise HTTPException(400, "Upload .csv, .xls, .xlsx, or .zip")
-    return name
-
-@router.post("/upload-workbook/chunk")
-async def public_county_workbook_chunk(
-    upload_id: str = Form(...),
-    chunk_index: int = Form(...),
-    total_chunks: int = Form(...),
-    filename: str = Form(...),
-    total_size: int = Form(...),
-    chunk: UploadFile = File(...),
-):
-    upload_id = _safe_chunk_upload_id(upload_id)
-    filename = _safe_chunk_filename(filename)
-    if total_chunks < 1 or total_chunks > _MAX_CHUNKS:
-        raise HTTPException(400, "Invalid total chunk count")
-    if chunk_index < 0 or chunk_index >= total_chunks:
-        raise HTTPException(400, "Invalid chunk index")
-    if total_size < 1 or total_size > MAX_PUBLIC_UPLOAD_BYTES:
-        raise HTTPException(413, "The upload is larger than 300 MiB")
-    payload = await chunk.read(_MAX_CHUNK_BYTES + 1)
-    if not payload:
-        raise HTTPException(400, "Chunk is empty")
-    if len(payload) > _MAX_CHUNK_BYTES:
-        raise HTTPException(413, "Chunk exceeds 10 MiB")
-    upload_dir = _CHUNK_ROOT / upload_id
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    (upload_dir / f"{chunk_index:06d}.part").write_bytes(payload)
-    return {"ok": True, "upload_id": upload_id, "chunk_index": chunk_index, "received_bytes": len(payload), "total_chunks": total_chunks, "filename": filename}
-
-@router.post("/upload-workbook/complete")
-async def public_county_workbook_complete(
-    upload_id: str = Form(...),
-    total_chunks: int = Form(...),
-    filename: str = Form(...),
-    total_size: int = Form(...),
-):
-    upload_id = _safe_chunk_upload_id(upload_id)
-    filename = _safe_chunk_filename(filename)
-    if total_chunks < 1 or total_chunks > _MAX_CHUNKS:
-        raise HTTPException(400, "Invalid total chunk count")
-    if total_size < 1 or total_size > MAX_PUBLIC_UPLOAD_BYTES:
-        raise HTTPException(413, "The upload is larger than 300 MiB")
-    upload_dir = _CHUNK_ROOT / upload_id
-    if not upload_dir.exists():
-        raise HTTPException(404, "Chunk upload not found")
-    try:
-        parts = [upload_dir / f"{index:06d}.part" for index in range(total_chunks)]
-        missing = [index for index, part in enumerate(parts) if not part.exists()]
-        if missing:
-            raise HTTPException(409, f"Upload incomplete; missing {len(missing)} chunk(s)")
-        assembled_path = upload_dir / "assembled.upload"
-        with assembled_path.open("wb") as destination:
-            for part in parts:
-                with part.open("rb") as source:
-                    shutil.copyfileobj(source, destination, length=1024 * 1024)
-        assembled_size = assembled_path.stat().st_size
-        if assembled_size != total_size:
-            raise HTTPException(409, f"Upload size mismatch: expected {total_size}, received {assembled_size}")
-        if assembled_size > MAX_PUBLIC_UPLOAD_BYTES:
-            raise HTTPException(413, "The upload is larger than 300 MiB")
-        with assembled_path.open("rb") as source:
-            uploaded = UploadFile(file=source, filename=filename)
-            result = await public_county_workbook_upload(uploaded)
-        result["transport"] = {"mode": "chunked", "upload_id": upload_id, "chunks": total_chunks, "bytes_received": assembled_size}
-        return result
-    finally:
-        shutil.rmtree(upload_dir, ignore_errors=True)
-
-@router.delete("/upload-workbook/chunk/{upload_id}")
-async def public_county_workbook_abort(upload_id: str):
-    upload_id = _safe_chunk_upload_id(upload_id)
-    shutil.rmtree(_CHUNK_ROOT / upload_id, ignore_errors=True)
-    return {"ok": True, "upload_id": upload_id}
-"""
-patched=text+append
-compile(patched,str(path),"exec")
+patched = text + append
+compile(patched, str(path), "exec")
 path.write_text(patched)
-print("Chunk transport patch installed")
+print("Chunk transport patch installed: large TAD XLSX > targeted stream > staged matches")
