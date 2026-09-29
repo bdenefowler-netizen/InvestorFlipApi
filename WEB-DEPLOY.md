@@ -17,4 +17,4 @@ Any push to this `web` branch starts a fresh build from the latest
 `feature/investorflip-v1` code. The simplest way is to bump the counter below and
 commit it to `web`.
 
-redeploy counter: 1
+redeploy counter: 2
