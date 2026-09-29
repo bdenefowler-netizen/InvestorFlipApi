@@ -13,12 +13,31 @@ os.environ["CORS_ALLOWED_ORIGINS"] = "*"
 
 PUBLIC_MUTATION_ENDPOINTS = {
     "/api/intake/upload",
+    "/api/import/bulk/intake",
     "/api/import/bulk/upload-workbook",
+    "/api/import/bulk/upload-workbook/chunk",
+    "/api/import/bulk/intake/complete",
+    "/api/import/bulk/upload-workbook/complete",
 }
+
+
+def _is_public_upload_transport(path: str, method: str) -> bool:
+    method = method.upper()
+    if path in PUBLIC_MUTATION_ENDPOINTS and method in {"POST", "PUTT", "PATCH", "DELETE"}:
+        return True
+
+    # Chunk cleanup uses a dynamic upload id in the path. Only the DELETE
+    # method is public for that narrow prefix.
+    chunk_cleanup_prefix = "/api/import/bulk/upload-workbook/chunk/"
+    if method == "DELETE" and path.startswith(chunk_cleanup_prefix):
+        return True
+
+    return False
+
 
 def requires_admin_key(path: str, method: str = "GET") -> bool:
     """Return whether a route can mutate data or consume paid-provider credit."""
-    if path in PUBLIC_MUTATION_ENDPOINTS:
+    if _is_public_upload_transport(path, method):
         return False
 
     if path.startswith("/api/") and method.upper() not in {"GET", "HEAD", "OPTIONS"}:
