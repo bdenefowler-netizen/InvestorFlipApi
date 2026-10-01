@@ -69,11 +69,24 @@ async function responseJson(response: Response): Promise<any> {
   return response.json().catch(() => ({}));
 }
 
+function stageError(stage: string, error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(`${stage}: ${message}`);
+}
+
+async function fetchStage(stage: string, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    throw stageError(stage, error);
+  }
+}
+
 async function ensureBlob(asset: PublicUploadAsset): Promise<Blob> {
   if (asset.file) return asset.file;
-  const response = await fetch(asset.uri);
+  const response = await fetchStage("Reading selected file", asset.uri);
   if (!response.ok) {
-    throw new Error(`Could not read selected file (${response.status})`);
+    throw new Error(`Reading selected file failed (${response.status})`);
   }
   return response.blob();
 }
@@ -102,24 +115,23 @@ async function directUpload(
   }
   form.append("source_type", source);
 
-  const response = await fetch(`${API_BASE}/api/import/bulk/upload-workbook`, {
-    method: "POST",
-    body: form,
-  });
+  const response = await fetchStage(
+    "Direct upload",
+    `${API_BASE}/api/import/bulk/upload-workbook`,
+    { method: "POST", body: form },
+  );
   const data = await responseJson(response);
   if (!response.ok) {
-    throw new Error(data.detail || `Upload failed (${response.status})`);
+    throw new Error(data.detail || `Direct upload failed (${response.status})`);
   }
   return data as PublicUploadResult;
 }
 
-async function chunkedUpload(
-  blob: Blob,
-  uploadName: string,
-): Promise<PublicUploadResult> {
+async function chunkedUpload(blob: Blob, uploadName: string): Promise<PublicUploadResult> {
   const uploadId = makeUploadId();
   const totalSize = blob.size;
   const totalChunks = Math.ceil(totalSize / CHUNK_BYTES);
+  let stage = "Preparing chunked upload";
 
   try {
     for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
@@ -135,13 +147,15 @@ async function chunkedUpload(
       form.append("total_size", String(totalSize));
       form.append("chunk", piece, `${uploadName}.part`);
 
-      const response = await fetch(`${API_BASE}/api/import/bulk/upload-workbook/chunk`, {
-        method: "POST",
-        body: form,
-      });
+      stage = `Chunk ${chunkIndex + 1}/${totalChunks}`;
+      const response = await fetchStage(
+        stage,
+        `${API_BASE}/api/import/bulk/upload-workbook/chunk`,
+        { method: "POST", body: form },
+      );
       const data = await responseJson(response);
       if (!response.ok) {
-        throw new Error(data.detail || `Chunk ${chunkIndex + 1}/${totalChunks} failed (${response.status})`);
+        throw new Error(`${stage} failed (${response.status}): ${data.detail || "server rejected chunk"}`);
       }
     }
 
@@ -151,20 +165,26 @@ async function chunkedUpload(
     complete.append("filename", uploadName);
     complete.append("total_size", String(totalSize));
 
-    const response = await fetch(`${API_BASE}/api/import/bulk/upload-workbook/complete`, {
-      method: "POST",
-      body: complete,
-    });
+    stage = "Finalizing upload after all chunks arrived";
+    const response = await fetchStage(
+      stage,
+      `${API_BASE}/api/import/bulk/upload-workbook/complete`,
+      { method: "POST", body: complete },
+    );
     const data = await responseJson(response);
     if (!response.ok) {
-      throw new Error(data.detail || `Upload finalization failed (${response.status})`);
+      throw new Error(`${stage} failed (${response.status}): ${data.detail || "server rejected finalization"}`);
     }
     return data as PublicUploadResult;
   } catch (error) {
     fetch(`${API_BASE}/api/import/bulk/upload-workbook/chunk/${encodeURIComponent(uploadId)}`, {
       method: "DELETE",
     }).catch(() => undefined);
-    throw error;
+
+    if (error instanceof Error && error.message.startsWith(stage)) {
+      throw error;
+    }
+    throw stageError(stage, error);
   }
 }
 
@@ -184,5 +204,6 @@ export async function uploadCountyFile(
   if (blob.size <= CHUNK_THRESHOLD_BYTES) {
     return directUpload({ ...asset, file: blob, size: blob.size }, source, uploadName);
   }
+
   return chunkedUpload(blob, uploadName);
 }
