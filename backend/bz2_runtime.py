@@ -1,6 +1,6 @@
-"""B2zip-compressed county file intake for InvestorFlip.
+"""Bzip2-compressed county file intake for InvestorFlip.
 
-This extends the stable upload runtime without rewriting source files.
+Extends the stable upload runtime without rewriting source files.
 Compressed .bz2 files are accepted, streamed to the raw-intake area,
 validated by streaming decompression, hashed, and returned immediately as
 received work. Parsing/matching is deliberately deferred to the import worker.
@@ -27,7 +27,13 @@ _RECEIVED_ROOT = Path(
     )
 )
 _RECEIVED_ROOT.mkdir(parents=True, exist_ok=True)
-_MAX_DECOMPRESSED_BYTES = int(os.environ.get("INVESTORFLIP_MAX_BZ2_DECOMPRESSED_BYTES", str(1024 * 1024 * 1024)))
+
+_MAX_DECOMPRESSED_BYTES = int(
+    os.environ.get(
+        "INVESTORFLIP_MAX_BZ2_DECOMPRESSED_BYTES",
+        str(1024 * 1024 * 1024),
+    )
+)
 _STREAM_BYTES = 1024 * 1024
 
 _original_safe_filename = base._safe_filename
@@ -64,8 +70,10 @@ async def _receive_bz2(file: UploadFile) -> Dict[str, Any]:
     started = time.perf_counter()
     filename = _safe_filename(file.filename or "county-import.bz2")
     receipt_id = str(uuid.uuid4())
+
     destination = _RECEIVED_ROOT / f"{receipt_id}__{filename}"
     temporary = destination.with_suffix(destination.suffix + ".tmp")
+
     digest = hashlib.sha256()
     compressed_bytes = 0
 
@@ -77,10 +85,14 @@ async def _receive_bz2(file: UploadFile) -> Dict[str, Any]:
                 if not chunk:
                     break
                 compressed_bytes += len(chunk)
-              if compressed_bytes > base.bulk.MAX_PUBLIC_UPLOAD_BYTES:
-                    raise HTTPException(413, "The compressed upload is larger than 300 MiB")
+                if compressed_bytes > base.bulk.MAX_PUBLIC_UPLOAD_BYTES:
+                    raise HTTPException(
+                        413,
+                        "The compressed upload is larger than 300 MiB",
+                    )
                 digest.update(chunk)
-              output.write(chunk)
+                output.write(chunk)
+
         temporary.replace(destination)
 
         decompressed_bytes = 0
@@ -92,11 +104,19 @@ async def _receive_bz2(file: UploadFile) -> Dict[str, Any]:
                     if not chunk:
                         break
                     decompressed_bytes += len(chunk)
-                    if decompressed_bytes > _MAX_DECOMPRESSED_BYTES:
-                        raise HTTPException(413, "B62 payload expands beyond the 1 GiB safety limit")
+                    if decompressed_bytes > _MAX_DECOMPRESSED_BYTEN:
+                        raise HTTPException(
+                            413,
+                            "BZ2 payload expands beyond the 1 GiB safety limit",
+                        )
                     line_count += chunk.count(b"\n")
+        except HTTPException:
+            raise
         except (OSError, EOFError, ValueError) as exc:
-            raise HTTPException(400, f"Invalid BZ2 file: {str(exc)[:180]}") from exc
+            raise HTTPException(
+                400,
+                f"Invalid BZ2 file: {str(exc)[:180]}",
+            ) from exc
 
         return {
             "ok": True,
@@ -130,7 +150,13 @@ async def _receive_bz2(file: UploadFile) -> Dict[str, Any]:
                 "enrichment": "deferred",
             },
             "enrichment": {
-                "county": {"live_checked": 0, "enriched": 0, "tad_lookups": 0, "missing": 0, "deferred": True}
+                "county": {
+                    "live_checked": 0,
+                    "enriched": 0,
+                    "tad_lookups": 0,
+                    "missing": 0,
+                    "deferred": True,
+                }
             },
             "transport": {
                 "mode": "bz2",
@@ -141,9 +167,11 @@ async def _receive_bz2(file: UploadFile) -> Dict[str, Any]:
                 "receipt_id": receipt_id,
                 "storage": "raw-intake",
             },
-            "timings": {"total_seconds": round(time.perf_counter() - started, 3)},
+            "timings": {
+                "total_seconds": round(time.perf_counter() - started, 3),
+            },
         }
-    except:
+    except Exception:
         temporary.unlink(missing_ok=True)
         destination.unlink(missing_ok=True)
         raise
@@ -156,15 +184,14 @@ async def _stage_uploaded_file(file: UploadFile) -> Dict[str, Any]:
     return await _original_stage_uploaded_file(file)
 
 
-# Extend the stable runtime globals that already-registered route handlers
-resolve at request time.
+# Extend the stable runtime globals that the already-registered route handlers
+# resolve at request time.
 base._safe_filename = _safe_filename
 base._stage_uploaded_file = _stage_uploaded_file
 
 
 def main() -> None:
     base.main()
-
 
 
 if __name__ == "__main__":
