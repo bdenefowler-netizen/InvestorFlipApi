@@ -1,9 +1,8 @@
 """Bzip2-compressed county file intake for InvestorFlip.
 
-Extends the stable upload runtime without rewriting source files.
-Compressed .bz2 files are accepted, streamed to the raw-intake area,
-validated by streaming decompression, hashed, and returned immediately as
-received work. Parsing/matching is deliberately deferred to the import worker.
+Extends upload_runtime without rewriting source files. BZ2 files are stored in the
+raw-intake area, stream-validated, hashed, and acknowledged immediately. Parsing,
+matching, and enrichment are deliberately deferred to the import worker.
 """
 
 from __future__ import annotations
@@ -51,19 +50,15 @@ def _safe_filename(value: str) -> str:
 
 def _detect_category(filename: str) -> list[str]:
     lower = filename.lower()
-    if lower.startswith("tad__"):
-        return ["tad"]
-    if lower.startswith("taxroll__"):
-        return ["tax"]
-    if lower.startswith("preforeclosure__"):
-        return ["pre_foreclosure"]
-    if lower.startswith("probate__"):
-        return ["probate"]
-    if lower.startswith("code_violation__"):
-        return ["code_violations"]
-    if lower.startswith("owner__"):
-        return ["owner"]
-    return []
+    prefixes = (
+        ("tad__", "tad"),
+        ("taxroll__", "tax"),
+        ("preforeclosure__", "pre_foreclosure"),
+        ("probate__", "probate"),
+        ("code_violation__", "code_violations"),
+        ("owner__", "owner"),
+    )
+    return [category for prefix, category in prefixes if lower.startswith(prefix)]
 
 
 async def _receive_bz2(file: UploadFile) -> Dict[str, Any]:
@@ -104,10 +99,10 @@ async def _receive_bz2(file: UploadFile) -> Dict[str, Any]:
                     if not chunk:
                         break
                     decompressed_bytes += len(chunk)
-                    if decompressed_bytes > _MAX_DECOMPRESSED_BYTEN:
+                    if decompressed_bytes > _MAX_DECOMPRESSED_BYTES:
                         raise HTTPException(
                             413,
-                            "BZ2 payload expands beyond the 1 GiB safety limit",
+                            "BZ2 payload expands beyond the configured decompressed safety limit",
                         )
                     line_count += chunk.count(b"\n")
         except HTTPException:
@@ -184,8 +179,7 @@ async def _stage_uploaded_file(file: UploadFile) -> Dict[str, Any]:
     return await _original_stage_uploaded_file(file)
 
 
-# Extend the stable runtime globals that the already-registered route handlers
-# resolve at request time.
+# Existing route handlers resolve these globals at request time.
 base._safe_filename = _safe_filename
 base._stage_uploaded_file = _stage_uploaded_file
 
