@@ -34,6 +34,20 @@ def _decode(value: Any) -> Dict[str, Any]:
     raise ValueError("Staged import payload is not an object")
 
 
+def _decode_categories(value: Any, fallback: str) -> List[str]:
+    """Decode categories stored by either native JSONB or older text staging."""
+    decoded = value
+    if isinstance(decoded, str):
+        try:
+            decoded = json.loads(decoded)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            decoded = [part.strip() for part in decoded.split("|") if part.strip()]
+    if not isinstance(decoded, (list, tuple, set)):
+        decoded = []
+    categories = [str(item).strip() for item in decoded if str(item).strip()]
+    return list(dict.fromkeys(categories)) or [fallback]
+
+
 async def _next_batch(connection) -> Optional[Dict[str, Any]]:
     row = await connection.fetchrow(
         """
@@ -72,7 +86,7 @@ async def _next_batch(connection) -> Optional[Dict[str, Any]]:
         "batch_id": batch_id,
         "category": str(row["category"] or "uploaded"),
         "source_file": str(row["source_file"] or "upload"),
-        "categories": list(row["categories"] or []),
+        "categories": _decode_categories(row["categories"], str(row["category"] or "uploaded")),
         "rows": [_decode(item["payload"]) for item in sorted(records, key=lambda item: item["row_number"])],
     }
 
@@ -184,6 +198,19 @@ async def _run_worker() -> None:
             await connection.execute(
                 "UPDATE import_staging SET status = 'staged' WHERE status = 'processing' AND processed_at IS NULL"
             )
+            # Repair the brief deploy where a JSON text category was treated as
+            # an iterable and tagged records with '[', '"', 'p', ... .
+            await connection.execute(
+                """
+                UPDATE properties
+                SET data = data || jsonb_build_object(
+                    'upload_category', 'pre_foreclosure',
+                    'upload_categories', jsonb_build_array('pre_foreclosure')
+                ), updated_at = now()
+                WHERE data ->> 'upload_category' = '['
+                  AND data ->> 'source_category' = 'pre_foreclosure'
+                """
+            )
             while True:
                 batch = await _next_batch(connection)
                 if not batch:
@@ -199,7 +226,9 @@ async def _run_worker() -> None:
                         """,
                         batch["batch_id"],
                     )
-                    logger.info("Processed import batch %s: %s", batch["batch_id"], report)
+                    summary = {key: value for key, value in report.items() if key != "property_ids"}
+                    summary["property_count"] = len(report.get("property_ids") or [])
+                    logger.info("Processed import batch %s: %s", batch["batch_id"], summary)
                 except Exception:
                     logger.exception("Import batch %s failed", batch["batch_id"])
                     await connection.execute(
