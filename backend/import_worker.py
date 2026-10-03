@@ -173,8 +173,11 @@ async def _run_worker() -> None:
     async with pool.acquire() as connection:
         locked = await connection.fetchval("SELECT pg_try_advisory_lock($1)", _ADVISORY_LOCK_ID)
         if not locked:
-            logger.info("Another import worker owns the advisory lock")
-            return
+            logger.info("Another import worker owns the advisory lock; waiting for handoff")
+            while not locked:
+                await asyncio.sleep(_POLL_SECONDS)
+                locked = await connection.fetchval("SELECT pg_try_advisory_lock($1)", _ADVISORY_LOCK_ID)
+            logger.info("Import worker acquired the advisory lock after handoff")
         try:
             # A restart may have interrupted a batch after it was claimed. All
             # writes are deterministic/upserts, so safely resume it.
