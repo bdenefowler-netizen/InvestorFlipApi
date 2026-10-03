@@ -187,12 +187,26 @@ function preMoney(value: unknown): string {
   return Number.isFinite(numeric) ? `$${Math.round(numeric).toLocaleString()}` : plain(value);
 }
 
+function preLegalDescription(item: CountyCodeRecord): unknown {
+  const record = item as any;
+  // Prefer the source's explicit legal-description column. Older imports could
+  // populate the canonical field from "Property / Legal Description", which
+  // some county workbooks use for the street address instead.
+  return preField(
+    { ...record, legal_description: null } as CountyCodeRecord,
+    "Legal Description",
+    "Legal Description 1",
+    "Property Legal Description",
+    "Legal Property Description",
+  ) ?? record.legal_description;
+}
+
 const PRE_FORECLOSURE_COLUMNS: Column[] = [
   { key: "address", label: "PROPERTY ADDRESS", width: 230, strong: true, value: (i) => plain(preField(i, "situs_address", "address", "Property Address")) },
   { key: "tad", label: "TAD ACCOUNT #", width: 125, value: (i) => plain(preField(i, "account_id", "TAD Account #", "TAD Account Number")) },
   { key: "apn", label: "TAX ACCOUNT / APN", width: 135, value: (i) => plain(preField(i, "parcel_id", "apn", "Tax Account/APN")) },
   { key: "cause", label: "COUNTY CAUSE NUMBER", width: 155, value: (i) => plain(preField(i, "cause_number", "county_cause_number", "County Cause Number")) },
-  { key: "legal", label: "LEGAL DESCRIPTION", width: 245, value: (i) => plain(preField(i, "legal_description", "Legal Description", "Legal Description 1", "Property/Legal Description", "Property Legal Description", "Legal Property Description")) },
+  { key: "legal", label: "LEGAL DESCRIPTION", width: 245, value: (i) => plain(preLegalDescription(i)) },
   { key: "owner", label: "CURRENT OWNER", width: 190, value: (i) => plain(preField(i, "owner_name", "owner", "Current Owner")) },
   { key: "mailing", label: "TAD OWNER MAILING ADDRESS", width: 230, value: (i) => plain(preField(i, "owner_mailing_address", "TAD Owner Mailing Address")) },
   { key: "auction", label: "SCHEDULED AUCTION", width: 140, value: (i) => plain(preField(i, "auction_date", "scheduled_auction", "Scheduled Auction")) },
