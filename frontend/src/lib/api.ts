@@ -275,10 +275,16 @@ export type CountyRecord = {
   updated_at?: string;
   tad_raw?: Record<string, unknown>;
   tax_roll_raw?: Record<string, unknown>;
+  raw_import_row?: Record<string, unknown>;
 };
 
 export type CountyRecordStats = {
   total: number;
+  uploaded?: number;
+  pre_foreclosure?: number;
+  probate?: number;
+  with_code_violations?: number;
+  open_code_violations?: number;
   with_tad: number;
   with_tax_roll: number;
   tax_delinquent: number;
@@ -343,7 +349,7 @@ export async function getProperties(
 }
 
 export async function getCountyRecords(
-  source: "all" | "tad" | "tax_roll" | "tax_delinquent" = "all",
+  source: "all" | "uploaded" | "tad" | "tax_roll" | "tax_delinquent" | "code_violations" | "pre_foreclosure" | "probate" = "all",
   search = "",
   page = 1,
   limit = 75,
@@ -362,7 +368,7 @@ export async function getCountyRecord(id: string): Promise<CountyRecord> {
 }
 
 export function countyRecordsCsvUrl(
-  source: "all" | "tad" | "tax_roll" | "tax_delinquent" = "all",
+  source: "all" | "uploaded" | "tad" | "tax_roll" | "tax_delinquent" | "code_violations" | "pre_foreclosure" | "probate" = "all",
 ): string {
   return `${API}/county-records/export.csv?source=${encodeURIComponent(source)}`;
 }

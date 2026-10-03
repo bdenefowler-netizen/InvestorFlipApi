@@ -82,8 +82,8 @@ export default function AddScreen() {
         </Pressable>
 
         {result ? <View style={s.ok}>
-          <Text style={s.okTitle}>✓ {active.label} accepted</Text>
-          <Text style={s.hint}>{result.accepted} accepted · {result.inserted} new · {result.updated} updated · {result.rejected} rejected</Text>
+          <Text style={s.okTitle}>✓ {active.label} safely received</Text>
+          <Text style={s.hint}>{result.staged ?? result.accepted} staged · matching and enrichment are processing in the background · {result.rejected} rejected</Text>
           <Pressable onPress={() => router.push("/county" as any)}><Text style={s.link}>Open County Records →</Text></Pressable>
         </View> : null}
         {error ? <View style={s.err}><Text style={s.errText}>{error}</Text></View> : null}
