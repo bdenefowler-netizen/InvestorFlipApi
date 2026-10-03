@@ -40,7 +40,16 @@ async def _next_batch(connection) -> Optional[Dict[str, Any]]:
         SELECT batch_id, category, source_file, categories
         FROM import_staging
         WHERE status = 'staged'
-        ORDER BY created_at, row_number
+        ORDER BY
+            CASE category
+                WHEN 'pre_foreclosure' THEN 0
+                WHEN 'code_violations' THEN 1
+                WHEN 'probate' THEN 2
+                WHEN 'owner' THEN 3
+                ELSE 4
+            END,
+            created_at,
+            row_number
         LIMIT 1
         """
     )
