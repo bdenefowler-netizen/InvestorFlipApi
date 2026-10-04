@@ -9,8 +9,8 @@ import intake as legacy
 
 TAD=("tad account #","tad account number","tad account","account id","account_id","prop_id","property id","appraisal district number")
 APN=("apn","parcel id","parcel","tax id/apn","tax account/apn","tax account apn","pin")
-LEGAL=("legal description","legal description 1","property/legal description","legal desc","legal")
-ADDR=("property address","situs address","site address","violation address","decedent property address","matched address","location address","address")
+LEGAL=("legal description","legal description 1","property/legal description","property legal description","legal property description","legal desc","legal")
+ADDR=("property address","situs address","site address","violation address","decedent property address","decedent address","matched address","location address","address")
 OWNER=("owner","owner name","current owner","property owner","seller")
 PHONE=("phone","phone number","owner phone","seller phone")
 EMAIL=("email","owner email","seller email")
@@ -50,6 +50,7 @@ def _category(source:str)->str:
 
 def _ident(row:Mapping[str,Any])->Dict[str,str]:
     a=_get(row,ADDR); l=_get(row,LEGAL)
+    if _key(a) in {"none listed","none","n a","na","unknown","not available"}: a=""
     return {
         "address":a, "address_key":canonical_street_key(a) if a else "",
         "tad":_get(row,TAD), "apn":_get(row,APN),
@@ -82,7 +83,7 @@ def _apply_source(r:Dict[str,Any], cat:str)->None:
     elif cat=="probate":
         r.update(has_probate=True,listing_type="Probate")
     elif cat=="code_violations":
-        r["has_uploaded_code_violations"]=True
+        r.update(has_uploaded_code_violations=True,has_code_violations=True,listing_type="Code Violation")
     elif cat=="tad":
         r["has_uploaded_tad"]=True
     elif cat=="tax":
@@ -207,7 +208,7 @@ async def upsert_import_records(database:PostgresDatabase, rows:Iterable[Mapping
             for f,v in r.items():
                 if _meaningful(v) and f not in {"id","created_at"}: base[f]=v
             base["listing_sources"]=_union(base.get("listing_sources"),r.get("listing_sources"))
-            base["source_categories"]=_union(base.get("source_categories"),i.get("source_categories"))
+            base["source_categories"]=_union(base.get("source_categories"),r.get("source_categories"))
             duplicates+=1
         else: unique[k]=r
     ids=[]; inserted=updated=unmatched=0; matched_by={}

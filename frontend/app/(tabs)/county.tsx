@@ -20,7 +20,6 @@ import {
   countyRecordsCsvUrl,
   getCountyRecords,
   getCountyRecordStats,
-  getProperties,
   type CountyRecord,
   type CountyRecordStats,
 } from "@/src/lib/api";
@@ -32,6 +31,7 @@ type CountySource =
   | "uploaded"
   | "code_violations"
   | "pre_foreclosure"
+  | "probate"
   | "tad"
   | "tax_roll"
   | "tax_delinquent";
@@ -71,6 +71,7 @@ const SOURCES: { key: CountySource; label: string }[] = [
   { key: "uploaded", label: "Uploaded" },
   { key: "code_violations", label: "Code violations" },
   { key: "pre_foreclosure", label: "Pre-Foreclosure" },
+  { key: "probate", label: "Probate" },
   { key: "tax_delinquent", label: "Tax due" },
   { key: "tad", label: "TAD" },
   { key: "tax_roll", label: "Tax roll" },
@@ -157,6 +158,7 @@ const TAX_DUE_COLUMNS: Column[] = [
 
 function preField(item: CountyCodeRecord, ...keys: string[]): unknown {
   const record = item as any;
+  const normalizedKeys = new Set(keys.map((key) => key.toLowerCase().replace(/[^a-z0-9]/g, "")));
   for (const key of keys) {
     const value =
       record[key] ??
@@ -164,6 +166,17 @@ function preField(item: CountyCodeRecord, ...keys: string[]): unknown {
       record.feed_extra?.[key] ??
       record.raw_source_excerpt?.[key];
     if (value !== undefined && value !== null && value !== "") return value;
+  }
+  for (const source of [record, record.raw_import_row, record.feed_extra, record.raw_source_excerpt]) {
+    if (!source || typeof source !== "object") continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (
+        normalizedKeys.has(key.toLowerCase().replace(/[^a-z0-9]/g, ""))
+        && value !== undefined
+        && value !== null
+        && value !== ""
+      ) return value;
+    }
   }
   return null;
 }
@@ -174,12 +187,26 @@ function preMoney(value: unknown): string {
   return Number.isFinite(numeric) ? `$${Math.round(numeric).toLocaleString()}` : plain(value);
 }
 
+function preLegalDescription(item: CountyCodeRecord): unknown {
+  const record = item as any;
+  // Prefer the source's explicit legal-description column. Older imports could
+  // populate the canonical field from "Property / Legal Description", which
+  // some county workbooks use for the street address instead.
+  return preField(
+    { ...record, legal_description: null } as CountyCodeRecord,
+    "Legal Description",
+    "Legal Description 1",
+    "Property Legal Description",
+    "Legal Property Description",
+  ) ?? record.legal_description;
+}
+
 const PRE_FORECLOSURE_COLUMNS: Column[] = [
   { key: "address", label: "PROPERTY ADDRESS", width: 230, strong: true, value: (i) => plain(preField(i, "situs_address", "address", "Property Address")) },
   { key: "tad", label: "TAD ACCOUNT #", width: 125, value: (i) => plain(preField(i, "account_id", "TAD Account #", "TAD Account Number")) },
   { key: "apn", label: "TAX ACCOUNT / APN", width: 135, value: (i) => plain(preField(i, "parcel_id", "apn", "Tax Account/APN")) },
   { key: "cause", label: "COUNTY CAUSE NUMBER", width: 155, value: (i) => plain(preField(i, "cause_number", "county_cause_number", "County Cause Number")) },
-  { key: "legal", label: "LEGAL DESCRIPTION", width: 245, value: (i) => plain(preField(i, "legal_description", "Legal Description")) },
+  { key: "legal", label: "LEGAL DESCRIPTION", width: 245, value: (i) => plain(preLegalDescription(i)) },
   { key: "owner", label: "CURRENT OWNER", width: 190, value: (i) => plain(preField(i, "owner_name", "owner", "Current Owner")) },
   { key: "mailing", label: "TAD OWNER MAILING ADDRESS", width: 230, value: (i) => plain(preField(i, "owner_mailing_address", "TAD Owner Mailing Address")) },
   { key: "auction", label: "SCHEDULED AUCTION", width: 140, value: (i) => plain(preField(i, "auction_date", "scheduled_auction", "Scheduled Auction")) },
@@ -199,6 +226,34 @@ const PRE_FORECLOSURE_COLUMNS: Column[] = [
   { key: "assessed", label: "TOTAL ASSESSED VALUE", width: 150, value: (i) => preMoney(preField(i, "assessed_value", "appraised_value", "Total Assessed Value")) },
   { key: "market", label: "MARKET VALUE", width: 125, value: (i) => preMoney(preField(i, "market_value", "tax_roll_market_value", "Market Value")) },
   { key: "distress", label: "DISTRESS SCORE", width: 115, value: (i) => plain(preField(i, "distress_score", "Distress Score")) },
+];
+
+const CODE_VIOLATION_COLUMNS: Column[] = [
+  { key: "address", label: "VIOLATION ADDRESS", width: 230, strong: true, value: (i) => plain(preField(i, "situs_address", "address", "Violation_Address", "Violation Address")) },
+  { key: "complaint", label: "COMPLAINT TYPE", width: 230, value: (i) => plain(preField(i, "code_latest_complaint", "Complaint_Type_Description")) },
+  { key: "violationStatus", label: "VIOLATION STATUS", width: 145, value: (i) => plain(preField(i, "code_latest_status", "Violation_Current_Status")) },
+  { key: "caseStatus", label: "CASE STATUS", width: 135, value: (i) => plain(preField(i, "Case_Current_Status")) },
+  { key: "count", label: "VIOLATIONS", width: 92, value: (i) => plain(preField(i, "code_violation_count")) },
+  { key: "open", label: "OPEN", width: 72, value: (i) => plain(preField(i, "open_code_violation_count")), danger: (i) => Number(preField(i, "open_code_violation_count") || 0) > 0 },
+  { key: "cases", label: "CASE ID(S)", width: 175, value: (i) => plain(preField(i, "code_case_ids", "Case_ID")) },
+  { key: "violations", label: "VIOLATION ID(S)", width: 175, value: (i) => plain(preField(i, "code_violation_ids", "Violation_ID")) },
+  { key: "created", label: "CREATED", width: 125, value: (i) => plain(preField(i, "code_oldest_open_date", "Violation_Created_Date", "Case_Created_Date")) },
+  { key: "next", label: "NEXT ACTIVITY", width: 130, value: (i) => plain(preField(i, "code_next_activity_due", "Next_Activity_Due_Date")) },
+  { key: "updated", label: "UPDATED", width: 125, value: (i) => plain(preField(i, "code_latest_update", "Update_Date")) },
+];
+
+const PROBATE_COLUMNS: Column[] = [
+  { key: "case", label: "CASE NUMBER", width: 145, strong: true, value: (i) => plain(preField(i, "Case Number", "case_number")) },
+  { key: "estate", label: "ESTATE / DECEDENT", width: 205, value: (i) => plain(preField(i, "Estate/Decedent")) },
+  { key: "caseType", label: "CASE TYPE", width: 230, value: (i) => plain(preField(i, "Case Type")) },
+  { key: "filed", label: "DATE FILED", width: 110, value: (i) => plain(preField(i, "Date Filed")) },
+  { key: "court", label: "COURT", width: 75, value: (i) => plain(preField(i, "Court")) },
+  { key: "applicant", label: "APPLICANT(S)", width: 225, value: (i) => plain(preField(i, "Applicant(s) + Address", "Applicant")) },
+  { key: "applicantAddress", label: "APPLICANT ADDRESS", width: 250, value: (i) => plain(preField(i, "Applicant Address")) },
+  { key: "decedent", label: "DECEDENT", width: 210, value: (i) => plain(preField(i, "Decedent")) },
+  { key: "dod", label: "DATE OF DEATH", width: 120, value: (i) => plain(preField(i, "DOD", "Date of Death")) },
+  { key: "address", label: "DECEDENT PROPERTY ADDRESS", width: 250, value: (i) => plain(preField(i, "situs_address", "address", "Decedent Address", "Decedent Property Address")) },
+  { key: "events", label: "KEY EVENTS / HEARINGS", width: 430, value: (i) => plain(preField(i, "Key Events/Hearings")) },
 ];
 
 const DEFAULT_COLUMNS: Column[] = [
@@ -283,6 +338,10 @@ export default function CountyRecordsScreen() {
           ? TAX_DUE_COLUMNS
           : source === "pre_foreclosure"
             ? PRE_FORECLOSURE_COLUMNS
+            : source === "code_violations"
+              ? CODE_VIOLATION_COLUMNS
+              : source === "probate"
+                ? PROBATE_COLUMNS
             : DEFAULT_COLUMNS,
     [source],
   );
@@ -293,18 +352,12 @@ export default function CountyRecordsScreen() {
     else setLoading(true);
     setError(null);
     try {
-      if (source === "pre_foreclosure") {
-        const [properties, summary] = await Promise.all([getProperties("pre_foreclosure", search), getCountyRecordStats()]);
-        setItems(properties.items as unknown as CountyRecord[]);
-        setStats(summary); setPage(1); setPages(1); setTotal(properties.total ?? properties.count);
-      } else {
-        const [records, summary] = await Promise.all([
-          getCountyRecords(source as any, search, nextPage),
-          append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
-        ]);
-        setItems((current) => (append ? [...current, ...records.items] : records.items));
-        setStats(summary); setPage(records.page); setPages(records.pages); setTotal(records.total);
-      }
+      const [records, summary] = await Promise.all([
+        getCountyRecords(source as any, search, nextPage),
+        append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
+      ]);
+      setItems((current) => (append ? [...current, ...records.items] : records.items));
+      setStats(summary); setPage(records.page); setPages(records.pages); setTotal(records.total);
     } catch (e: any) {
       setError(e?.message || "County records could not be loaded.");
     } finally {
@@ -329,7 +382,7 @@ export default function CountyRecordsScreen() {
   };
 
   const loadMore = () => {
-    if (source !== "pre_foreclosure" && !loading && !loadingMore && page < pages) load(page + 1, true);
+    if (!loading && !loadingMore && page < pages) load(page + 1, true);
   };
 
   const syncCodeViolations = async () => {
@@ -359,7 +412,9 @@ export default function CountyRecordsScreen() {
     const record = item as CountyCodeRecord;
     return (
       <Pressable
-        onPress={() => router.push((source === "pre_foreclosure" ? `/property/${encodeURIComponent(item.id)}` : `/county/${encodeURIComponent(item.id)}`) as Href)}
+        onPress={() => router.push((source === "pre_foreclosure"
+          ? `/property/${encodeURIComponent(item.id)}`
+          : `/county/${encodeURIComponent(item.id)}`) as Href)}
         style={({ pressed }) => [
           styles.row,
           index % 2 === 1 && styles.rowAlternate,
@@ -409,9 +464,9 @@ export default function CountyRecordsScreen() {
               )}
               <Text style={styles.exportText}>{syncingCode ? "Syncing…" : "Sync Code"}</Text>
             </Pressable>
-            <Pressable style={styles.exportButton} onPress={() => Linking.openURL(source === "pre_foreclosure" ? `${API_BASE}/api/export.xlsx?filter=pre_foreclosure` : countyRecordsCsvUrl(source as any))}>
+            <Pressable style={styles.exportButton} onPress={() => Linking.openURL(countyRecordsCsvUrl(source as any))}>
               <Ionicons name="download-outline" size={17} color={colors.onBrandPrimary} />
-              <Text style={styles.exportText}>{source === "pre_foreclosure" ? "XLSX" : "CSV"}</Text>
+              <Text style={styles.exportText}>CSV</Text>
             </Pressable>
           </View>
         </View>

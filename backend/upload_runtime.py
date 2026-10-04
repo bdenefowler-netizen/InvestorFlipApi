@@ -309,7 +309,10 @@ async def public_county_workbook_complete(
         if missing:
             raise HTTPException(409, f"Upload incomplete; missing {len(missing)} chunk(s)")
 
-        assembled_path = upload_dir / "assembled.upload"
+        # Keep the original extension. openpyxl validates the path suffix before
+        # inspecting the ZIP payload and rejects the former ``assembled.upload``
+        # name even when the bytes are a valid XLSX workbook.
+        assembled_path = upload_dir / f"assembled{Path(filename).suffix.lower()}"
         with assembled_path.open("wb") as destination:
             for part in parts:
                 with part.open("rb") as source:
@@ -363,7 +366,10 @@ async def public_county_workbook_abort(upload_id: str):
 def main() -> None:
     """Start InvestorFlip after upload routes have been registered."""
     import uvicorn
+    from import_worker import start_import_worker
     from server import app
+
+    start_import_worker(app)
 
     uvicorn.run(
         app,

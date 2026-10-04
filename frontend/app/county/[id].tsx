@@ -119,6 +119,7 @@ export default function CountyRecordDetail() {
 
           <RawSection title="All TAD source fields" data={record.tad_raw} />
           <RawSection title="All tax-roll source fields" data={record.tax_roll_raw} />
+          <RawSection title="All uploaded source fields" data={record.raw_import_row} />
         </ScrollView>
       ) : null}
     </SafeAreaView>

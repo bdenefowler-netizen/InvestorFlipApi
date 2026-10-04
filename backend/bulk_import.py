@@ -267,6 +267,8 @@ def _prepare_row(row: Mapping[str, Any], categories: List[str]) -> Dict[str, Any
         "Legal Description",
         "Legal Description 1",
         "Property/Legal Description",
+        "Property Legal Description",
+        "Legal Property Description",
     )
     cause = _row_lookup(
         row,
@@ -302,7 +304,7 @@ async def _tag_imported_properties(db, ids: List[str], categories: List[str]) ->
     elif primary == "probate":
         fields["has_probate"] = True
     elif primary == "code_violations":
-        fields["has_uploaded_code_violations"] = True
+        fields.update(has_uploaded_code_violations=True, has_code_violations=True)
     elif primary == "tad":
         fields["has_uploaded_tad"] = True
     if "tax_roll" in categories:

@@ -37,7 +37,8 @@ _ACCOUNT_HEADERS = {
 }
 _ADDRESS_HEADERS = {
     "address", "property address", "situs address", "street address", "site address",
-    "full address", "matched address",
+    "full address", "matched address", "violation address", "decedent address",
+    "decedent property address",
 }
 
 
@@ -86,6 +87,8 @@ def _row_identity(row: Mapping[str, Any]) -> str:
     if account:
         return f"account:{account}"
     address = str(_first_value(row, _ADDRESS_HEADERS) or "").strip()
+    if address.lower() in {"(none listed)", "none listed", "none", "n/a", "na", "unknown"}:
+        return ""
     street_key = canonical_street_key(address)
     return f"address:{street_key}" if street_key else ""
 
@@ -103,7 +106,10 @@ def _canonicalize_research_row(row: Mapping[str, Any], sheet_name: str) -> Dict[
     out["__sheet_name"] = sheet_name
 
     aliases = {
-        "address": ("property address", "situs address", "matched address", "street address"),
+        "address": (
+            "property address", "situs address", "matched address", "street address",
+            "violation address", "decedent address", "decedent property address",
+        ),
         "owner": ("grantor/owner", "grantor", "current owner", "owner name"),
         "account id": ("tax account/apn", "tax account apn", "account number", "account_num", "pin", "apn"),
         "legal description": ("legal description", "property/legal description"),
@@ -206,6 +212,15 @@ def _read_upload_rows(raw: bytes, suffix: str, filename: str) -> tuple[List[Dict
         sheet_records = frame.to_dict(orient="records")
         reports.append({"sheet": str(sheet_name), "rows": len(sheet_records)})
         all_rows.extend((str(sheet_name), row) for row in sheet_records)
+    # Distress/event workbooks contain many legitimate rows for one address
+    # (multiple violations, hearings, or foreclosure events). They must remain
+    # separate until their source-specific processor aggregates them.
+    event_prefixes = ("code_violation__", "probate__", "preforeclosure__")
+    if filename.lower().startswith(event_prefixes):
+        return [
+            _canonicalize_research_row(row, sheet_name)
+            for sheet_name, row in all_rows
+        ], reports
     return _merge_workbook_rows(all_rows), reports
 
 
@@ -326,11 +341,81 @@ def _display_uploaded(record: Dict[str, Any]) -> Dict[str, Any]:
     item = dict(record)
     item["has_uploaded"] = True
     item["record_kind"] = "uploaded"
-    item["sources"] = ["Uploaded"]
+    category = str(item.get("upload_category") or item.get("source_category") or "").replace("_", " ").title()
+    item["sources"] = [label for label in ("Uploaded", category) if label]
     item["appraised_value"] = item.get("appraised_value") or item.get("assessed_value")
     item["market_value"] = item.get("market_value") or item.get("assessed_value")
     item.update(completeness(item))
     return item
+
+
+def _display_staged(record: Mapping[str, Any]) -> Dict[str, Any]:
+    payload = record.get("payload")
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    raw = dict(payload or {})
+    address = _first_value(raw, _ADDRESS_HEADERS) or raw.get("address") or ""
+    return {
+        **raw,
+        "id": str(record.get("id")),
+        "situs_address": str(address or "").strip(),
+        "raw_import_row": raw,
+        "record_kind": "staged_import",
+        "import_status": record.get("status"),
+        "source_file": record.get("source_file"),
+        "sources": ["Uploaded", "Probate"],
+    }
+
+
+async def _list_staged_source(db, source: str, search: Optional[str], page: int, limit: int) -> Dict[str, Any]:
+    pool = await db.connect()
+    offset = (page - 1) * limit
+    async with pool.acquire() as connection:
+        if search and search.strip():
+            pattern = f"%{search.strip()}%"
+            total = await connection.fetchval(
+                "SELECT count(*) FROM import_staging WHERE category = $1 AND payload::text ILIKE $2",
+                source,
+                pattern,
+            )
+            rows = await connection.fetch(
+                """
+                SELECT id, source_file, payload, status
+                FROM import_staging
+                WHERE category = $1 AND payload::text ILIKE $2
+                ORDER BY row_number
+                LIMIT $3 OFFSET $4
+                """,
+                source,
+                pattern,
+                limit,
+                offset,
+            )
+        else:
+            total = await connection.fetchval(
+                "SELECT count(*) FROM import_staging WHERE category = $1",
+                source,
+            )
+            rows = await connection.fetch(
+                """
+                SELECT id, source_file, payload, status
+                FROM import_staging
+                WHERE category = $1
+                ORDER BY row_number
+                LIMIT $2 OFFSET $3
+                """,
+                source,
+                limit,
+                offset,
+            )
+    total = int(total or 0)
+    return {
+        "count": len(rows),
+        "total": total,
+        "page": page,
+        "pages": max(1, (total + limit - 1) // limit),
+        "items": [_display_staged(dict(row)) for row in rows],
+    }
 
 
 def _source_query(source: str) -> Dict[str, Any]:
@@ -342,6 +427,26 @@ def _source_query(source: str) -> Dict[str, Any]:
         return {"tax_delinquent": True}
     if source == "code_violations":
         return {"has_code_violations": True}
+    return {}
+
+
+def _property_source_query(source: str) -> Dict[str, Any]:
+    if source == "uploaded":
+        return {"$or": [
+            {"raw_import_row": {"$exists": True}},
+            {"has_uploaded": True},
+        ]}
+    if source == "pre_foreclosure":
+        return {"$or": [
+            {"pre_foreclosure": True},
+            {"has_pre_foreclosure": True},
+            {"upload_category": "pre_foreclosure"},
+        ]}
+    if source == "probate":
+        return {"$or": [
+            {"has_probate": True},
+            {"upload_category": "probate"},
+        ]}
     return {}
 
 
@@ -370,9 +475,16 @@ async def county_record_stats():
         await db.connect()
         latest = await db.county_sync_log.find({}, {"_id": 0}).sort("created_at", -1).limit(8).to_list(length=8)
         cursor = await db.sync_log.find_one({"name": "county_tad_cursor"}) or {}
+        pool = await db.connect()
+        async with pool.acquire() as connection:
+            probate_count = await connection.fetchval(
+                "SELECT count(*) FROM import_staging WHERE category = 'probate'"
+            )
         return {
             "total": await db.county_records.count_documents({}),
-            "uploaded": await db.properties.count_documents({"raw_import_row": {"$exists": True}}),
+            "uploaded": await db.properties.count_documents(_property_source_query("uploaded")),
+            "pre_foreclosure": await db.properties.count_documents(_property_source_query("pre_foreclosure")),
+            "probate": int(probate_count or 0),
             "with_tad": await db.county_records.count_documents({"has_tad": True}),
             "with_tax_roll": await db.county_records.count_documents({"has_tax_roll": True}),
             "tax_delinquent": await db.county_records.count_documents({"tax_delinquent": True}),
@@ -388,7 +500,7 @@ async def county_record_stats():
 
 @router.get("/county-records")
 async def list_county_records(
-    source: str = Query("all", pattern="^(all|uploaded|tad|tax_roll|tax_delinquent|code_violations)$"),
+    source: str = Query("all", pattern="^(all|uploaded|tad|tax_roll|tax_delinquent|code_violations|pre_foreclosure|probate)$"),
     search: Optional[str] = Query(None, max_length=160),
     page: int = Query(1, ge=1),
     limit: int = Query(75, ge=1, le=200),
@@ -398,8 +510,11 @@ async def list_county_records(
         await db.connect()
         search_query = _search_query(search)
 
-        if source == "uploaded":
-            query: Dict[str, Any] = {"raw_import_row": {"$exists": True}}
+        if source == "probate":
+            return await _list_staged_source(db, source, search, page, limit)
+
+        if source in {"uploaded", "pre_foreclosure"}:
+            query: Dict[str, Any] = _property_source_query(source)
             if search_query:
                 query = {"$and": [query, search_query]}
             total = await db.properties.count_documents(query)
@@ -432,7 +547,7 @@ async def list_county_records(
         items = [_display_record(item) for item in docs]
 
         if source == "all" and page == 1:
-            uploaded_query: Dict[str, Any] = {"raw_import_row": {"$exists": True}}
+            uploaded_query: Dict[str, Any] = _property_source_query("uploaded")
             if search_query:
                 uploaded_query = {"$and": [uploaded_query, search_query]}
             uploaded_docs = await (
@@ -464,7 +579,7 @@ async def list_county_records(
 
 
 @router.get("/county-records/export.csv")
-async def export_county_records(source: str = Query("all", pattern="^(all|uploaded|tad|tax_roll|tax_delinquent|code_violations)$")):
+async def export_county_records(source: str = Query("all", pattern="^(all|uploaded|tad|tax_roll|tax_delinquent|code_violations|pre_foreclosure|probate)$")):
     fields = [
         "account_id", "parcel_id", "situs_address", "city", "state", "zip",
         "owner_name", "owner_mailing_address", "mailing_city", "mailing_state", "mailing_zip",
@@ -505,8 +620,9 @@ async def export_county_records(source: str = Query("all", pattern="^(all|upload
         })
         try:
             await db.connect()
-            collection = db.properties if source == "uploaded" else db.county_records
-            query = {"raw_import_row": {"$exists": True}} if source == "uploaded" else _source_query(source)
+            property_source = source in {"uploaded", "pre_foreclosure", "probate"}
+            collection = db.properties if property_source else db.county_records
+            query = _property_source_query(source) if property_source else _source_query(source)
             while True:
                 docs = await (
                     collection.find(query, projection)
@@ -558,6 +674,15 @@ async def get_county_record(record_id: str):
         if record:
             return _display_record(record)
         uploaded = await db.properties.find_one({"id": record_id, "raw_import_row": {"$exists": True}}, {"_id": 0})
+        if not uploaded:
+            pool = await db.connect()
+            async with pool.acquire() as connection:
+                staged = await connection.fetchrow(
+                    "SELECT id, source_file, payload, status FROM import_staging WHERE id = $1",
+                    record_id,
+                )
+            if staged:
+                return _display_staged(dict(staged))
         if uploaded:
             return _display_uploaded(uploaded)
         raise HTTPException(status_code=404, detail="County record not found")
