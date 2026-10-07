@@ -65,6 +65,7 @@ from saved_searches_routes import router as saved_searches_router
 from county_records_routes import router as county_records_router
 from zillow_enrich_routes import router as zillow_enrich_router
 from rapidapi_extra_routes import router as rapidapi_extra_router
+from storage_housekeeping import log_storage_summary, router as storage_housekeeping_router
 from auto_sync import start_background_sync
 from admin_auth import requires_admin_key
 
@@ -2865,6 +2866,7 @@ app.include_router(saved_searches_router)
 app.include_router(county_records_router)
 app.include_router(zillow_enrich_router)  # Zillow property enrichment
 app.include_router(rapidapi_extra_router)  # Admin-protected optional provider diagnostics
+app.include_router(storage_housekeeping_router)  # Preview-first database retention tools
 app.include_router(api_router)
 
 cors_origins = [
@@ -2885,6 +2887,9 @@ app.add_middleware(
 async def on_startup():
     await db.connect()
     count = await db.properties.count_documents({})
+    # The report scans JSONB sizes across the production tables. Run it after
+    # startup so Railway health checks are never blocked by the diagnostic.
+    asyncio.create_task(log_storage_summary(db))
     seed_demo = os.environ.get("SEED_DEMO_DATA", "false").lower() == "true"
 
     # Do NOT seed demo data by default anymore. This prevents fake commercial-looking addresses
