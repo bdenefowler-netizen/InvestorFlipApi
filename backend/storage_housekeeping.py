@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Literal
+from typing import Any, Dict, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -17,18 +17,28 @@ CONFIRMATION_PHRASE = "DELETE SAFE DATABASE JUNK"
 
 
 class CleanupRequest(BaseModel):
-    action: Literal["safe_housekeeping", "processed_staging", "old_sync_logs"] = "safe_housekeeping"
+    action: Literal[
+        "safe_housekeeping", "processed_staging", "old_sync_logs", "staging_batch"
+    ] = "safe_housekeeping"
     retention_days: int = Field(default=7, ge=1, le=365)
     keep_log_rows: int = Field(default=100, ge=10, le=5000)
+    batch_id: Optional[str] = Field(default=None, min_length=36, max_length=36)
     dry_run: bool = True
     confirmation: str = ""
 
 
 def require_cleanup_confirmation(request: CleanupRequest) -> None:
-    if not request.dry_run and request.confirmation != CONFIRMATION_PHRASE:
+    phrase = (
+        f"DELETE STAGING BATCH {request.batch_id}"
+        if request.action == "staging_batch"
+        else CONFIRMATION_PHRASE
+    )
+    if request.action == "staging_batch" and not request.batch_id:
+        raise HTTPException(status_code=422, detail="batch_id is required for staging_batch")
+    if not request.dry_run and request.confirmation != phrase:
         raise HTTPException(
             status_code=409,
-            detail=f"Set confirmation exactly to: {CONFIRMATION_PHRASE}",
+            detail=f"Set confirmation exactly to: {phrase}",
         )
 
 
@@ -156,6 +166,33 @@ async def build_cleanup_preview(db: PostgresDatabase, request: CleanupRequest) -
             )
             staging = dict(row or staging)
 
+        batch = None
+        if request.action == "staging_batch":
+            if not request.batch_id:
+                raise HTTPException(status_code=422, detail="batch_id is required for staging_batch")
+            if not await _table_exists(connection, "import_staging"):
+                raise HTTPException(status_code=404, detail="import_staging does not exist")
+            rows = await connection.fetch(
+                """
+                SELECT source_file, category, status, count(*)::bigint AS rows,
+                       COALESCE(sum(pg_column_size(payload)), 0)::bigint AS payload_bytes,
+                       min(created_at) AS created_at
+                FROM import_staging
+                WHERE batch_id = $1
+                GROUP BY source_file, category, status
+                """,
+                request.batch_id,
+            )
+            if not rows:
+                raise HTTPException(status_code=404, detail="Staging batch not found")
+            batch = {
+                "batch_id": request.batch_id,
+                "groups": [dict(row) for row in rows],
+                "contains_processing_rows": any(row["status"] == "processing" for row in rows),
+                "rows": sum(int(row["rows"]) for row in rows),
+                "payload_bytes": sum(int(row["payload_bytes"]) for row in rows),
+            }
+
         logs: Dict[str, int] = {}
         if request.action in {"safe_housekeeping", "old_sync_logs"}:
             for table in ("live_sync_log", "county_sync_log"):
@@ -170,8 +207,13 @@ async def build_cleanup_preview(db: PostgresDatabase, request: CleanupRequest) -
             "retention_days": request.retention_days,
             "keep_log_rows": request.keep_log_rows,
             "processed_staging": staging,
+            "staging_batch": batch,
             "old_sync_logs": logs,
-            "confirmation_required": CONFIRMATION_PHRASE,
+            "confirmation_required": (
+                f"DELETE STAGING BATCH {request.batch_id}"
+                if request.action == "staging_batch"
+                else CONFIRMATION_PHRASE
+            ),
             "properties_deleted": 0,
         }
 
@@ -187,6 +229,23 @@ async def execute_cleanup(db: PostgresDatabase, request: CleanupRequest) -> Dict
     deleted_logs: Dict[str, int] = {}
     async with pool.acquire() as connection:
         async with connection.transaction():
+            if request.action == "staging_batch":
+                assert request.batch_id is not None
+                processing = int(await connection.fetchval(
+                    "SELECT count(*) FROM import_staging WHERE batch_id = $1 AND status = 'processing'",
+                    request.batch_id,
+                ) or 0)
+                if processing:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="This batch is currently processing and cannot be deleted",
+                    )
+                status = await connection.execute(
+                    "DELETE FROM import_staging WHERE batch_id = $1",
+                    request.batch_id,
+                )
+                deleted_staging = int(status.rsplit(" ", 1)[-1])
+
             if request.action in {"safe_housekeeping", "processed_staging"} and await _table_exists(connection, "import_staging"):
                 status = await connection.execute(
                     """
