@@ -64,6 +64,7 @@ from add_all_routes import router as all_router
 from saved_searches_routes import router as saved_searches_router
 from county_records_routes import router as county_records_router
 from zillow_enrich_routes import router as zillow_enrich_router
+from rapidapi_extra_routes import router as rapidapi_extra_router
 from auto_sync import start_background_sync
 from admin_auth import requires_admin_key
 
@@ -430,8 +431,42 @@ def is_user_visible_property(property_record: Dict[str, Any]) -> bool:
     return not is_synthetic_property(property_record) and is_allowed_flip_house(property_record)
 
 
+def sanitize_property_semantics(property_record: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove legacy listing claims that were invented by county-file intake.
+
+    Older spreadsheet imports marked every row live and defaulted blank status
+    text to ``For Sale``. Preserve the county/tax evidence, but do not present a
+    parcel or owner row as an active market listing.
+    """
+    cleaned = dict(property_record)
+    source = str(cleaned.get("data_source") or "").lower()
+    is_evidence_upload = (
+        " + " not in source
+        and any(
+            marker in source
+            for marker in (
+                "user upload [tad]",
+                "user upload [tax]",
+                "user upload [owner]",
+                "tad_residential_base",
+            )
+        )
+    )
+    if is_evidence_upload:
+        cleaned["is_live_listing"] = False
+        if str(cleaned.get("listing_type") or "").strip().lower() == "for sale":
+            cleaned["listing_type"] = None
+        if str(cleaned.get("listing_status") or "").strip().lower() == "for sale":
+            cleaned["listing_status"] = None
+
+    city = str(cleaned.get("city") or "").strip()
+    if city and not re.search(r"[A-Za-z]", city):
+        cleaned["city"] = ""
+    return cleaned
+
+
 def decorate_opportunity(property_record: Dict[str, Any]) -> Dict[str, Any]:
-    decorated = hydrate_listing_record(property_record)
+    decorated = hydrate_listing_record(sanitize_property_semantics(property_record))
     decorated.update(classify_opportunity(decorated))
     return decorated
 
@@ -1151,6 +1186,26 @@ async def fetch_live_fort_worth_residential_listings(
     return result if include_report else merged
 
 
+def _direct_listing_provider_state(
+    reports: List[Dict[str, Any]],
+    *,
+    merged_total: int,
+    returned_count: int,
+    limit: int,
+) -> tuple[bool, bool]:
+    """Return (succeeded, capped) for direct market-listing APIs only."""
+    succeeded = any(report.get("status") == "success" for report in reports)
+    capped = (
+        merged_total > returned_count
+        or any(
+            report.get("status") == "success"
+            and int(report.get("accepted") or 0) >= limit
+            for report in reports
+        )
+    )
+    return succeeded, capped
+
+
 async def sync_live_listings_to_database(
     database: PostgresDatabase,
     limit: int = 50,
@@ -1162,7 +1217,11 @@ async def sync_live_listings_to_database(
     """
     fetched = await fetch_live_fort_worth_residential_listings(limit=limit, include_report=True)
     listings = fetched["items"]
-    provider_report = fetched["providers"]
+    # Keep the direct API report separate. Feed/scraper reports are appended to
+    # the combined response below, but must never authorize retirement of live
+    # API inventory.
+    direct_provider_report = list(fetched["providers"])
+    provider_report = list(direct_provider_report)
     previous = await database.properties.find(
         {"is_live_listing": True}, {"_id": 0}
     ).to_list(length=5000)
@@ -1245,17 +1304,11 @@ async def sync_live_listings_to_database(
         })
 
     missed = retired = 0
-    api_provider_succeeded = any(
-        report.get("status") == "success"
-        and not str(report.get("provider") or "").startswith(("Foreclosure Finder", "TX Foreclosure"))
-        for report in fetched["providers"]
-    )
-    provider_result_capped = (
-        fetched["merged_total"] > len(listings)
-        or any(
-            report.get("status") == "success" and int(report.get("accepted") or 0) >= limit
-            for report in fetched["providers"]
-        )
+    api_provider_succeeded, provider_result_capped = _direct_listing_provider_state(
+        direct_provider_report,
+        merged_total=fetched["merged_total"],
+        returned_count=len(listings),
+        limit=limit,
     )
     retirement_safe = api_provider_succeeded and not provider_result_capped
     if retirement_safe:
@@ -1277,7 +1330,7 @@ async def sync_live_listings_to_database(
             )
 
     direct_provider_failed = any(
-        report.get("status") == "error" for report in fetched["providers"]
+        report.get("status") == "error" for report in direct_provider_report
     )
     overall_status = (
         "success" if api_provider_succeeded
@@ -2698,7 +2751,10 @@ async def calculator_lookup(address: str = Query(..., min_length=5)):
             "address": address,
             "source": "rapidapi_property_details",
             "price": details.get("price"),
-            "arv_estimate": details.get("price"),  # Use listing price as ARV starting point
+            # Asking price is not an after-repair value. Keep the observed
+            # listing price useful without silently manufacturing an ARV.
+            "arv_estimate": None,
+            "arv_status": "unknown - verified sold comps and repair scope required",
             "bedrooms": details.get("bedrooms"),
             "bathrooms": details.get("bathrooms"),
             "living_area": details.get("living_area"),
@@ -2754,6 +2810,7 @@ app.include_router(all_router)  # FREE data sources (violations, foreclosures, O
 app.include_router(saved_searches_router)
 app.include_router(county_records_router)
 app.include_router(zillow_enrich_router)  # Zillow property enrichment
+app.include_router(rapidapi_extra_router)  # Admin-protected optional provider diagnostics
 app.include_router(api_router)
 
 cors_origins = [

@@ -36,10 +36,12 @@ TAD_MAX_RECORDS = 1000
 _REQUIRED_FIELDS = ",".join([
     "TAXPIN", "ACCOUNT", "OWNER_NAME", "OWNER_ADDR", "OWNER_CITY",
     "OWNER_ZIP", "SITUS_ADDR", "CITY", "STATE", "ZIPCODE",
+    "LEGAL_1", "LEGAL_2", "LEGAL_3", "LEGAL_4", "SubdivisionName",
     "BEDROOMS", "BATHROOMS", "YEAR_BUILT", "LIVING_ARE",
     "LAND_ACRES", "LAND_SQFT", "APPRAISEDV",
     "LAND_VALUE", "IMPR_VALUE", "TOTAL_VALU",
-    "DEED_DATE", "SCHOOL", "GARAGE_CAP",
+    "DEED_DATE", "SCHOOL", "GARAGE_CAP", "SW_POOL", "CENTRAL_HE", "CENTRAL_AI",
+    "PARCELTYPE", "DESCR",
 ])
 
 
@@ -137,6 +139,11 @@ def _parse_tad_property(raw: Dict[str, Any]) -> Dict[str, Any]:
         prop_type = "Vacant Lot" if not beds else prop_type
 
     garage = _scrape_number(raw.get("GARAGE_CAP"))
+    legal_description = " ".join(
+        str(raw.get(key) or "").strip()
+        for key in ("LEGAL_1", "LEGAL_2", "LEGAL_3", "LEGAL_4")
+        if str(raw.get(key) or "").strip()
+    )
 
     return {
         "id": f"tad-{raw.get('TAXPIN', uuid.uuid4().hex[:12])}",
@@ -176,6 +183,8 @@ def _parse_tad_property(raw: Dict[str, Any]) -> Dict[str, Any]:
         "account_id": raw.get("ACCOUNT"),
         "deed_date": deed_date,
         "school_district": raw.get("SCHOOL"),
+        "legal_description": legal_description,
+        "subdivision": raw.get("SubdivisionName"),
 
         "is_synthetic": False,
 

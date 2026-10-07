@@ -44,6 +44,7 @@ def _category(source:str)->str:
     if "code violation" in s: return "code_violations"
     if "probate" in s: return "probate"
     if "owner" in s: return "owner"
+    if "tax lien" in s or "tax delinquent" in s or "delinquent tax" in s: return "tax_lien"
     if "taxroll" in s or "tax roll" in s or "tax due" in s or re.search(r"(^|\s)tax(\s|$)",s): return "tax"
     if re.search(r"(^|\s)tad(\s|$)",s): return "tad"
     return "uploaded"
@@ -72,12 +73,18 @@ def _apply_source(r:Dict[str,Any], cat:str)->None:
     r["source_categories"]=cats
     r["source_category"]=cat
     r["is_live_listing"]=False
-    neutral=cat in {"tad","tax","owner","uploaded"}
+    neutral=cat in {"tad","tax","tax_lien","owner"}
     if neutral:
-        for k in ("pre_foreclosure","has_pre_foreclosure","has_probate","has_uploaded_code_violations"):
+        for k in ("pre_foreclosure","has_pre_foreclosure","has_probate","has_uploaded_code_violations",
+                  "fsbo_confirmed","wholesale"):
             r.pop(k,None)
-        if str(r.get("listing_type") or "").lower() in {"foreclosure","pre-foreclosure","probate","code violation"}:
-            r["listing_type"]=None
+        # County, tax, and owner files are evidence/enrichment, not listings.
+        # The legacy normalizer defaults every blank row to "For Sale"; remove
+        # that invented status and its equally invented motivation scores.
+        r["listing_type"]=None
+        r["listing_status"]=None
+        r["motivation_score"]=0
+        r["distress_score"]=0
     if cat=="pre_foreclosure":
         r.update(pre_foreclosure=True,has_pre_foreclosure=True,listing_type="Pre-Foreclosure")
     elif cat=="probate":
@@ -88,6 +95,8 @@ def _apply_source(r:Dict[str,Any], cat:str)->None:
         r["has_uploaded_tad"]=True
     elif cat=="tax":
         r["has_uploaded_tax"]=True
+    elif cat=="tax_lien":
+        r.update(has_uploaded_tax=True,tax_delinquent=True,listing_type="Tax Lien")
     elif cat=="owner":
         r["owner_upload"]=True
 
@@ -110,6 +119,16 @@ def normalize_import_row(row:Mapping[str,Any], source_name:str, row_number:int)-
     if i["mailing"]: r["owner_mailing_address"]=i["mailing"]
     if i["phone"]: r["owner_phone"]=i["phone"]
     if i["email"]: r["owner_email"]=i["email"]
+    # Some TAD workbooks use CITY for a numeric taxing-jurisdiction code. A
+    # numeric value such as 24.0 is not a municipality and must never become a
+    # display address. Keep it in raw_import_row for audit instead.
+    city=_text(r.get("city"))
+    if city and not re.search(r"[A-Za-z]",city): r["city"]=""
+    state=_text(r.get("state")).upper()
+    if state and not re.fullmatch(r"[A-Z]{2}",state): r["state"]="TX"
+    zip_code=_text(r.get("zip"))
+    match=re.search(r"\b(\d{5})(?:-\d{4})?\b",zip_code)
+    r["zip"]=match.group(1) if match else ""
     _apply_source(r,cat)
     if cat=="tad" and i["tad"]: r["tad_verified"]=True
     r["updated_at"]=now
@@ -163,10 +182,32 @@ def _merge(existing:Dict[str,Any],incoming:Dict[str,Any],method:str,confidence:i
     inc_owner=_text(incoming.get("owner_name")); old_owner=_text(existing.get("owner_name"))
     owner_ok=bool(owner_upload and inc_owner and old_owner and _owner(inc_owner)==_owner(old_owner))
     protected={"owner_name","owner_phone","owner_email","owner_mailing_address"}
+    neutral_fields={
+        "tad": {"account_id","apn","parcel_id","legal_description","legal_key","owner_name",
+                "owner_mailing_address","land_value","improvement_value","assessed_value",
+                "market_value","market_value_source","sqft","year_built","stories","garage",
+                "pool","hvac","quality","condition","improvement_type","effective_year",
+                "subdivision","land_use_code","has_uploaded_tad","tad_verified",
+                "raw_import_row","import_row_number","updated_at"},
+        "tax": {"account_id","apn","parcel_id","legal_description","legal_key","owner_name",
+                "owner_mailing_address","current_tax_amount_due","prior_tax_amount_due",
+                "annual_taxes","tax_delinquent","sale_status","cause_number","sale_date",
+                "purchaser","sale_amount","lead_action","has_uploaded_tax","raw_import_row",
+                "import_row_number","updated_at"},
+        "tax_lien": {"account_id","apn","parcel_id","legal_description","legal_key","owner_name",
+                     "owner_mailing_address","current_tax_amount_due","prior_tax_amount_due",
+                     "annual_taxes","tax_delinquent","sale_status","cause_number","sale_date",
+                     "purchaser","sale_amount","lead_action","has_uploaded_tax","raw_import_row",
+                     "import_row_number","updated_at"},
+        "owner": {"account_id","apn","parcel_id","legal_description","legal_key","owner_name",
+                  "owner_phone","owner_email","owner_mailing_address","owner_upload",
+                  "raw_import_row","import_row_number","updated_at"},
+    }
+    allowed=neutral_fields.get(str(cat))
     for k,v in incoming.items():
         if k in {"id","created_at","listing_sources","source_categories"} or not _meaningful(v): continue
+        if allowed is not None and k not in allowed: continue
         if owner_upload and k in protected and old_owner and not owner_ok: continue
-        if cat in {"tad","tax","owner","uploaded"} and k in {"listing_type","listing_status"}: continue
         out[k]=v
     out["id"]=existing.get("id") or incoming["id"]
     out["created_at"]=existing.get("created_at") or incoming.get("created_at")

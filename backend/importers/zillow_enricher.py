@@ -87,11 +87,10 @@ def parse_zillow(title: str, desc: str, url: str = "") -> dict[str, Any]:
         "zillow_url": url or None,
     }
 
-    # Zestimate: pick largest price, or the one right before "bed(s)"
-    prices = _extract_prices(text)
-    if prices:
-        result["zillow_estimate"] = max(prices)
-    m = re.search(r"\$([\d,]+)\D+(\d+)\s*bed", text, re.I)
+    # Only an explicitly labelled Zestimate is an estimate. Search snippets
+    # often contain asking price, prior sale, tax, and monthly payment; choosing
+    # the largest dollar amount silently assigns the wrong meaning.
+    m = re.search(r"zestimate(?:®)?[:\s]+\$?([\d,]+)", text, re.I)
     if m:
         v = int(m.group(1).replace(",", ""))
         if 10_000 <= v <= 10_000_000:
@@ -173,19 +172,13 @@ def parse_redfin(title: str, desc: str, url: str = "") -> dict[str, Any]:
         v = int(m.group(1).replace(",", ""))
         if 10_000 <= v <= 10_000_000:
             result["redfin_estimate"] = v
-    # Fallback: any "Estimate $X" pattern
+    # A generic Estimate label is acceptable on a Redfin-domain result.
     if not result["redfin_estimate"]:
         m = re.search(r"estimate[:\s]+\$?([\d,]+)", text, re.I)
         if m:
             v = int(m.group(1).replace(",", ""))
             if 10_000 <= v <= 10_000_000:
                 result["redfin_estimate"] = v
-    # Fallback: largest price if no Zillow data
-    if not result["redfin_estimate"]:
-        prices = _extract_prices(text)
-        if prices:
-            result["redfin_estimate"] = max(prices)
-
     # Sold price
     for pat in [r"sold[:\s]+on\s+[\w\s,]+\$?([\d,]+)",
                 r"sold[:\s]+\$?([\d,]+)",
@@ -227,12 +220,24 @@ async def _search_google(mcp: BrightDataMCP, address: str, site: str) -> list[di
 
 
 def _is_address_match(address: str, text: str) -> bool:
-    """Fuzzy check: at least 1 unique word from address is in text."""
-    parts = [p.lower() for p in re.split(r"[\s,]+", address) if len(p) > 3 and p.lower() not in {"fort", "worth", "tx", "texas"}]
-    if not parts:
-        return True
-    t = text.lower()
-    return any(p in t for p in parts)
+    """Require the house number and a meaningful street-name token."""
+    normalized_address = re.sub(r"[^a-z0-9]+", " ", address.lower()).strip()
+    normalized_text = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    number = re.search(r"\b\d+[a-z]?\b", normalized_address)
+    if not number or not re.search(rf"\b{re.escape(number.group(0))}\b", normalized_text):
+        return False
+    ignored = {
+        "fort", "worth", "texas", "tx", "street", "st", "avenue", "ave",
+        "road", "rd", "drive", "dr", "lane", "ln", "court", "ct",
+        "boulevard", "blvd", "circle", "cir", "place", "pl", "way",
+    }
+    tokens = [
+        token for token in normalized_address.split()
+        if not token[0].isdigit() and token not in ignored and len(token) >= 3
+    ]
+    return bool(tokens) and any(
+        re.search(rf"\b{re.escape(token)}\b", normalized_text) for token in tokens
+    )
 
 
 # ─── The Enricher class (used by routes) ──────────────────────────────────────

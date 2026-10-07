@@ -34,12 +34,17 @@ def test_tad_record_can_keep_raw_fields_and_rejects_blank_addresses():
         "YEAR_BUILT": 2000,
         "LIVING_ARE": 1816,
         "APPRAISEDV": 347891,
+        "LEGAL_1": "LOT 14 BLK 2",
+        "LEGAL_2": "TEST ADDITION",
+        "SubdivisionName": "TEST ADDITION",
         "CUSTOM_SOURCE_FIELD": "preserved",
     }
     record = county_record_from_tad(raw, include_raw=True)
     assert record is not None
     assert record["situs_address"].startswith("2401 KELTON ST")
     assert record["year_built"] == 2000
+    assert record["legal_description"] == "LOT 14 BLK 2 TEST ADDITION"
+    assert record["subdivision"] == "TEST ADDITION"
     assert record["tad_raw"]["CUSTOM_SOURCE_FIELD"] == "preserved"
     assert county_record_from_tad({"ACCOUNT": "1", "SITUS_ADDR": ""}) is None
 

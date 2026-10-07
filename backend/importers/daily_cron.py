@@ -51,7 +51,7 @@ async def run_all(limit: int = 2000) -> dict:
     # limit) or (db, lead_types, limit); positional args silently bind to the
     # wrong parameter (e.g. (db, 300) → city=300 → TAD fetches 0 every day).
     sources = [
-        ("fort_worth_violations", "importers.fort_worth_violations", "import_fort_worth_violations", (db,), {"limit": limit}),
+        ("fort_worth_violations", "importers.fort_worth_code_violations", "sync_fort_worth_code_violations", (db,), {"limit": limit}),
         ("foreclosures", "importers.foreclosure_finder", "import_foreclosures", (db,), {}),
         ("foreclosure_listings", "importers.foreclosure_listings_scraper", "import_foreclosure_listings", (db,), {"pages": 2, "cities": list(TARRANT_COUNTY_CITIES.keys())}),
         ("tad", "importers.tad_scraper", "import_tad_properties", (db,), {"limit": 300}),

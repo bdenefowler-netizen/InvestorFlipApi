@@ -52,6 +52,9 @@ def requires_admin_key(path: str, method: str = "GET") -> bool:
         "/api/quill/negotiate",
         "/api/brightdata/check",
         "/api/rapidapi/",
+        "/api/property-details",
+        "/api/skip-trace",
+        "/api/calculator/lookup",
     )
     protected_exact = {
         "/api/feeds/sync",
