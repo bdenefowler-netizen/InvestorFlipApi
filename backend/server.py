@@ -153,6 +153,13 @@ BLOCKED_FLIP_TYPES = [
     "manufactured",
 ]
 
+TRUSTED_LIVE_SOURCE_MARKERS = (
+    "rapidapi", "openweb ninja", "foreclosure finder", "fclosure",
+    "lgbs tax sales", "foreclosurelistingsusa", "offmarketdeck", "fsbo.com",
+    "hubzu", "new western", "smartpropleads", "stessa",
+)
+DIRECT_LISTING_SOURCE_MARKERS = ("rapidapi", "openweb ninja")
+
 
 def get_property_type(p: Dict[str, Any]) -> str:
     return str(
@@ -462,7 +469,29 @@ def sanitize_property_semantics(property_record: Dict[str, Any]) -> Dict[str, An
     city = str(cleaned.get("city") or "").strip()
     if city and not re.search(r"[A-Za-z]", city):
         cleaned["city"] = ""
+        address = str(cleaned.get("situs_address") or "").strip()
+        street = address.split(",", 1)[0].strip()
+        state = str(cleaned.get("state") or "TX").strip().upper()
+        zip_code = str(cleaned.get("zip") or "").strip()[:5]
+        cleaned["situs_address"] = f"{street}, {state} {zip_code}".strip()
     return cleaned
+
+
+def has_trusted_live_provenance(property_record: Dict[str, Any], *, direct_only: bool = False) -> bool:
+    source = str(property_record.get("data_source") or "").lower()
+    markers = DIRECT_LISTING_SOURCE_MARKERS if direct_only else TRUSTED_LIVE_SOURCE_MARKERS
+    return property_record.get("is_live_listing") is True and any(marker in source for marker in markers)
+
+
+def trusted_live_query(*, direct_only: bool = False) -> Dict[str, Any]:
+    markers = DIRECT_LISTING_SOURCE_MARKERS if direct_only else TRUSTED_LIVE_SOURCE_MARKERS
+    return {
+        "is_live_listing": True,
+        "$or": [
+            {"data_source": {"$regex": re.escape(marker), "$options": "i"}}
+            for marker in markers
+        ],
+    }
 
 
 def decorate_opportunity(property_record: Dict[str, Any]) -> Dict[str, Any]:
@@ -1223,7 +1252,7 @@ async def sync_live_listings_to_database(
     direct_provider_report = list(fetched["providers"])
     provider_report = list(direct_provider_report)
     previous = await database.properties.find(
-        {"is_live_listing": True}, {"_id": 0}
+        trusted_live_query(direct_only=True), {"_id": 0}
     ).to_list(length=5000)
     previous_by_id = {record.get("id"): record for record in previous if record.get("id")}
     def address_key(record: Dict[str, Any]) -> str:
@@ -1486,7 +1515,8 @@ async def live_fort_worth_listings(limit: int = Query(50, ge=1, le=100)):
 
 @api_router.get("/live/status")
 async def live_status():
-    total_live = await db.properties.count_documents({"is_live_listing": True})
+    raw_live = await db.properties.count_documents({"is_live_listing": True})
+    total_live = await db.properties.count_documents(trusted_live_query())
     latest = await db.live_sync_log.find({}, {"_id": 0}).sort("created_at", -1).limit(5).to_list(length=5)
     rapidapi_ready = bool(RAPIDAPI_KEY)
     return {
@@ -1571,6 +1601,8 @@ async def live_status():
             },
         },
         "live_listing_count": total_live,
+        "raw_live_flag_count": raw_live,
+        "legacy_or_untrusted_live_flags_hidden": max(0, raw_live - total_live),
         "recent_syncs": latest,
         "sync_endpoint": "POST /api/live/sync-fort-worth",
     }

@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 
-from importers.feeds import _is_current_foreclosure_listing, _lgbs_listing
+from importers.feeds import _append_source, _is_current_foreclosure_listing, _lgbs_listing
 
 
 def test_lgbs_tax_sale_maps_to_tax_lien_evidence():
@@ -36,3 +36,8 @@ def test_expired_tax_sale_is_not_current():
 
     assert listing is not None
     assert _is_current_foreclosure_listing(listing) is False
+
+
+def test_feed_source_provenance_does_not_repeat_every_sync():
+    source = "User upload [tad]: base.xlsx + LGBS Tax Sales"
+    assert _append_source(source, "LGBS Tax Sales") == source

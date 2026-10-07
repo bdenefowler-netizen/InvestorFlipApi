@@ -601,6 +601,13 @@ def _normalize_addr(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").upper().strip())
 
 
+def _append_source(existing: Any, source: str) -> str:
+    labels = [part.strip() for part in str(existing or "").split("+") if part.strip()]
+    if source not in labels:
+        labels.append(source)
+    return " + ".join(labels)
+
+
 async def cross_match_tax_roll(db: PostgresDatabase, listing: FeedListing) -> Optional[Dict[str, Any]]:
     """Try to find this listing's parcel in our Master.dat data by address+zip."""
     if listing.parcel_id:
@@ -648,7 +655,7 @@ async def ingest_listings(
             updates: Dict[str, Any] = {
                 "listing_type": L.listing_type,
                 "price": L.price or match.get("price", 0),
-                "data_source": f"{match.get('data_source', '')} + {L.feed_source}",
+                "data_source": _append_source(match.get("data_source"), L.feed_source),
                 "is_live_listing": True,
                 "listing_last_seen_at": datetime.now(timezone.utc).isoformat(),
                 "missed_syncs": 0,
