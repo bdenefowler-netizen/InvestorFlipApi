@@ -57,3 +57,27 @@ def test_only_real_provider_inventory_counts_as_live():
         "is_live_listing": True,
         "data_source": "User upload [tad]: TAD_RESIDENTIAL_BASE.xlsx",
     })
+
+
+def test_legacy_lgbs_merge_is_presented_as_tax_lien_with_legal_description():
+    cleaned = sanitize_property_semantics({
+        "data_source": (
+            "User upload [tad]: base.xlsx + LGBS Tax Sales + "
+            "LGBS Tax Sales"
+        ),
+        "listing_type": "Foreclosure",
+        "listing_status": "For Sale",
+        "tax_delinquent": False,
+        "legal_description": "",
+        "raw_import_row": {"LegalDescription": "LOT 43 BLK 12"},
+        "feed_extra": {
+            "source_url": "https://taxsales.lgbs.com/api/property_sales/",
+            "status_label": "Scheduled for Auction",
+        },
+    })
+
+    assert cleaned["data_source"] == "User upload [tad]: base.xlsx + LGBS Tax Sales"
+    assert cleaned["listing_type"] == "Tax Lien"
+    assert cleaned["listing_status"] == "Scheduled for Auction"
+    assert cleaned["tax_delinquent"] is True
+    assert cleaned["legal_description"] == "LOT 43 BLK 12"

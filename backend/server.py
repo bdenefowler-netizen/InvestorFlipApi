@@ -447,6 +447,28 @@ def sanitize_property_semantics(property_record: Dict[str, Any]) -> Dict[str, An
     """
     cleaned = dict(property_record)
     source = str(cleaned.get("data_source") or "").lower()
+
+    # Legacy merge jobs appended the same feed label on every run. Keep the
+    # stored provenance untouched, but present each source once to clients.
+    source_labels = [part.strip() for part in str(cleaned.get("data_source") or "").split("+")]
+    cleaned["data_source"] = " + ".join(dict.fromkeys(label for label in source_labels if label))
+
+    raw_import = cleaned.get("raw_import_row")
+    if isinstance(raw_import, dict) and not str(cleaned.get("legal_description") or "").strip():
+        for key in ("LegalDescription", "Legal Description", "legal_description", "LEGAL_DESC"):
+            value = str(raw_import.get(key) or "").strip()
+            if value:
+                cleaned["legal_description"] = value
+                break
+
+    feed_extra = cleaned.get("feed_extra") if isinstance(cleaned.get("feed_extra"), dict) else {}
+    is_lgbs_tax_sale = "lgbs tax sales" in source or "taxsales.lgbs.com" in str(feed_extra.get("source_url") or "").lower()
+    if is_lgbs_tax_sale:
+        cleaned["listing_type"] = "Tax Lien"
+        cleaned["tax_delinquent"] = True
+        status = str(feed_extra.get("status_label") or feed_extra.get("status") or "").strip()
+        if status:
+            cleaned["listing_status"] = status
     is_evidence_upload = (
         " + " not in source
         and any(
