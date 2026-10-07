@@ -75,6 +75,8 @@ async def build_storage_report(db: PostgresDatabase) -> Dict[str, Any]:
         )
 
         staging = []
+        staging_sources = []
+        staging_batches = []
         if await _table_exists(connection, "import_staging"):
             staging = await connection.fetch(
                 """
@@ -89,12 +91,47 @@ async def build_storage_report(db: PostgresDatabase) -> Dict[str, Any]:
                 ORDER BY payload_bytes DESC
                 """
             )
+            staging_sources = await connection.fetch(
+                """
+                SELECT
+                    source_file,
+                    category,
+                    status,
+                    count(*)::bigint AS rows,
+                    count(DISTINCT batch_id)::bigint AS batches,
+                    COALESCE(sum(pg_column_size(payload)), 0)::bigint AS payload_bytes,
+                    min(created_at) AS oldest,
+                    max(created_at) AS newest
+                FROM import_staging
+                GROUP BY source_file, category, status
+                ORDER BY payload_bytes DESC
+                LIMIT 50
+                """
+            )
+            staging_batches = await connection.fetch(
+                """
+                SELECT
+                    batch_id,
+                    source_file,
+                    category,
+                    status,
+                    count(*)::bigint AS rows,
+                    COALESCE(sum(pg_column_size(payload)), 0)::bigint AS payload_bytes,
+                    min(created_at) AS created_at
+                FROM import_staging
+                GROUP BY batch_id, source_file, category, status
+                ORDER BY payload_bytes DESC
+                LIMIT 50
+                """
+            )
 
         return {
             "database_bytes": database_bytes,
             "tables": [dict(row) for row in table_rows],
             "properties": dict(property_stats or {}),
             "import_staging": [dict(row) for row in staging],
+            "staging_sources": [dict(row) for row in staging_sources],
+            "staging_batches": [dict(row) for row in staging_batches],
             "notes": [
                 "Deleting rows makes space reusable inside PostgreSQL; it does not immediately shrink the Railway volume.",
                 "VACUUM FULL can shrink files but requires an approved maintenance window because it locks and rewrites tables.",
@@ -223,6 +260,11 @@ async def log_storage_summary(db: PostgresDatabase) -> None:
             largest,
             report.get("properties"),
             report.get("import_staging"),
+        )
+        logger.info(
+            "Postgres staging sources: %s; largest batches: %s",
+            report.get("staging_sources", [])[:20],
+            report.get("staging_batches", [])[:20],
         )
     except Exception:
         logger.exception("Could not collect PostgreSQL storage report")
