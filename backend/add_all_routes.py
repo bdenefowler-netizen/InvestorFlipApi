@@ -1285,7 +1285,11 @@ async def brightdata_deals_status():
     Check Bright Data integration status + remaining credits.
     """
     import os
-    has_token = bool(os.environ.get("BRIGHT_DATA_TOKEN", ""))
+    has_token = bool(
+        os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+    )
     has_zone = bool(os.environ.get("BRIGHT_DATA_ZONE", ""))
     return {
         "brightdata_configured": has_token,
@@ -1390,7 +1394,11 @@ async def brightdata_mcp_status():
     Check Bright Data MCP configuration and available tools.
     """
     import os
-    has_token = bool(os.environ.get("BRIGHTDATA_TOKEN", "") or os.environ.get("BRIGHTDATA_TOKEN", ""))
+    has_token = bool(
+        os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+    )
     return {
         "brightdata_mcp_configured": has_token,
         "tools": [
@@ -1590,13 +1598,17 @@ async def import_brightdata_mcp_route(
     from database import PostgresDatabase
     from importers.brightdata_mcp_scraper import import_brightdata_mcp
     db = PostgresDatabase()
-    return await import_brightdata_mcp(
-        db,
-        include_offmarket=include_offmarket,
-        include_fsbo=include_fsbo,
-        include_hubzu=include_hubzu,
-        max_pages=max_pages,
-    )
+    try:
+        await db.connect()
+        return await import_brightdata_mcp(
+            db,
+            include_offmarket=include_offmarket,
+            include_fsbo=include_fsbo,
+            include_hubzu=include_hubzu,
+            max_pages=max_pages,
+        )
+    finally:
+        await db.close()
 
 
 # =====================================================================
