@@ -1,6 +1,7 @@
 import asyncio
 
 from importers import foreclosure_finder
+from importers.feeds import TexasForeclosureFeed
 
 
 def test_bundled_foreclosure_fixture_is_disabled_by_default(monkeypatch):
@@ -18,3 +19,12 @@ def test_import_reports_that_a_verified_file_is_required(monkeypatch):
     result = asyncio.run(foreclosure_finder.import_foreclosures(object()))
     assert result["skipped"] is True
     assert "verified" in result["reason"].lower()
+
+
+def test_live_feed_also_rejects_the_bundled_historical_fixture(monkeypatch):
+    monkeypatch.setenv(
+        "TARRANT_FORECLOSURE_CSV",
+        str(TexasForeclosureFeed.BUNDLED_FIXTURE),
+    )
+
+    assert asyncio.run(TexasForeclosureFeed().fetch()) == []

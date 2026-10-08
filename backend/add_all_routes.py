@@ -320,12 +320,12 @@ async def import_from_scraper(
 async def import_fort_worth_violations(limit: int = 2000):
     """Import distressed properties from Fort Worth Code Violations."""
     from database import PostgresDatabase
-    from importers.fort_worth_violations import import_fort_worth_violations
+    from importers.fort_worth_code_violations import sync_fort_worth_code_violations
     
     db = PostgresDatabase()
     try:
         await db.connect()
-        result = await import_fort_worth_violations(db, limit=limit)
+        result = await sync_fort_worth_code_violations(db, limit=limit)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -626,7 +626,7 @@ async def get_distressed_properties(filter_type: str = "all", limit: int = 100):
 async def import_all_sources():
     """Import from all FREE data sources at once."""
     from database import PostgresDatabase
-    from importers.fort_worth_violations import import_fort_worth_violations
+    from importers.fort_worth_code_violations import sync_fort_worth_code_violations
     from importers.foreclosure_finder import import_foreclosures
     from importers.foreclosure_listings_scraper import import_foreclosure_listings
     from importers.offmarketdeck_scraper import import_offmarket_deals
@@ -643,7 +643,7 @@ async def import_all_sources():
         
         # Fort Worth Violations (FREE)
         try:
-            results["fort_worth_violations"] = await import_fort_worth_violations(db)
+            results["fort_worth_violations"] = await sync_fort_worth_code_violations(db)
         except Exception as e:
             results["fort_worth_violations"] = {"error": str(e)}
         
@@ -719,7 +719,7 @@ async def data_sources_status():
         "stessa": {"available": False, "cost": "FREE"},
         "smartpropleads": {"available": False, "cost": "FREE"},
         "tax_roll": {"available": False, "cost": "FREE", "note": "Official Tarrant County tax roll ZIP"},
-        "foreclosures": {"available": True, "cost": "FREE", "note": "CSV file included"},
+        "foreclosures": {"available": False, "cost": "FREE", "note": "Requires a current verified TARRANT_FORECLOSURE_CSV; bundled fixture is disabled"},
         "realtor": {"available": False, "cost": "BLOCKED", "note": "Anti-scraping protections (429)"},
         "zillow": {"available": False, "cost": "BLOCKED", "note": "Anti-scraping protections (403)"},
         "redfin": {"available": False, "cost": "BLOCKED", "note": "Anti-scraping protections (403)"},
@@ -729,7 +729,7 @@ async def data_sources_status():
     
     # Check each source
     checks = [
-        ("fort_worth_violations", "https://mapit.fortworthtexas.gov/ags/rest/services/CIVIC/Code_Violations_Experience_Builder/MapServer/4/query?where=1=1&outFields=Address&resultRecordCount=1&f=json"),
+        ("fort_worth_violations", "https://services5.arcgis.com/3ddLCBXe1bRt7mzj/arcgis/rest/services/CFW_Open_Data_Code_Violations_Table_view/FeatureServer/0/query?where=1%3D1&outFields=Violation_Address&resultRecordCount=1&f=json"),
         ("tad", "https://mapit.tarrantcounty.com/arcgis/rest/services/Dynamic/TADParcels/FeatureServer/0/query?where=1%3D1&outFields=TAXPIN&resultRecordCount=1&f=json"),
         ("foreclosure_listings", "https://www.foreclosurelistingsusa.com/fort-worth-tx/"),
         ("offmarketdeck", "https://offmarketdeck.com/texas/fort-worth"),
@@ -748,7 +748,13 @@ async def data_sources_status():
         except Exception:
             pass
     
-    return status
+    return {
+        **status,
+        "_meta": {
+            "check_kind": "HTTP reachability only",
+            "warning": "A reachable page does not prove that its parser returned valid properties.",
+        },
+    }
 
 
 # ========== Quill AI Analysis ==========
@@ -995,7 +1001,7 @@ async def get_apify_status():
 async def import_all_with_apify():
     """Import from all sources, using Apify for broken scrapers."""
     from database import PostgresDatabase
-    from importers.fort_worth_violations import import_fort_worth_violations
+    from importers.fort_worth_code_violations import sync_fort_worth_code_violations
     from importers.foreclosure_finder import import_foreclosures
     from importers.apify_sources import import_investorlift, import_motivated_sellers, import_skip_trace_apify
 
@@ -1007,7 +1013,7 @@ async def import_all_with_apify():
 
         # Working sources
         for name, fn in [
-            ("fort_worth_violations", import_fort_worth_violations),
+            ("fort_worth_violations", sync_fort_worth_code_violations),
             ("foreclosures", import_foreclosures),
         ]:
             try:
@@ -1279,7 +1285,11 @@ async def brightdata_deals_status():
     Check Bright Data integration status + remaining credits.
     """
     import os
-    has_token = bool(os.environ.get("BRIGHT_DATA_TOKEN", ""))
+    has_token = bool(
+        os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+    )
     has_zone = bool(os.environ.get("BRIGHT_DATA_ZONE", ""))
     return {
         "brightdata_configured": has_token,
@@ -1295,7 +1305,7 @@ async def brightdata_deals_status():
 
 # ========== Bright Data MCP Scraper (no zone required) ==========
 
-@router.post("/import/brightdata-mcp")
+@router.post("/import/brightdata-mcp-legacy", include_in_schema=False)
 async def import_brightdata_mcp_route(
     include_offmarket: bool = Body(default=True),
     include_fsbo: bool = Body(default=True),
@@ -1384,7 +1394,11 @@ async def brightdata_mcp_status():
     Check Bright Data MCP configuration and available tools.
     """
     import os
-    has_token = bool(os.environ.get("BRIGHTDATA_TOKEN", "") or os.environ.get("BRIGHTDATA_TOKEN", ""))
+    has_token = bool(
+        os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+    )
     return {
         "brightdata_mcp_configured": has_token,
         "tools": [
@@ -1584,13 +1598,17 @@ async def import_brightdata_mcp_route(
     from database import PostgresDatabase
     from importers.brightdata_mcp_scraper import import_brightdata_mcp
     db = PostgresDatabase()
-    return await import_brightdata_mcp(
-        db,
-        include_offmarket=include_offmarket,
-        include_fsbo=include_fsbo,
-        include_hubzu=include_hubzu,
-        max_pages=max_pages,
-    )
+    try:
+        await db.connect()
+        return await import_brightdata_mcp(
+            db,
+            include_offmarket=include_offmarket,
+            include_fsbo=include_fsbo,
+            include_hubzu=include_hubzu,
+            max_pages=max_pages,
+        )
+    finally:
+        await db.close()
 
 
 # =====================================================================
@@ -1638,9 +1656,24 @@ async def enrich_property_details_endpoint(
             return {"message": "No properties need enrichment", "count": 0}
 
         enriched = await enrich_properties_batch(props)
+        persisted = 0
+        for prop in props:
+            patch = {
+                key: value
+                for key, value in prop.items()
+                if key not in {"id", "situs_address", "address"}
+            }
+            if not patch:
+                continue
+            await db.properties.update_one(
+                {"id": prop["id"]},
+                {"$set": patch},
+            )
+            persisted += 1
         return {
             "message": f"Enriched {enriched['enriched']} properties",
             "enriched": enriched["enriched"],
+            "persisted": persisted,
             "skipped": enriched["skipped"],
             "failed": enriched["failed"],
         }
@@ -1722,7 +1755,21 @@ async def skip_trace_enrich_endpoint(limit: int = Query(50, ge=1, le=100)):
             return {"message": "No properties need skip trace", "count": 0}
 
         enriched = await enrich_property_owners(props)
-        return {"message": f"Skip traced {enriched} owners", "enriched": enriched}
+        persisted = 0
+        for prop in props:
+            contacts = prop.get("owner_contacts")
+            if not contacts:
+                continue
+            await db.properties.update_one(
+                {"id": prop["id"]},
+                {"$set": {"owner_contacts": contacts}},
+            )
+            persisted += 1
+        return {
+            "message": f"Skip traced {enriched} owners",
+            "enriched": enriched,
+            "persisted": persisted,
+        }
     finally:
         await db.close()
 

@@ -268,14 +268,19 @@ class TexasForeclosureFeed(FeedSource):
     """
     name = "TX Foreclosure"
 
-    CSV_PATH = Path(__file__).resolve().parent.parent / "data" / "tx_foreclosures.csv"
+    BUNDLED_FIXTURE = Path(__file__).resolve().parent.parent / "data" / "tx_foreclosures.csv"
 
     async def fetch(self, limit: int = 200, **params) -> List[FeedListing]:
-        if not self.CSV_PATH.exists():
+        configured = os.environ.get("TARRANT_FORECLOSURE_CSV", "").strip()
+        if not configured:
+            return []
+        csv_path = Path(configured).expanduser().resolve()
+        # The repository copy is historical test data, not a production feed.
+        if csv_path == self.BUNDLED_FIXTURE.resolve() or not csv_path.is_file():
             return []
         out: List[FeedListing] = []
         try:
-            with self.CSV_PATH.open("r", encoding="utf-8-sig", newline="") as f:
+            with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     row = {(k or "").lower().strip(): (v or "").strip() for k, v in row.items()}
@@ -315,7 +320,7 @@ def _lgbs_listing(item: Dict[str, Any]) -> Optional[FeedListing]:
     status = str(item.get("status") or "").strip()
     return FeedListing(
         feed_source="LGBS Tax Sales",
-        listing_type="Foreclosure",
+        listing_type="Tax Lien",
         situs_address=full_address,
         city=city,
         state=state,
@@ -337,6 +342,7 @@ def _lgbs_listing(item: Dict[str, Any]) -> Optional[FeedListing]:
             "county_sale_list": item.get("county_sale_list"),
             "source_url": LGBS_API_BASE,
             "source_uid": item.get("uid"),
+            "tax_delinquent": True,
         },
     )
 
@@ -567,7 +573,7 @@ def _is_current_foreclosure_listing(
     today: Optional[date] = None,
     sale_date_from: Optional[date] = None,
 ) -> bool:
-    if listing.listing_type not in {"Foreclosure", "REO"}:
+    if listing.listing_type not in {"Foreclosure", "REO", "Tax Lien", "Tax Sale"}:
         return True
     today = today or datetime.now(timezone.utc).date()
     sale_date = _listing_sale_date(listing)
@@ -593,6 +599,13 @@ FEEDS: List[FeedSource] = [
 # ---------- Ingestion pipeline ----------
 def _normalize_addr(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").upper().strip())
+
+
+def _append_source(existing: Any, source: str) -> str:
+    labels = [part.strip() for part in str(existing or "").split("+") if part.strip()]
+    if source not in labels:
+        labels.append(source)
+    return " + ".join(labels)
 
 
 async def cross_match_tax_roll(db: PostgresDatabase, listing: FeedListing) -> Optional[Dict[str, Any]]:
@@ -642,11 +655,12 @@ async def ingest_listings(
             updates: Dict[str, Any] = {
                 "listing_type": L.listing_type,
                 "price": L.price or match.get("price", 0),
-                "data_source": f"{match.get('data_source', '')} + {L.feed_source}",
+                "data_source": _append_source(match.get("data_source"), L.feed_source),
                 "is_live_listing": True,
                 "listing_last_seen_at": datetime.now(timezone.utc).isoformat(),
                 "missed_syncs": 0,
                 "feed_extra": L.extra,
+                "tax_delinquent": bool(L.extra.get("tax_delinquent") or match.get("tax_delinquent")),
             }
             if L.beds: updates["beds"] = L.beds
             if L.baths: updates["baths"] = L.baths
@@ -706,7 +720,7 @@ async def ingest_listings(
             "owner_type": owner_type,
             "owner_mailing_address": "",
             "out_of_state_owner": False,
-            "tax_delinquent": False,
+            "tax_delinquent": bool(L.extra.get("tax_delinquent")),
             "distress_status": L.listing_type,
             "vacant": False,
             "high_equity": False,
@@ -739,7 +753,7 @@ async def ingest_listings(
 
 async def cleanup_expired_feed_records(db: PostgresDatabase, feed_name: str) -> int:
     today = datetime.now(timezone.utc).date()
-    deleted_ids: List[str] = []
+    expired_ids: List[str] = []
     cursor = db.properties.find(
         {
             "data_source": {"$regex": re.escape(feed_name), "$options": "i"},
@@ -756,11 +770,20 @@ async def cleanup_expired_feed_records(db: PostgresDatabase, feed_name: str) -> 
             if sale_date:
                 break
         if sale_date and sale_date < today:
-            deleted_ids.append(doc["id"])
-    if not deleted_ids:
+            expired_ids.append(doc["id"])
+    if not expired_ids:
         return 0
-    result = await db.properties.delete_many({"id": {"$in": deleted_ids}})
-    return int(result.deleted_count)
+    now = datetime.now(timezone.utc).isoformat()
+    for property_id in expired_ids:
+        await db.properties.update_one(
+            {"id": property_id},
+            {"$set": {
+                "is_live_listing": False,
+                "listing_status": "expired",
+                "feed_expired_at": now,
+            }},
+        )
+    return len(expired_ids)
 
 
 async def run_feed_sync(

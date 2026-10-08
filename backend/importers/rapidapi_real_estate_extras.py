@@ -5,29 +5,29 @@ import os
 from typing import Any, Dict, Optional
 import httpx
 
-PROVIDERS: Dict[str, Dict[str, str]] = {
-    "fsbo_owner_finder": {"host":"fsbo-owner-finder.p.rapidapi.com","base":"https://fsbo-owner-finder.p.rapidapi.com","flag":"RAPIDAPI_FSBO_OWNER_FINDER_ENABLED"},
-    "fsbo_api": {"host":"fsbo-api.p.rapidapi.com","base":"https://fsbo-api.p.rapidapi.com","flag":"RAPIDAPI_FSBO_API_ENABLED"},
-    "realtor_api_data": {"host":"realtor-api-data.p.rapidapi.com","base":"https://realtor-api-data.p.rapidapi.com","flag":"RAPIDAPI_REALTOR_DATA_ENABLED"},
-    "foreclosed_properties": {"host":"foreclosed-properties-list.p.rapidapi.com","base":"https://foreclosed-properties-list.p.rapidapi.com","flag":"RAPIDAPI_FORECLOSED_PROPERTIES_ENABLED"},
-    "ai_property_valuation": {"host":"real-estate-data-api-ai-property-valuation-market-data.p.rapidapi.com","base":"https://real-estate-data-api-ai-property-valuation-market-data.p.rapidapi.com","flag":"RAPIDAPI_AI_VALUATION_ENABLED"},
-    "email_hunter": {"host":"email-hunter-api.p.rapidapi.com","base":"https://email-hunter-api.p.rapidapi.com","flag":"RAPIDAPI_EMAIL_HUNTER_ENABLED"},
-    "us_real_estate_data": {"host":"us-real-estate-data1.p.rapidapi.com","base":"https://us-real-estate-data1.p.rapidapi.com","flag":"RAPIDAPI_US_REAL_ESTATE_DATA_ENABLED"},
-    "zillw_bundle": {"host":"zillw-real-estate-api2.p.rapidapi.com","base":"https://zillw-real-estate-api2.p.rapidapi.com","flag":"RAPIDAPI_ZILLW_BUNDLE_ENABLED"},
+PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "fsbo_owner_finder": {"host":"fsbo-owner-finder.p.rapidapi.com","base":"https://fsbo-owner-finder.p.rapidapi.com","flags":["RAPIDAPI_FSBO_OWNER_FINDER_ENABLED"]},
+    "fsbo_api": {"host":"fsbo-api.p.rapidapi.com","base":"https://fsbo-api.p.rapidapi.com","flags":["RAPIDAPI_FSBO_API_ENABLED"]},
+    "realtor_api_data": {"host":"realtor-api-data.p.rapidapi.com","base":"https://realtor-api-data.p.rapidapi.com","flags":["RAPIDAPI_REALTOR_API_DATA_ENABLED","RAPIDAPI_REALTOR_DATA_ENABLED"]},
+    "foreclosed_properties": {"host":"foreclosed-properties-list.p.rapidapi.com","base":"https://foreclosed-properties-list.p.rapidapi.com","flags":["RAPIDAPI_FORECLOSED_PROPERTIES_LIST_ENABLED","RAPIDAPI_FORECLOSED_PROPERTIES_ENABLED"]},
+    "ai_property_valuation": {"host":"real-estate-data-api-ai-property-valuation-market-data.p.rapidapi.com","base":"https://real-estate-data-api-ai-property-valuation-market-data.p.rapidapi.com","flags":["RAPIDAPI_AI_VALUATION_ENABLED"]},
+    "email_hunter": {"host":"email-hunter-api.p.rapidapi.com","base":"https://email-hunter-api.p.rapidapi.com","flags":["RAPIDAPI_EMAIL_HUNTER_ENABLED"]},
+    "us_real_estate_data": {"host":"us-real-estate-data1.p.rapidapi.com","base":"https://us-real-estate-data1.p.rapidapi.com","flags":["RAPIDAPI_US_REAL_ESTATE_DATA_ENABLED"]},
+    "zillw_bundle": {"host":"zillw-real-estate-api2.p.rapidapi.com","base":"https://zillw-real-estate-api2.p.rapidapi.com","flags":["RAPIDAPI_ZILLW_REAL_ESTATE_API_ENABLED","RAPIDAPI_ZILLW_BUNDLE_ENABLED"]},
 }
 
 def _enabled(name:str)->bool:
-    return os.environ.get(PROVIDERS[name]["flag"],"false").strip().lower()=="true"
+    return any(os.environ.get(flag,"false").strip().lower()=="true" for flag in PROVIDERS[name]["flags"])
 
 def provider_status()->Dict[str,Any]:
     return {"rapidapi_key_set":bool(os.environ.get("RAPIDAPI_KEY","").strip()),
-            "providers":{n:{"host":c["host"],"enabled":_enabled(n),"enable_variable":c["flag"]} for n,c in PROVIDERS.items()}}
+            "providers":{n:{"host":c["host"],"enabled":_enabled(n),"enable_variables":c["flags"]} for n,c in PROVIDERS.items()}}
 
 def _headers(name:str)->Dict[str,str]:
     key=os.environ.get("RAPIDAPI_KEY","").strip()
     if not key: raise RuntimeError("RAPIDAPI_KEY is not configured")
     if not _enabled(name):
-        raise RuntimeError(f"{name} is disabled; set {PROVIDERS[name]['flag']}=true in Railway to enable it")
+        raise RuntimeError(f"{name} is disabled; set one of {', '.join(PROVIDERS[name]['flags'])}=true in Railway to enable it")
     return {"x-rapidapi-key":key,"x-rapidapi-host":PROVIDERS[name]["host"]}
 
 async def _request(name:str,method:str,path:str="",*,params:Optional[Dict[str,Any]]=None,payload:Optional[Dict[str,Any]]=None,timeout:float=45.0)->Any:

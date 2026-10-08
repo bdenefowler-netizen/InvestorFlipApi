@@ -1,154 +1,37 @@
-from importers.apify_import import is_allowed_actor_id, is_allowed_run, normalize_record
+import asyncio
+
+from importers.apify_import import (
+    import_apify_runs,
+    is_allowed_actor_id,
+    is_allowed_run,
+    normalize_record,
+)
 
 
-def test_apify_run_requires_explicit_actor_or_task_allowlist(monkeypatch):
-    monkeypatch.delenv("APIFY_IMPORT_ALL_RUNS", raising=False)
+def test_retired_apify_cannot_be_reenabled_by_environment(monkeypatch):
+    monkeypatch.setenv("APIFY_IMPORT_ALL_RUNS", "true")
     monkeypatch.setenv("APIFY_ALLOWED_ACTOR_IDS", "actor-good")
     monkeypatch.setenv("APIFY_ALLOWED_TASK_IDS", "task-good")
-    assert is_allowed_run({"actorId": "actor-good"})
-    assert is_allowed_run({"actorTaskId": "task-good"})
-    assert not is_allowed_run({"actorId": "unrelated"})
+
+    assert is_allowed_run({"actorId": "actor-good"}) is False
+    assert is_allowed_run({"actorTaskId": "task-good"}) is False
+    assert is_allowed_actor_id("actor-good") is False
 
 
-def test_direct_apify_actor_requires_reviewed_or_configured_id(monkeypatch):
-    monkeypatch.setenv("APIFY_ALLOWED_ACTOR_IDS", "actor-configured")
-    assert is_allowed_actor_id("actor-configured")
-    assert is_allowed_actor_id("actor-built-in", {"actor-built-in"})
-    assert not is_allowed_actor_id("actor-unknown", {"actor-built-in"})
-
-
-def test_apify_price_per_sqft_is_not_treated_as_square_footage():
-    item = normalize_record({
+def test_retired_apify_normalizer_is_fail_closed():
+    assert normalize_record({
         "address": "100 Main St",
         "city": "Fort Worth",
         "state": "TX",
         "zip": "76102",
-        "pricePerSqft": 175,
-    })
-    assert item is not None
-    assert item["sqft"] is None
+        "price": 250000,
+    }) is None
 
 
-def test_apify_normalizes_nested_realtor_address_shape():
-    item = normalize_record({
-        "list_price": 299900,
-        "href": "https://www.realtor.com/example",
-        "primary_photo": {"href": "https://example.test/photo.jpg"},
-        "location": {
-            "county": {"name": "Tarrant"},
-            "address": {
-                "line": "1700 Weiler Blvd",
-                "city": "Fort Worth",
-                "state_code": "TX",
-                "postal_code": "76112",
-                "coordinate": {"lat": 32.754317, "lon": -97.233399},
-            },
-        },
-        "description": {
-            "beds": 5,
-            "baths": 2,
-            "sqft": 2628,
-            "lot_sqft": 22041,
-            "type": "single_family",
-            "year_built": 1952,
-        },
-        "source": {"listing_id": "21357998"},
-    })
+def test_retired_apify_import_reports_noop():
+    result = asyncio.run(import_apify_runs(object()))
 
-    assert item is not None
-    assert item["situs_address"] == "1700 Weiler Blvd, Fort Worth, TX 76112"
-    assert item["county"] == "Tarrant"
-    assert item["price"] == 299900
-    assert item["beds"] == 5
-    assert item["sqft"] == 2628
-    assert item["mls_number"] == "21357998"
-    assert item["listing_url"] == "https://www.realtor.com/example"
-
-
-def test_apify_normalizes_object_address_shape():
-    item = normalize_record({
-        "address": {
-            "streetAddress": "1941 6th Ave",
-            "city": "Fort Worth",
-            "state": "TX",
-            "postalCode": "76110",
-        },
-        "listPrice": "$250,000",
-        "bedrooms": "3",
-        "bathrooms": "2",
-        "livingArea": "1,710",
-        "homeType": "single_family",
-    })
-
-    assert item is not None
-    assert item["situs_address"] == "1941 6th Ave, Fort Worth, TX 76110"
-    assert item["price"] == 250000
-    assert item["beds"] == 3.0
-    assert item["sqft"] == 1710
-
-
-def test_apify_normalizes_lead_style_property_address_fields():
-    item = normalize_record({
-        "propertyAddress": "500 Example St",
-        "propertyCity": "Fort Worth",
-        "propertyState": "TX",
-        "propertyZip": "76104",
-        "estimated_value": 180000,
-    })
-
-    assert item is not None
-    assert item["situs_address"] == "500 Example St, Fort Worth, TX 76104"
-    assert item["price"] == 0
-
-
-def test_apify_normalizes_nested_property_wrapper():
-    item = normalize_record({
-        "mode": "tax_delinquent",
-        "property": {
-            "situsAddress": "700 Nested Ave",
-            "situsCity": "Fort Worth",
-            "situsState": "TX",
-            "situsZip": "76111",
-            "price": 125000,
-        },
-    })
-
-    assert item is not None
-    assert item["situs_address"] == "700 Nested Ave, Fort Worth, TX 76111"
-    assert item["price"] == 125000
-
-
-def test_apify_normalizes_investorlift_public_address_shape():
-    item = normalize_record({
-        "full_address": "",
-        "public_address": "900 Public Deal Rd, Fort Worth, TX 76107",
-        "city": "Fort Worth",
-        "state": "TX",
-        "zip": "76107",
-        "price": "$210,000",
-        "sq_footage": "1,450",
-        "lot_size": "6,000",
-        "property_type": "Single Family",
-        "property_url": "https://investorlift.example/property/123",
-        "property_image": "https://investorlift.example/image.jpg",
-        "other_images": ["https://investorlift.example/alt.jpg"],
-        "wholesaler_name": "Deal Source LLC",
-    })
-
-    assert item is not None
-    assert item["situs_address"] == "900 Public Deal Rd, Fort Worth, TX 76107"
-    assert item["price"] == 210000
-    assert item["sqft"] == 1450
-    assert item["lot_size_sqft"] == 6000
-    assert item["listing_url"] == "https://investorlift.example/property/123"
-    assert item["detail_url"] == "https://investorlift.example/property/123"
-    assert item["image_url"] == "https://investorlift.example/image.jpg"
-    assert item["photos"] == [
-        "https://investorlift.example/image.jpg",
-        "https://investorlift.example/alt.jpg",
-    ]
-    assert item["owner_name"] == "Deal Source LLC"
-    assert item["owner_type"] == "Wholesaler"
-    assert item["wholesale"] is True
-    assert item["listing_type"] == "Wholesale"
-    assert item["source_platform"] == "InvestorLift"
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["status"] == "RETIRED"
+    assert result["records_imported"] == 0

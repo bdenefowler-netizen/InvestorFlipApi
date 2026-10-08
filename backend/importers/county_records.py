@@ -185,6 +185,11 @@ def county_record_from_tad(
     if state_match:
         mailing_state = state_match.group(1)
 
+    legal_description = " ".join(
+        _text(raw.get(key))
+        for key in ("LEGAL_1", "LEGAL_2", "LEGAL_3", "LEGAL_4")
+        if _text(raw.get(key))
+    )
     record: Dict[str, Any] = {
         "id": record_id,
         "record_kind": "county",
@@ -212,6 +217,13 @@ def county_record_from_tad(
         "land_value": _number(raw.get("LAND_VALUE")),
         "improvement_value": _number(raw.get("IMPR_VALUE")),
         "school_district": _text(raw.get("SCHOOL")),
+        "legal_description": legal_description,
+        "subdivision": _text(raw.get("SubdivisionName")),
+        "pool": _text(raw.get("SW_POOL")),
+        "central_heat": _text(raw.get("CENTRAL_HE")),
+        "central_air": _text(raw.get("CENTRAL_AI")),
+        "parcel_type": _text(raw.get("PARCELTYPE")),
+        "property_description": _text(raw.get("DESCR")),
         "has_tad": True,
         "source_names": [COUNTY_SOURCE_TAD],
         "tad_updated_at": utc_now(),

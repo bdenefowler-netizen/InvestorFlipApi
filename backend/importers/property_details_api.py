@@ -275,7 +275,8 @@ async def get_property_details_for_calculator(address: str) -> Dict[str, Any]:
     return {
         "address": f"{details.get('street_address', '')}, {details.get('city', '')}, {details.get('state', '')} {details.get('zipcode', '')}".strip(", "),
         "price": details.get("price"),
-        "arv_estimate": details.get("price"),  # Use listing price as ARV starting point
+        "arv_estimate": None,
+        "arv_status": "unknown - verified sold comps and repair scope required",
         "bedrooms": details.get("bedrooms"),
         "bathrooms": details.get("bathrooms"),
         "living_area": details.get("living_area"),

@@ -37,8 +37,11 @@ import httpx
 logger = logging.getLogger("brightdata_mcp")
 
 MCP_URL = "https://mcp.brightdata.com/mcp"
-API_TOKEN = os.environ.get("BRIGHTDATA_TOKEN", "").strip() or \
-            os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+API_TOKEN = (
+    os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+    or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+    or os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+)
 GROUPS = "advanced_scraping"
 
 HDRS = {
@@ -754,7 +757,11 @@ async def import_brightdata_mcp(
     """
     from datetime import datetime
 
-    token = os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+    token = (
+        os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+    )
     if not token:
         return {"ok": False, "error": "BRIGHTDATA_TOKEN not set", "imported": 0}
 

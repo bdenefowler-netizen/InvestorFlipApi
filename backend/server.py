@@ -64,6 +64,8 @@ from add_all_routes import router as all_router
 from saved_searches_routes import router as saved_searches_router
 from county_records_routes import router as county_records_router
 from zillow_enrich_routes import router as zillow_enrich_router
+from rapidapi_extra_routes import router as rapidapi_extra_router
+from storage_housekeeping import log_storage_summary, router as storage_housekeeping_router
 from auto_sync import start_background_sync
 from admin_auth import requires_admin_key
 
@@ -151,6 +153,13 @@ BLOCKED_FLIP_TYPES = [
     "mobile",
     "manufactured",
 ]
+
+TRUSTED_LIVE_SOURCE_MARKERS = (
+    "rapidapi", "openweb ninja", "foreclosure finder", "fclosure",
+    "lgbs tax sales", "foreclosurelistingsusa", "offmarketdeck", "fsbo.com",
+    "hubzu", "new western", "smartpropleads", "stessa",
+)
+DIRECT_LISTING_SOURCE_MARKERS = ("rapidapi", "openweb ninja")
 
 
 def get_property_type(p: Dict[str, Any]) -> str:
@@ -430,8 +439,86 @@ def is_user_visible_property(property_record: Dict[str, Any]) -> bool:
     return not is_synthetic_property(property_record) and is_allowed_flip_house(property_record)
 
 
+def sanitize_property_semantics(property_record: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove legacy listing claims that were invented by county-file intake.
+
+    Older spreadsheet imports marked every row live and defaulted blank status
+    text to ``For Sale``. Preserve the county/tax evidence, but do not present a
+    parcel or owner row as an active market listing.
+    """
+    cleaned = dict(property_record)
+    source = str(cleaned.get("data_source") or "").lower()
+
+    # Legacy merge jobs appended the same feed label on every run. Keep the
+    # stored provenance untouched, but present each source once to clients.
+    source_labels = [part.strip() for part in str(cleaned.get("data_source") or "").split("+")]
+    cleaned["data_source"] = " + ".join(dict.fromkeys(label for label in source_labels if label))
+
+    raw_import = cleaned.get("raw_import_row")
+    if isinstance(raw_import, dict) and not str(cleaned.get("legal_description") or "").strip():
+        for key in ("LegalDescription", "Legal Description", "legal_description", "LEGAL_DESC"):
+            value = str(raw_import.get(key) or "").strip()
+            if value:
+                cleaned["legal_description"] = value
+                break
+
+    feed_extra = cleaned.get("feed_extra") if isinstance(cleaned.get("feed_extra"), dict) else {}
+    is_lgbs_tax_sale = "lgbs tax sales" in source or "taxsales.lgbs.com" in str(feed_extra.get("source_url") or "").lower()
+    if is_lgbs_tax_sale:
+        cleaned["listing_type"] = "Tax Lien"
+        cleaned["tax_delinquent"] = True
+        status = str(feed_extra.get("status_label") or feed_extra.get("status") or "").strip()
+        if status:
+            cleaned["listing_status"] = status
+    is_evidence_upload = (
+        " + " not in source
+        and any(
+            marker in source
+            for marker in (
+                "user upload [tad]",
+                "user upload [tax]",
+                "user upload [owner]",
+                "tad_residential_base",
+            )
+        )
+    )
+    if is_evidence_upload:
+        cleaned["is_live_listing"] = False
+        if str(cleaned.get("listing_type") or "").strip().lower() == "for sale":
+            cleaned["listing_type"] = None
+        if str(cleaned.get("listing_status") or "").strip().lower() == "for sale":
+            cleaned["listing_status"] = None
+
+    city = str(cleaned.get("city") or "").strip()
+    if city and not re.search(r"[A-Za-z]", city):
+        cleaned["city"] = ""
+        address = str(cleaned.get("situs_address") or "").strip()
+        street = address.split(",", 1)[0].strip()
+        state = str(cleaned.get("state") or "TX").strip().upper()
+        zip_code = str(cleaned.get("zip") or "").strip()[:5]
+        cleaned["situs_address"] = f"{street}, {state} {zip_code}".strip()
+    return cleaned
+
+
+def has_trusted_live_provenance(property_record: Dict[str, Any], *, direct_only: bool = False) -> bool:
+    source = str(property_record.get("data_source") or "").lower()
+    markers = DIRECT_LISTING_SOURCE_MARKERS if direct_only else TRUSTED_LIVE_SOURCE_MARKERS
+    return property_record.get("is_live_listing") is True and any(marker in source for marker in markers)
+
+
+def trusted_live_query(*, direct_only: bool = False) -> Dict[str, Any]:
+    markers = DIRECT_LISTING_SOURCE_MARKERS if direct_only else TRUSTED_LIVE_SOURCE_MARKERS
+    return {
+        "is_live_listing": True,
+        "$or": [
+            {"data_source": {"$regex": re.escape(marker), "$options": "i"}}
+            for marker in markers
+        ],
+    }
+
+
 def decorate_opportunity(property_record: Dict[str, Any]) -> Dict[str, Any]:
-    decorated = hydrate_listing_record(property_record)
+    decorated = hydrate_listing_record(sanitize_property_semantics(property_record))
     decorated.update(classify_opportunity(decorated))
     return decorated
 
@@ -1151,6 +1238,26 @@ async def fetch_live_fort_worth_residential_listings(
     return result if include_report else merged
 
 
+def _direct_listing_provider_state(
+    reports: List[Dict[str, Any]],
+    *,
+    merged_total: int,
+    returned_count: int,
+    limit: int,
+) -> tuple[bool, bool]:
+    """Return (succeeded, capped) for direct market-listing APIs only."""
+    succeeded = any(report.get("status") == "success" for report in reports)
+    capped = (
+        merged_total > returned_count
+        or any(
+            report.get("status") == "success"
+            and int(report.get("accepted") or 0) >= limit
+            for report in reports
+        )
+    )
+    return succeeded, capped
+
+
 async def sync_live_listings_to_database(
     database: PostgresDatabase,
     limit: int = 50,
@@ -1162,9 +1269,13 @@ async def sync_live_listings_to_database(
     """
     fetched = await fetch_live_fort_worth_residential_listings(limit=limit, include_report=True)
     listings = fetched["items"]
-    provider_report = fetched["providers"]
+    # Keep the direct API report separate. Feed/scraper reports are appended to
+    # the combined response below, but must never authorize retirement of live
+    # API inventory.
+    direct_provider_report = list(fetched["providers"])
+    provider_report = list(direct_provider_report)
     previous = await database.properties.find(
-        {"is_live_listing": True}, {"_id": 0}
+        trusted_live_query(direct_only=True), {"_id": 0}
     ).to_list(length=5000)
     previous_by_id = {record.get("id"): record for record in previous if record.get("id")}
     def address_key(record: Dict[str, Any]) -> str:
@@ -1245,17 +1356,11 @@ async def sync_live_listings_to_database(
         })
 
     missed = retired = 0
-    api_provider_succeeded = any(
-        report.get("status") == "success"
-        and not str(report.get("provider") or "").startswith(("Foreclosure Finder", "TX Foreclosure"))
-        for report in fetched["providers"]
-    )
-    provider_result_capped = (
-        fetched["merged_total"] > len(listings)
-        or any(
-            report.get("status") == "success" and int(report.get("accepted") or 0) >= limit
-            for report in fetched["providers"]
-        )
+    api_provider_succeeded, provider_result_capped = _direct_listing_provider_state(
+        direct_provider_report,
+        merged_total=fetched["merged_total"],
+        returned_count=len(listings),
+        limit=limit,
     )
     retirement_safe = api_provider_succeeded and not provider_result_capped
     if retirement_safe:
@@ -1277,7 +1382,7 @@ async def sync_live_listings_to_database(
             )
 
     direct_provider_failed = any(
-        report.get("status") == "error" for report in fetched["providers"]
+        report.get("status") == "error" for report in direct_provider_report
     )
     overall_status = (
         "success" if api_provider_succeeded
@@ -1433,7 +1538,8 @@ async def live_fort_worth_listings(limit: int = Query(50, ge=1, le=100)):
 
 @api_router.get("/live/status")
 async def live_status():
-    total_live = await db.properties.count_documents({"is_live_listing": True})
+    raw_live = await db.properties.count_documents({"is_live_listing": True})
+    total_live = await db.properties.count_documents(trusted_live_query())
     latest = await db.live_sync_log.find({}, {"_id": 0}).sort("created_at", -1).limit(5).to_list(length=5)
     rapidapi_ready = bool(RAPIDAPI_KEY)
     return {
@@ -1518,6 +1624,8 @@ async def live_status():
             },
         },
         "live_listing_count": total_live,
+        "raw_live_flag_count": raw_live,
+        "legacy_or_untrusted_live_flags_hidden": max(0, raw_live - total_live),
         "recent_syncs": latest,
         "sync_endpoint": "POST /api/live/sync-fort-worth",
     }
@@ -2698,7 +2806,10 @@ async def calculator_lookup(address: str = Query(..., min_length=5)):
             "address": address,
             "source": "rapidapi_property_details",
             "price": details.get("price"),
-            "arv_estimate": details.get("price"),  # Use listing price as ARV starting point
+            # Asking price is not an after-repair value. Keep the observed
+            # listing price useful without silently manufacturing an ARV.
+            "arv_estimate": None,
+            "arv_status": "unknown - verified sold comps and repair scope required",
             "bedrooms": details.get("bedrooms"),
             "bathrooms": details.get("bathrooms"),
             "living_area": details.get("living_area"),
@@ -2754,6 +2865,8 @@ app.include_router(all_router)  # FREE data sources (violations, foreclosures, O
 app.include_router(saved_searches_router)
 app.include_router(county_records_router)
 app.include_router(zillow_enrich_router)  # Zillow property enrichment
+app.include_router(rapidapi_extra_router)  # Admin-protected optional provider diagnostics
+app.include_router(storage_housekeeping_router)  # Preview-first database retention tools
 app.include_router(api_router)
 
 cors_origins = [
@@ -2774,6 +2887,9 @@ app.add_middleware(
 async def on_startup():
     await db.connect()
     count = await db.properties.count_documents({})
+    # The report scans JSONB sizes across the production tables. Run it after
+    # startup so Railway health checks are never blocked by the diagnostic.
+    asyncio.create_task(log_storage_summary(db))
     seed_demo = os.environ.get("SEED_DEMO_DATA", "false").lower() == "true"
 
     # Do NOT seed demo data by default anymore. This prevents fake commercial-looking addresses

@@ -51,11 +51,13 @@ async def run_all(limit: int = 2000) -> dict:
     # limit) or (db, lead_types, limit); positional args silently bind to the
     # wrong parameter (e.g. (db, 300) → city=300 → TAD fetches 0 every day).
     sources = [
-        ("fort_worth_violations", "importers.fort_worth_violations", "import_fort_worth_violations", (db,), {"limit": limit}),
+        ("fort_worth_violations", "importers.fort_worth_code_violations", "sync_fort_worth_code_violations", (db,), {"limit": limit}),
         ("foreclosures", "importers.foreclosure_finder", "import_foreclosures", (db,), {}),
         ("foreclosure_listings", "importers.foreclosure_listings_scraper", "import_foreclosure_listings", (db,), {"pages": 2, "cities": list(TARRANT_COUNTY_CITIES.keys())}),
         ("tad", "importers.tad_scraper", "import_tad_properties", (db,), {"limit": 300}),
-        ("brightdata_deals", "importers.brightdata_deal_finder", "import_brightdata_deals", (db,), {"days_back": 30}),
+        # brightdata_deal_finder is a compatibility/preview wrapper around the
+        # same MCP collection below. Running both spends credits twice and
+        # produces overlapping OffMarketDeck/FSBO/Hubzu leads.
         ("brightdata_mcp", "importers.brightdata_mcp_scraper", "import_brightdata_mcp", (db,), {"max_pages": 3}),
         ("apify", None, None, None, {}),  # handled separately below (disabled)
     ]
