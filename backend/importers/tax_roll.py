@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import os
 import re
@@ -131,8 +132,55 @@ def is_fort_worth_texas_property(property_data: Mapping[str, Any]) -> bool:
     return city_matches and state_matches
 
 
+def resolve_archive_member(archive: zipfile.ZipFile, member: str) -> str:
+    """Return the archive's real member name without trusting filename case."""
+    names = archive.namelist()
+    if member in names:
+        return member
+    wanted = member.replace("\\", "/").lstrip("./").casefold()
+    matches = [
+        name
+        for name in names
+        if name.replace("\\", "/").lstrip("./").casefold() == wanted
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise RuntimeError(f"Tax-roll ZIP has ambiguous member names for {member!r}: {matches}")
+    raise FileNotFoundError(f"{member!r} is not present in the tax-roll ZIP")
+
+
+def adapt_master_layout(layout: Dict[str, Any], actual_size: int) -> str:
+    """Select a verified fixed-width layout variant for the downloaded record."""
+    master = layout["master"]
+    expected_size = int(master.get("record_size", 741))
+    if actual_size == expected_size:
+        return "configured"
+
+    # The October 2026 county export inserted a 40-character reserved block
+    # after Owner Name 2. All earlier fields remain fixed; later fields move
+    # from position 387 onward. Accept only this observed version transition.
+    if expected_size == 741 and actual_size == 781:
+        insertion_at = 386
+        insertion_length = 40
+        for field in master["fields"].values():
+            start = int(field["start"])
+            end = int(field["end"])
+            if start >= insertion_at:
+                field["start"] = start + insertion_length
+                field["end"] = end + insertion_length
+            elif end > insertion_at:
+                raise RuntimeError("A configured MASTER.DAT field crosses the 2026 layout boundary")
+        master["record_size"] = actual_size
+        return "tarrant_2026_reserved_40"
+
+    raise RuntimeError(
+        f"MASTER.DAT record length is {actual_size}, expected {expected_size}; refusing to import"
+    )
+
+
 def iter_member_lines(archive: zipfile.ZipFile, member: str) -> Iterator[str]:
-    with archive.open(member, "r") as stream:
+    with archive.open(resolve_archive_member(archive, member), "r") as stream:
         for raw in stream:
             yield raw.decode("utf-8", errors="replace").rstrip("\r\n")
 
@@ -285,10 +333,9 @@ async def import_matches(
     if not targets and not include_county_records:
         raise RuntimeError("No live Fort Worth listings found in PostgreSQL. Sync live listings first.")
 
-    master = layout["master"]
+    effective_layout = copy.deepcopy(dict(layout))
+    master = effective_layout["master"]
     member = master.get("member", "Master.dat")
-    fields = master["fields"]
-    expected_size = int(master.get("record_size", 741))
     source_name = f"Tarrant County Tax Roll ({zip_path.name})"
 
     start_record = max(0, int(start_record or 0))
@@ -310,8 +357,12 @@ async def import_matches(
         county_batch.clear()
 
     with zipfile.ZipFile(zip_path, "r") as archive:
-        if member not in archive.namelist():
-            raise FileNotFoundError(f"{member!r} is not present in {zip_path.name}")
+        member = resolve_archive_member(archive, member)
+        with archive.open(member, "r") as stream:
+            first = stream.readline().decode("utf-8", errors="replace").rstrip("\r\n")
+        adapt_master_layout(effective_layout, len(first))
+        fields = master["fields"]
+        expected_size = int(master["record_size"])
         for record_index, line in enumerate(iter_member_lines(archive, member)):
             if record_index < start_record:
                 continue

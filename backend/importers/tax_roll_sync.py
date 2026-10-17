@@ -31,7 +31,13 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from database import PostgresDatabase
 
-from .tax_roll import ensure_indexes, import_matches, load_layout
+from .tax_roll import (
+    adapt_master_layout,
+    ensure_indexes,
+    import_matches,
+    load_layout,
+    resolve_archive_member,
+)
 
 TAX_ROLL_PAGE_URL = (
     "https://www.tarrantcountytx.gov/content/main/en/tax/property-tax/"
@@ -121,23 +127,26 @@ def validate_archive(path: Path, layout: Dict[str, Any]) -> Dict[str, Any]:
 
     with zipfile.ZipFile(path, "r") as archive:
         names = set(archive.namelist())
-        missing = REQUIRED_MEMBERS - names
+        available = {name.casefold() for name in names}
+        missing = {name for name in REQUIRED_MEMBERS if name.casefold() not in available}
         if missing:
             raise RuntimeError(f"Tax-roll ZIP is missing: {', '.join(sorted(missing))}")
 
-        master_name = layout["master"].get("member", "Master.dat")
-        expected_size = int(layout["master"].get("record_size", 741))
+        master_name = resolve_archive_member(
+            archive,
+            layout["master"].get("member", "Master.dat"),
+        )
         with archive.open(master_name, "r") as master:
             first = master.readline().decode("utf-8", errors="replace").rstrip("\r\n")
-        if len(first) != expected_size:
-            raise RuntimeError(
-                f"MASTER.DAT record length is {len(first)}, expected {expected_size}; refusing to import"
-            )
+        layout_variant = adapt_master_layout(layout, len(first))
 
-        stats_text = archive.read("Stats.txt").decode("utf-8", errors="replace").strip()
+        stats_name = resolve_archive_member(archive, "Stats.txt")
+        stats_text = archive.read(stats_name).decode("utf-8", errors="replace").strip()
         return {
             "members": sorted(names),
+            "resolved_master_member": master_name,
             "master_record_size": len(first),
+            "master_layout_variant": layout_variant,
             "stats_preview": stats_text[:500],
         }
 

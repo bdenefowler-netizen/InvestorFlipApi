@@ -6,7 +6,11 @@ import zipfile
 import pytest
 
 from importers.tax_roll import import_matches, is_fort_worth_texas_property, property_enrichment
-from importers.tax_roll_sync import select_latest_tax_roll_url, validate_tax_roll_url
+from importers.tax_roll_sync import (
+    select_latest_tax_roll_url,
+    validate_archive,
+    validate_tax_roll_url,
+)
 
 
 def test_fort_worth_filter_requires_texas():
@@ -29,6 +33,50 @@ def test_non_county_or_unversioned_urls_are_rejected():
         validate_tax_roll_url("https://example.com/TaxRoll20260717.zip")
     with pytest.raises(ValueError):
         validate_tax_roll_url("https://www.tarrantcountytx.gov/latest.zip")
+
+
+def test_archive_validation_accepts_county_filename_case_changes(tmp_path):
+    archive_path = tmp_path / "tax-roll.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("Master.dat", "X" * 741 + "\n")
+        archive.writestr("Rec.DAT", "")
+        archive.writestr("Stats.txt", "records=1")
+    layout = {"master": {"member": "MASTER.DAT", "record_size": 741}}
+
+    result = validate_archive(archive_path, layout)
+
+    assert result["resolved_master_member"] == "Master.dat"
+    assert result["master_record_size"] == 741
+
+
+def test_archive_validation_adapts_the_verified_2026_master_layout(tmp_path):
+    archive_path = tmp_path / "tax-roll-2026.zip"
+    legacy_prefix = "A" * 386
+    reserved = " " * 40
+    legacy_suffix = "B" * (741 - 386)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("Master.dat", legacy_prefix + reserved + legacy_suffix + "\n")
+        archive.writestr("Rec.DAT", "")
+        archive.writestr("Stats.txt", "records=1")
+    layout = {
+        "master": {
+            "member": "MASTER.DAT",
+            "record_size": 741,
+            "fields": {
+                "owner_name_2": {"start": 356, "end": 386, "kind": "text"},
+                "owner_address_1": {"start": 386, "end": 416, "kind": "text"},
+                "tad_litigation_flag": {"start": 739, "end": 741, "kind": "text"},
+            },
+        }
+    }
+
+    result = validate_archive(archive_path, layout)
+
+    assert result["master_record_size"] == 781
+    assert result["master_layout_variant"] == "tarrant_2026_reserved_40"
+    assert layout["master"]["fields"]["owner_name_2"]["end"] == 386
+    assert layout["master"]["fields"]["owner_address_1"]["start"] == 426
+    assert layout["master"]["fields"]["tad_litigation_flag"]["end"] == 781
 
 
 def test_tax_enrichment_reclassifies_owner_and_recomputes_screening():
