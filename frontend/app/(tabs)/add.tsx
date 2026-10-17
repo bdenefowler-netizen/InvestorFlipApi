@@ -10,6 +10,7 @@ import { colors, radius, spacing } from "@/src/theme/tokens";
 const SOURCES: {key: CountyUploadSource; label: string; hint: string}[] = [
   { key: "tad", label: "TAD", hint: "Appraisal / TAD property records" },
   { key: "tax", label: "Tax", hint: "Tax Roll or Tax Due" },
+  { key: "tax_lien", label: "Tax Lien", hint: "Court cause, TAD account, and sale status" },
   { key: "pre_foreclosure", label: "Pre-Foreclosure", hint: "Foreclosure / auction records" },
   { key: "probate", label: "Probate", hint: "Decedent Property Address is primary" },
   { key: "code_violations", label: "Code Violations", hint: "Municipal code / complaint records" },
