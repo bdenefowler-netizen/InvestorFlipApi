@@ -164,6 +164,16 @@ def _upload_categories(filename: str, rows: List[Dict[str, Any]]) -> List[str]:
     ):
         return ["code_violations"]
 
+    if (
+        "tax lien" in name
+        or "tax sale" in name
+        or (
+            {"cause number", "status"}.issubset(headers)
+            and bool(headers & {"tad account number", "account number"})
+        )
+    ):
+        return ["tax_lien"]
+
     if "tad" in name and "taxroll" not in name and "tax roll" not in name:
         return ["tad"]
 
@@ -220,6 +230,11 @@ def _prepare_row(row: Mapping[str, Any], categories: List[str]) -> Dict[str, Any
         if address:
             out["address"] = address
         out["listing type"] = "Pre-Foreclosure"
+
+    elif category == "tax_lien":
+        # The Tarrant tax-sale export has no street address. Matching must use
+        # its appraisal-account identifier, which is canonicalized below.
+        out["listing type"] = "Tax Lien"
 
     elif category in {"tax_roll", "tax_due"}:
         address = _row_lookup(
@@ -305,6 +320,8 @@ async def _tag_imported_properties(db, ids: List[str], categories: List[str]) ->
         fields["has_probate"] = True
     elif primary == "code_violations":
         fields.update(has_uploaded_code_violations=True, has_code_violations=True)
+    elif primary == "tax_lien":
+        fields["has_uploaded_tax_lien"] = True
     elif primary == "tad":
         fields["has_uploaded_tad"] = True
     if "tax_roll" in categories:

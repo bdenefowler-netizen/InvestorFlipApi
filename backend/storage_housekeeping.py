@@ -14,11 +14,30 @@ logger = logging.getLogger("storage_housekeeping")
 router = APIRouter(prefix="/api/admin/storage", tags=["admin-storage"])
 
 CONFIRMATION_PHRASE = "DELETE SAFE DATABASE JUNK"
+CLEAN_RESET_CONFIRMATION_PHRASE = "RESET INVESTORFLIP IMPORTED DATA"
+CLEAN_RESET_TABLES = (
+    "import_staging",
+    "properties",
+    "county_records",
+    "tax_roll",
+    "enrichment",
+    "tax_history",
+    "ai_analysis",
+    "saved",
+    "live_sync_log",
+    "county_sync_log",
+    "sync_log",
+)
+CLEAN_RESET_PRESERVED_TABLES = ("saved_searches",)
 
 
 class CleanupRequest(BaseModel):
     action: Literal[
-        "safe_housekeeping", "processed_staging", "old_sync_logs", "staging_batch"
+        "safe_housekeeping",
+        "processed_staging",
+        "old_sync_logs",
+        "staging_batch",
+        "clean_reset",
     ] = "safe_housekeeping"
     retention_days: int = Field(default=7, ge=1, le=365)
     keep_log_rows: int = Field(default=100, ge=10, le=5000)
@@ -28,11 +47,12 @@ class CleanupRequest(BaseModel):
 
 
 def require_cleanup_confirmation(request: CleanupRequest) -> None:
-    phrase = (
-        f"DELETE STAGING BATCH {request.batch_id}"
-        if request.action == "staging_batch"
-        else CONFIRMATION_PHRASE
-    )
+    if request.action == "staging_batch":
+        phrase = f"DELETE STAGING BATCH {request.batch_id}"
+    elif request.action == "clean_reset":
+        phrase = CLEAN_RESET_CONFIRMATION_PHRASE
+    else:
+        phrase = CONFIRMATION_PHRASE
     if request.action == "staging_batch" and not request.batch_id:
         raise HTTPException(status_code=422, detail="batch_id is required for staging_batch")
     if not request.dry_run and request.confirmation != phrase:
@@ -201,6 +221,39 @@ async def build_cleanup_preview(db: PostgresDatabase, request: CleanupRequest) -
                     request.keep_log_rows,
                 ) or 0)
 
+        clean_reset = None
+        if request.action == "clean_reset":
+            reset_tables: Dict[str, Dict[str, int]] = {}
+            processing_rows = 0
+            for table in CLEAN_RESET_TABLES:
+                if not await _table_exists(connection, table):
+                    continue
+                row_count = int(await connection.fetchval(f'SELECT count(*) FROM "{table}"') or 0)
+                total_bytes = int(
+                    await connection.fetchval(
+                        "SELECT pg_total_relation_size($1::regclass)",
+                        f"public.{table}",
+                    )
+                    or 0
+                )
+                reset_tables[table] = {"rows": row_count, "total_bytes": total_bytes}
+                if table == "import_staging":
+                    processing_rows = int(
+                        await connection.fetchval(
+                            "SELECT count(*) FROM import_staging WHERE status = 'processing'"
+                        )
+                        or 0
+                    )
+            clean_reset = {
+                "tables": reset_tables,
+                "total_rows": sum(item["rows"] for item in reset_tables.values()),
+                "total_bytes": sum(item["total_bytes"] for item in reset_tables.values()),
+                "processing_rows": processing_rows,
+                "preserved_tables": list(CLEAN_RESET_PRESERVED_TABLES),
+                "requires_worker_pause": True,
+                "note": "Schema, indexes, migrations, service configuration, and saved searches are preserved.",
+            }
+
         return {
             "action": request.action,
             "dry_run": request.dry_run,
@@ -209,9 +262,12 @@ async def build_cleanup_preview(db: PostgresDatabase, request: CleanupRequest) -
             "processed_staging": staging,
             "staging_batch": batch,
             "old_sync_logs": logs,
+            "clean_reset": clean_reset,
             "confirmation_required": (
                 f"DELETE STAGING BATCH {request.batch_id}"
                 if request.action == "staging_batch"
+                else CLEAN_RESET_CONFIRMATION_PHRASE
+                if request.action == "clean_reset"
                 else CONFIRMATION_PHRASE
             ),
             "properties_deleted": 0,
@@ -227,8 +283,29 @@ async def execute_cleanup(db: PostgresDatabase, request: CleanupRequest) -> Dict
     pool = await db.connect()
     deleted_staging = 0
     deleted_logs: Dict[str, int] = {}
+    reset_tables: Dict[str, int] = {}
     async with pool.acquire() as connection:
         async with connection.transaction():
+            if request.action == "clean_reset":
+                reset_preview = preview.get("clean_reset") or {}
+                if int(reset_preview.get("processing_rows") or 0):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Import rows are currently processing; pause the worker and retry",
+                    )
+                existing_tables = [
+                    table
+                    for table in CLEAN_RESET_TABLES
+                    if await _table_exists(connection, table)
+                ]
+                reset_tables = {
+                    table: int((reset_preview.get("tables") or {}).get(table, {}).get("rows") or 0)
+                    for table in existing_tables
+                }
+                if existing_tables:
+                    quoted = ", ".join(f'"{table}"' for table in existing_tables)
+                    await connection.execute(f"TRUNCATE TABLE {quoted}")
+
             if request.action == "staging_batch":
                 assert request.batch_id is not None
                 processing = int(await connection.fetchval(
@@ -287,6 +364,7 @@ async def execute_cleanup(db: PostgresDatabase, request: CleanupRequest) -> Dict
             "processed_staging": deleted_staging,
             "sync_logs": deleted_logs,
             "properties": 0,
+            "clean_reset_tables": reset_tables,
         },
     }
 

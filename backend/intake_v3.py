@@ -15,6 +15,8 @@ OWNER=("owner","owner name","current owner","property owner","seller")
 PHONE=("phone","phone number","owner phone","seller phone")
 EMAIL=("email","owner email","seller email")
 MAIL=("owner mailing address","tad owner mailing address","mailing address","owner address")
+CAUSE=("county cause number","cause number","cause no","cause #")
+SALE_STATUS=("tax lien status","tax sale status","sale status","status")
 
 def _key(v:Any)->str:
     return re.sub(r"[^a-z0-9]+"," ",str(v or "").strip().lower()).strip()
@@ -33,6 +35,16 @@ def _get(row:Mapping[str,Any], names)->str:
 
 def _legal(v:Any)->str:
     return re.sub(r"[^A-Z0-9]+"," ",_text(v).upper()).strip()
+
+def _tax_lien_status(v:Any)->str:
+    status=_text(v)
+    key=_key(status)
+    if key=="for sale": return "For Sale"
+    if key.startswith("for sale") and "royalty interest only" in key:
+        return "For Sale - Royalty Interest Only"
+    if key=="withdrawn prior to dc": return "Withdrawn Prior to DC"
+    if key.startswith("withdrawn"): return "Withdrawn"
+    return status
 
 def _owner(v:Any)->str:
     parts=re.sub(r"[^A-Z0-9]+"," ",_text(v).upper()).split()
@@ -119,6 +131,8 @@ def normalize_import_row(row:Mapping[str,Any], source_name:str, row_number:int)-
     if i["mailing"]: r["owner_mailing_address"]=i["mailing"]
     if i["phone"]: r["owner_phone"]=i["phone"]
     if i["email"]: r["owner_email"]=i["email"]
+    cause=_get(row,CAUSE)
+    if cause: r["cause_number"]=cause
     # Some TAD workbooks use CITY for a numeric taxing-jurisdiction code. A
     # numeric value such as 24.0 is not a municipality and must never become a
     # display address. Keep it in raw_import_row for audit instead.
@@ -130,6 +144,21 @@ def normalize_import_row(row:Mapping[str,Any], source_name:str, row_number:int)-
     match=re.search(r"\b(\d{5})(?:-\d{4})?\b",zip_code)
     r["zip"]=match.group(1) if match else ""
     _apply_source(r,cat)
+    if cat=="tax_lien":
+        status=_tax_lien_status(_get(row,SALE_STATUS))
+        status_key=_key(status)
+        royalty_only="royalty interest only" in status_key
+        withdrawn=status_key.startswith("withdrawn")
+        active=status_key=="for sale"
+        r.update(
+            sale_status=status,
+            tax_lien_status=status,
+            tax_lien_active=active,
+            tax_lien_royalty_interest_only=royalty_only,
+            tax_lien_withdrawn=withdrawn,
+            tax_delinquent=active,
+            listing_type="Tax Lien" if active else None,
+        )
     if cat=="tad" and i["tad"]: r["tad_verified"]=True
     r["updated_at"]=now
     return r
@@ -197,7 +226,9 @@ def _merge(existing:Dict[str,Any],incoming:Dict[str,Any],method:str,confidence:i
         "tax_lien": {"account_id","apn","parcel_id","legal_description","legal_key","owner_name",
                      "owner_mailing_address","current_tax_amount_due","prior_tax_amount_due",
                      "annual_taxes","tax_delinquent","sale_status","cause_number","sale_date",
-                     "purchaser","sale_amount","lead_action","has_uploaded_tax","raw_import_row",
+                     "tax_lien_status","tax_lien_active","tax_lien_royalty_interest_only",
+                     "tax_lien_withdrawn","purchaser","sale_amount","lead_action",
+                     "has_uploaded_tax","raw_import_row",
                      "import_row_number","updated_at"},
         "owner": {"account_id","apn","parcel_id","legal_description","legal_key","owner_name",
                   "owner_phone","owner_email","owner_mailing_address","owner_upload",

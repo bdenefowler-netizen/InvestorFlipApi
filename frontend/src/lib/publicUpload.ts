@@ -1,6 +1,6 @@
 import { API_BASE } from "./api";
 
-export type CountyUploadSource = "tad" | "tax" | "pre_foreclosure" | "probate" | "code_violations" | "owner";
+export type CountyUploadSource = "tad" | "tax" | "tax_lien" | "pre_foreclosure" | "probate" | "code_violations" | "owner";
 
 export type PublicUploadAsset = {
   uri: string;
@@ -56,6 +56,7 @@ export type PublicUploadResult = {
 const SOURCE_PREFIX: Record<CountyUploadSource, string> = {
   tad: "tad",
   tax: "taxroll",
+  tax_lien: "tax_lien",
   pre_foreclosure: "preforeclosure",
   probate: "probate",
   code_violations: "code_violation",

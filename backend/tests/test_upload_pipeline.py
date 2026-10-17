@@ -1,4 +1,5 @@
 from county_records_routes import _display_staged, _row_identity
+from bulk_import import _prepare_row, _upload_categories
 from import_worker import _code_records
 from intake_v3 import _ident, _merge, normalize_import_row
 
@@ -132,3 +133,53 @@ def test_tad_enrichment_cannot_erase_a_real_listing():
     assert merged["price"] == 250000
     assert merged["city"] == "Fort Worth"
     assert merged["assessed_value"] == 180000
+
+
+def test_tax_lien_upload_is_detected_and_matches_by_tad_account():
+    raw = {
+        "cause_number": "D37745-23",
+        "tad_account_number": "862274",
+        "status": "For Sale",
+    }
+    categories = _upload_categories("tax_lien__tarrant.csv", [raw])
+    prepared = _prepare_row(raw, categories)
+    row = normalize_import_row(prepared, "User upload [tax_lien]: tarrant.csv", 2)
+
+    assert categories == ["tax_lien"]
+    assert row["account_id"] == "862274"
+    assert row["cause_number"] == "D37745-23"
+    assert row["sale_status"] == "For Sale"
+    assert row["tax_lien_active"] is True
+    assert row["tax_delinquent"] is True
+    assert row["listing_type"] == "Tax Lien"
+
+
+def test_tax_lien_royalty_and_withdrawn_rows_do_not_become_house_leads():
+    royalty = normalize_import_row(
+        {
+            "cause_number": "D40000-24",
+            "tad_account_number": "123",
+            "status": "For Sale\u00a0Royalty\u00a0\n Interest only",
+        },
+        "User upload [tax_lien]: tarrant.csv",
+        2,
+    )
+    withdrawn = normalize_import_row(
+        {
+            "cause_number": "D40001-24",
+            "tad_account_number": "456",
+            "status": "Withdrawn Prior to DC",
+        },
+        "User upload [tax_lien]: tarrant.csv",
+        3,
+    )
+
+    assert royalty["sale_status"] == "For Sale - Royalty Interest Only"
+    assert royalty["tax_lien_royalty_interest_only"] is True
+    assert royalty["tax_lien_active"] is False
+    assert royalty["tax_delinquent"] is False
+    assert royalty["listing_type"] is None
+    assert withdrawn["tax_lien_withdrawn"] is True
+    assert withdrawn["tax_lien_active"] is False
+    assert withdrawn["tax_delinquent"] is False
+    assert withdrawn["listing_type"] is None
