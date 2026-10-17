@@ -83,6 +83,7 @@ async def _stage_payload(
     rows, sheets = _read_upload_rows(payload, ext, name)
     categories = bulk._upload_categories(name, rows)
     prepared = [bulk._prepare_row(row, categories) for row in rows]
+    validation = bulk._validation_summary(prepared) if "tad" in categories else None
     parse_seconds = time.perf_counter() - parse_started
 
     store_started = time.perf_counter()
@@ -95,8 +96,7 @@ async def _stage_payload(
     )
     store_seconds = time.perf_counter() - store_started
 
-    return (
-        {
+    report = {
             "file": name,
             "status": "staged",
             "categories": categories,
@@ -111,9 +111,10 @@ async def _stage_payload(
                 "parse_seconds": round(parse_seconds, 3),
                 "store_seconds": round(store_seconds, 3),
             },
-        },
-        categories,
-    )
+        }
+    if validation is not None:
+        report["validation"] = validation
+    return report, categories
 
 
 async def _stage_uploaded_file(file: UploadFile) -> Dict[str, Any]:
@@ -137,6 +138,7 @@ async def _stage_uploaded_file(file: UploadFile) -> Dict[str, Any]:
         reports: List[Dict[str, Any]] = []
         categories_seen: List[str] = []
         totals = {"accepted": 0, "rejected": 0, "inserted": 0, "updated": 0, "staged": 0}
+        validation_totals = {"ok": 0, "review": 0, "review_examples": []}
         parse_seconds_total = 0.0
         store_seconds_total = 0.0
 
@@ -159,6 +161,14 @@ async def _stage_uploaded_file(file: UploadFile) -> Dict[str, Any]:
             totals["staged"] += int(report["staged"])
             parse_seconds_total += float(report["timings"]["parse_seconds"])
             store_seconds_total += float(report["timings"]["store_seconds"])
+            validation = report.get("validation") or {}
+            validation_totals["ok"] += int(validation.get("ok") or 0)
+            validation_totals["review"] += int(validation.get("review") or 0)
+            remaining = 5 - len(validation_totals["review_examples"])
+            if remaining > 0:
+                validation_totals["review_examples"].extend(
+                    list(validation.get("review_examples") or [])[:remaining]
+                )
 
         if suffix == ".zip":
             try:
@@ -203,7 +213,7 @@ async def _stage_uploaded_file(file: UploadFile) -> Dict[str, Any]:
                 ) from exc
 
         total_seconds = time.perf_counter() - request_started
-        return {
+        response = {
             "ok": bool(totals["staged"]),
             "batch_id": batch_id,
             "filename": filename,
@@ -235,6 +245,13 @@ async def _stage_uploaded_file(file: UploadFile) -> Dict[str, Any]:
                 "bytes_received": len(raw),
             },
         }
+        if "tad" in categories_seen:
+            response["validation"] = {
+                "status": "REVIEW" if validation_totals["review"] else "OK",
+                **validation_totals,
+                "requirements": ["TAD account number", "Legal description"],
+            }
+        return response
     finally:
         await db.close()
 

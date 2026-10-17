@@ -1,5 +1,5 @@
 from county_records_routes import _display_staged, _row_identity
-from bulk_import import _prepare_row, _upload_categories
+from bulk_import import _prepare_row, _upload_categories, _validation_summary
 from import_worker import _code_records
 from intake_v3 import _ident, _merge, normalize_import_row
 
@@ -101,6 +101,56 @@ def test_tad_upload_does_not_invent_listing_or_numeric_city():
     assert row["is_live_listing"] is False
     assert row["listing_type"] is None
     assert row["listing_status"] is None
+
+
+def test_tad_import_validation_marks_complete_row_ok():
+    prepared = _prepare_row(
+        {
+            "Situs Address": "4711 Anchorage Dr",
+            "Account ID": "12345678",
+            "Legal Description": "LOT 1 BLOCK 2 TEST ADDITION",
+        },
+        ["tad"],
+    )
+
+    assert prepared["tad account #"] == "12345678"
+    assert prepared["import validation status"] == "OK"
+    assert prepared["import review required"] is False
+    assert prepared["import review reasons"] == []
+
+
+def test_tad_import_validation_keeps_incomplete_rows_for_review():
+    missing_legal = _prepare_row(
+        {"Situs Address": "100 Main St", "Account Number": "111"},
+        ["tad"],
+    )
+    missing_both = _prepare_row(
+        {"Situs Address": "200 Oak Ave"},
+        ["tad"],
+    )
+    summary = _validation_summary([missing_legal, missing_both])
+
+    assert missing_legal["import validation status"] == "REVIEW"
+    assert missing_legal["import review reasons"] == ["Missing legal description"]
+    assert missing_both["import review reasons"] == [
+        "Missing TAD account number",
+        "Missing legal description",
+    ]
+    assert summary["ok"] == 0
+    assert summary["review"] == 2
+    assert summary["review_examples"][0]["address"] == "100 Main St"
+
+
+def test_tad_validation_survives_property_normalization():
+    prepared = _prepare_row(
+        {"Situs Address": "100 Main St", "Account ID": "111"},
+        ["tad"],
+    )
+    row = normalize_import_row(prepared, "User upload [tad]: tad.xlsx", 2)
+
+    assert row["import_validation_status"] == "REVIEW"
+    assert row["import_review_required"] is True
+    assert row["import_review_reasons"] == ["Missing legal description"]
 
 
 def test_tad_enrichment_cannot_erase_a_real_listing():

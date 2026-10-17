@@ -10,6 +10,19 @@ export type PublicUploadAsset = {
   file?: Blob;
 };
 
+export type ImportValidation = {
+  status: "OK" | "REVIEW";
+  ok: number;
+  review: number;
+  requirements?: string[];
+  review_examples?: Array<{
+    row_number?: number;
+    address?: string;
+    account_id?: string;
+    reasons: string[];
+  }>;
+};
+
 export type PublicUploadResult = {
   ok: boolean;
   filename: string;
@@ -22,6 +35,7 @@ export type PublicUploadResult = {
   updated: number;
   staged?: number;
   property_ids: string[];
+  validation?: ImportValidation;
   files?: Array<{
     file: string;
     status: string;
@@ -32,6 +46,7 @@ export type PublicUploadResult = {
     inserted?: number;
     updated?: number;
     staged?: number;
+    validation?: ImportValidation;
     reason?: string;
     sheets?: Array<{ sheet: string; rows: number }>;
   }>;

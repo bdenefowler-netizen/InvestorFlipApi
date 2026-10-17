@@ -238,6 +238,9 @@ async def stage_targeted_tad_xlsx(
     scanned = 0
     matched = 0
     staged = 0
+    validation_ok = 0
+    validation_review = 0
+    review_examples: list[dict[str, Any]] = []
     sheet_reports: list[dict[str, Any]] = []
 
     try:
@@ -292,7 +295,20 @@ async def stage_targeted_tad_xlsx(
 
                 matched += 1
                 sheet_matched += 1
-                pending.append(prepare_row(row, categories))
+                prepared = prepare_row(row, categories)
+                if prepared.get("import review required"):
+                    validation_review += 1
+                    if len(review_examples) < 5:
+                        reasons = prepared.get("import review reasons") or []
+                        review_examples.append({
+                            "row_number": scanned + 1,
+                            "address": prepared.get("address") or "",
+                            "account_id": prepared.get("tad account #") or prepared.get("account id") or "",
+                            "reasons": reasons if isinstance(reasons, list) else [str(reasons)],
+                        })
+                else:
+                    validation_ok += 1
+                pending.append(prepared)
 
                 if len(pending) >= batch_size:
                     await flush()
@@ -332,6 +348,13 @@ async def stage_targeted_tad_xlsx(
         "staged": staged,
         "filtered_out": max(0, scanned - matched),
         "property_ids": [],
+        "validation": {
+            "status": "REVIEW" if validation_review else "OK",
+            "ok": validation_ok,
+            "review": validation_review,
+            "requirements": ["TAD account number", "Legal description"],
+            "review_examples": review_examples,
+        },
         "processing": {
             "status": "staged",
             "matching": "deferred",

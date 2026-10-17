@@ -267,6 +267,11 @@ def _prepare_row(row: Mapping[str, Any], categories: List[str]) -> Dict[str, Any
         "TAD Account Number",
         "TAD Account",
         "Appraisal District Number",
+        "Account ID",
+        "Account Number",
+        "Account",
+        "Prop ID",
+        "Property ID",
     )
     apn = _row_lookup(
         row,
@@ -302,7 +307,47 @@ def _prepare_row(row: Mapping[str, Any], categories: List[str]) -> Dict[str, Any
     if cause is not None:
         out["cause number"] = cause
     out["upload categories"] = " | ".join(categories)
+
+    # TAD is the property-identity backbone for every downstream lead source.
+    # Keep incomplete rows for audit/recovery, but mark them clearly so a human
+    # can repair the source data before enrichment is trusted.
+    if category == "tad":
+        reasons: List[str] = []
+        if not _row_lookup(out, "tad account #", "account id"):
+            reasons.append("Missing TAD account number")
+        if not _row_lookup(out, "legal description"):
+            reasons.append("Missing legal description")
+        out["import validation status"] = "REVIEW" if reasons else "OK"
+        out["import review required"] = bool(reasons)
+        out["import review reasons"] = reasons
     return out
+
+
+def _validation_summary(rows: List[Mapping[str, Any]], *, example_limit: int = 5) -> Dict[str, Any]:
+    """Summarize advisory import validation without rejecting recoverable rows."""
+    reviewed = [row for row in rows if _row_lookup(row, "import review required") is True]
+    examples: List[Dict[str, Any]] = []
+    for row_number, row in enumerate(rows, start=2):
+        if _row_lookup(row, "import review required") is not True:
+            continue
+        reasons = row.get("import review reasons") or []
+        if isinstance(reasons, str):
+            reasons = [reasons]
+        examples.append({
+            "row_number": row_number,
+            "address": _row_lookup(row, "address", "property address", "situs address") or "",
+            "account_id": _row_lookup(row, "tad account #", "account id") or "",
+            "reasons": list(reasons),
+        })
+        if len(examples) >= example_limit:
+            break
+    return {
+        "status": "REVIEW" if reviewed else "OK",
+        "ok": len(rows) - len(reviewed),
+        "review": len(reviewed),
+        "requirements": ["TAD account number", "Legal description"],
+        "review_examples": examples,
+    }
 
 
 async def _tag_imported_properties(db, ids: List[str], categories: List[str]) -> None:
