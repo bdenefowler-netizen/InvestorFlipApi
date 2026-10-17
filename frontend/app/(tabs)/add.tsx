@@ -85,6 +85,19 @@ export default function AddScreen() {
         {result ? <View style={s.ok}>
           <Text style={s.okTitle}>✓ {active.label} safely received</Text>
           <Text style={s.hint}>{result.staged ?? result.accepted} staged · matching and enrichment are processing in the background · {result.rejected} rejected</Text>
+          {result.validation ? <View style={result.validation.review ? s.review : s.valid}>
+            <Text style={result.validation.review ? s.reviewTitle : s.validTitle}>
+              {result.validation.review
+                ? `⚠ ${result.validation.review} row${result.validation.review === 1 ? "" : "s"} need review`
+                : `✓ ${result.validation.ok} row${result.validation.ok === 1 ? "" : "s"} include TAD account and legal description`}
+            </Text>
+            {(result.validation.review_examples || []).map((item, index) => {
+              const identity = item.address || item.account_id || `Row ${item.row_number || index + 2}`;
+              return <Text key={`${item.row_number || index}-${identity}`} style={s.reviewItem}>
+                {identity} · {item.reasons.join(", ")}
+              </Text>;
+            })}
+          </View> : null}
           <Pressable onPress={() => router.push("/county" as any)}><Text style={s.link}>Open County Records →</Text></Pressable>
         </View> : null}
         {error ? <View style={s.err}><Text style={s.errText}>{error}</Text></View> : null}
@@ -123,6 +136,11 @@ const s = StyleSheet.create({
   uploadText:{fontSize:13,fontWeight:"800",color:"#fff"},disabled:{opacity:.5},
   ok:{padding:12,borderRadius:radius.md,backgroundColor:"#E8F0EB",borderWidth:1,borderColor:"#C9DACE"},
   okTitle:{fontSize:13,fontWeight:"800",color:colors.onSurface},
+  review:{marginTop:9,padding:9,borderRadius:radius.md,backgroundColor:"#FFF4D6",borderWidth:1,borderColor:"#E8C66A",gap:4},
+  reviewTitle:{fontSize:11,fontWeight:"800",color:"#6E4D00"},
+  reviewItem:{fontSize:10,lineHeight:15,color:"#6E4D00"},
+  valid:{marginTop:9,padding:9,borderRadius:radius.md,backgroundColor:"#EDF7EF",borderWidth:1,borderColor:"#BFD8C4"},
+  validTitle:{fontSize:11,fontWeight:"800",color:"#285C34"},
   link:{marginTop:8,fontSize:11,fontWeight:"800",color:colors.brandPrimary},
   err:{padding:12,borderRadius:radius.md,backgroundColor:"#F8E9E7",borderWidth:1,borderColor:"#ECC7C3"},
   errText:{fontSize:12,fontWeight:"700",color:colors.error},

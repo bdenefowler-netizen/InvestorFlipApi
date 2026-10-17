@@ -127,6 +127,12 @@ def normalize_import_row(row:Mapping[str,Any], source_name:str, row_number:int)-
     if i["tad"]: r["account_id"]=i["tad"]
     if i["apn"]: r["apn"]=r["parcel_id"]=i["apn"]
     if i["legal"]: r["legal_description"]=i["legal"]; r["legal_key"]=i["legal_key"]
+    validation_status=_get(row,("import validation status",))
+    if validation_status:
+        r["import_validation_status"]=validation_status
+        r["import_review_required"]=validation_status.upper()=="REVIEW"
+        reasons=row.get("import review reasons") or row.get("import_review_reasons") or []
+        r["import_review_reasons"]=reasons if isinstance(reasons,list) else [str(reasons)]
     if i["owner"]: r["owner_name"]=i["owner"]
     if i["mailing"]: r["owner_mailing_address"]=i["mailing"]
     if i["phone"]: r["owner_phone"]=i["phone"]
@@ -217,6 +223,7 @@ def _merge(existing:Dict[str,Any],incoming:Dict[str,Any],method:str,confidence:i
                 "market_value","market_value_source","sqft","year_built","stories","garage",
                 "pool","hvac","quality","condition","improvement_type","effective_year",
                 "subdivision","land_use_code","has_uploaded_tad","tad_verified",
+                "import_validation_status","import_review_required","import_review_reasons",
                 "raw_import_row","import_row_number","updated_at"},
         "tax": {"account_id","apn","parcel_id","legal_description","legal_key","owner_name",
                 "owner_mailing_address","current_tax_amount_due","prior_tax_amount_due",
