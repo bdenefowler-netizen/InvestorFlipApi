@@ -35,6 +35,13 @@ The existing bulk tax-roll sync remains useful as a durable, searchable local
 snapshot. It validates and streams the official dated ZIP instead of loading an
 HTML downloads page into pandas or replacing an entire staging table.
 
+## Optional Socrata token
+
+Set `SOCRATA_APP_TOKEN` in Railway to send the token through the preferred
+`X-App-Token` header. Catalog search remains usable without it, but the token
+provides a separate, higher-capacity request pool for Socrata data calls. Do
+not commit the token or pass it in a query string.
+
 ## Safety and behavior
 
 - Search input is normalized and SQL literals are escaped before ArcGIS queries.

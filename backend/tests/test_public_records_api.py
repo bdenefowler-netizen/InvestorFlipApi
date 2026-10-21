@@ -10,6 +10,7 @@ from importers.arcgis_client import (
     sql_literal,
 )
 from importers.fort_worth_permits import permit_is_open, summarize_permits
+from importers.socrata_catalog import request_headers
 from importers.tad_scraper import TAD_PROPERTY_LAYER_URL
 
 
@@ -59,6 +60,13 @@ def test_search_terms_are_bounded_and_sql_quotes_are_escaped():
 
 def test_tad_uses_the_full_parcel_layer_not_the_county_owned_subset():
     assert TAD_PROPERTY_LAYER_URL.endswith("Dynamic/TADParcels/FeatureServer/0")
+
+
+def test_socrata_token_is_optional_and_sent_as_a_header(monkeypatch):
+    monkeypatch.delenv("SOCRATA_APP_TOKEN", raising=False)
+    assert "X-App-Token" not in request_headers()
+    monkeypatch.setenv("SOCRATA_APP_TOKEN", "test-token")
+    assert request_headers()["X-App-Token"] == "test-token"
 
 
 def test_permit_summary_counts_open_and_preserves_official_fields():

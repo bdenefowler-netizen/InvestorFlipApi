@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 CATALOG_URL = "https://api.us.socrata.com/api/catalog/v1"
+
+
+def request_headers() -> Dict[str, str]:
+    headers = {"User-Agent": "InvestorFlip/1.0 public-records-client"}
+    token = os.environ.get("SOCRATA_APP_TOKEN", "").strip()
+    if token:
+        headers["X-App-Token"] = token
+    return headers
 
 
 async def search_catalog(
@@ -28,7 +37,7 @@ async def search_catalog(
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=httpx.Timeout(30.0),
-        headers={"User-Agent": "InvestorFlip/1.0 public-records-client"},
+        headers=request_headers(),
     ) as client:
         response = await client.get(CATALOG_URL, params=params)
         response.raise_for_status()
