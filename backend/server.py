@@ -63,6 +63,7 @@ from importers import feeds as feeds_mod
 from add_all_routes import router as all_router
 from saved_searches_routes import router as saved_searches_router
 from county_records_routes import router as county_records_router
+from public_records_routes import router as public_records_router
 from zillow_enrich_routes import router as zillow_enrich_router
 from rapidapi_extra_routes import router as rapidapi_extra_router
 from storage_housekeeping import log_storage_summary, router as storage_housekeeping_router
@@ -2913,6 +2914,7 @@ if os.environ.get("ENABLE_API_BACKGROUND_SYNC", "false").strip().lower() == "tru
 app.include_router(all_router)  # FREE data sources (violations, foreclosures, OffMarketDeck, SmartPropLeads, etc.)
 app.include_router(saved_searches_router)
 app.include_router(county_records_router)
+app.include_router(public_records_router)
 app.include_router(zillow_enrich_router)  # Zillow property enrichment
 app.include_router(rapidapi_extra_router)  # Admin-protected optional provider diagnostics
 app.include_router(storage_housekeeping_router)  # Preview-first database retention tools

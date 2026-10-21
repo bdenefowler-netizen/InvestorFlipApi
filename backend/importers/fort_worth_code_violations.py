@@ -15,6 +15,7 @@ import httpx
 
 from address_utils import canonical_street_key
 from database import PostgresDatabase
+from importers.arcgis_client import ArcGISClient, attributes, clean_search_text, sql_like_contains
 from importers.county_records import county_record_id, upsert_county_records, utc_now
 
 
@@ -24,6 +25,7 @@ ARCGIS_QUERY_URL = (
     "CFW_Open_Data_Code_Violations_Table_view/FeatureServer/0/query"
 )
 PAGE_SIZE = 1000
+ARCGIS_LAYER_URL = ARCGIS_QUERY_URL.rsplit("/query", 1)[0]
 
 
 def _text(value: Any) -> str:
@@ -189,6 +191,49 @@ async def fetch_code_violation_features(limit: Optional[int] = None) -> List[Dic
             if len(features) < batch_size or (limit is not None and len(rows) >= limit):
                 break
     return rows
+
+
+async def search_code_violations_by_address(
+    address: str,
+    *,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    """Return a read-only violation history for one street address."""
+    street = clean_search_text(address.split(",", 1)[0]).upper()
+    if len(street) < 3:
+        return {"query": address, "violation_count": 0, "open_violation_count": 0, "violations": []}
+    client = ArcGISClient(ARCGIS_LAYER_URL, page_size=min(max(limit, 1), PAGE_SIZE))
+    rows = attributes(await client.fetch_all(
+        where=f"UPPER(Violation_Address) LIKE {sql_like_contains(street)}",
+        out_fields="*",
+        limit=min(max(limit, 1), 500),
+        order_by="ObjectId DESC",
+    ))
+    violations = []
+    for raw in rows:
+        status = _text(raw.get("Violation_Current_Status") or raw.get("Case_Current_Status"))
+        item = {
+            "case_id": _text(raw.get("Case_ID")),
+            "violation_id": _text(raw.get("Violation_ID")),
+            "address": _text(raw.get("Violation_Address")),
+            "type": _text(raw.get("Complaint_Type_Description")),
+            "status": status,
+            "is_open": _status_open(status),
+            "case_created_date": _epoch_to_iso(raw.get("Case_Created_Date")),
+            "violation_created_date": _epoch_to_iso(raw.get("Violation_Created_Date")),
+            "updated_date": _epoch_to_iso(raw.get("Update_Date")),
+            "next_activity_due": _epoch_to_iso(raw.get("Next_Activity_Due_Date")),
+            "geocode_score": raw.get("GeoCodeScore"),
+            "source": SOURCE_NAME,
+        }
+        violations.append({key: value for key, value in item.items() if value not in (None, "")})
+    return {
+        "query": address,
+        "source": SOURCE_NAME,
+        "violation_count": len(violations),
+        "open_violation_count": sum(1 for item in violations if item.get("is_open")),
+        "violations": violations,
+    }
 
 
 async def _attach_existing_ids(db: PostgresDatabase, records: List[Dict[str, Any]]) -> None:

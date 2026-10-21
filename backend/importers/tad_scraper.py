@@ -15,20 +15,29 @@ import logging
 import uuid
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import httpx
 
-from address_utils import canonical_street_key, street_prefix_regex
 from database import PostgresDatabase
+from importers.arcgis_client import (
+    ArcGISClient,
+    attributes,
+    clean_search_text,
+    sql_like_contains,
+    sql_literal,
+)
 
 logger = logging.getLogger("tarrantrei.tad")
 
-# Correct TAD Parcels Feature Service URL
-TAD_PARCELS_URL = (
+# Full official Tarrant County/TAD parcel layer. It exposes ownership, situs,
+# deed, improvement, and value fields for more than 750,000 parcels. The
+# similarly named Tax/TCProperty layer is only a small county-owned subset.
+TAD_PROPERTY_LAYER_URL = (
     "https://mapit.tarrantcounty.com/arcgis/rest/services/"
-    "Dynamic/TADParcels/FeatureServer/0/query"
+    "Dynamic/TADParcels/FeatureServer/0"
 )
+TAD_PARCELS_URL = f"{TAD_PROPERTY_LAYER_URL}/query"
 
 TAD_MAX_RECORDS = 1000
 
@@ -203,17 +212,37 @@ def _parse_tad_property(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 async def search_tad_by_address(address: str) -> List[Dict[str, Any]]:
     """Search TAD for properties by address."""
-    clean = address.upper().strip()
-    # Try direct situs address match
-    results = []
-    for where in [
-        f"UPPER(SITUS_ADDR) LIKE '%{clean}%'",
-        f"UPPER(SITUS_ADDR) LIKE '%{clean.split(',')[0]}%'",
-    ]:
-        try:
-            results.extend(_query_tad(where=where, result_count=50))
-        except Exception as e:
-            logger.warning("TAD search failed: %s", e)
+    address_parts = address.split(",")
+    clean = clean_search_text(address_parts[0]).upper()
+    if len(clean) < 3:
+        return []
+    city = clean_search_text(address_parts[1]).upper() if len(address_parts) > 1 else ""
+    city_clause = f" AND UPPER(CITY) = {sql_literal(city)}" if city else ""
+    match = re.match(r"^(\d+)\s+(.+)$", clean)
+    clauses = []
+    if match:
+        house = int(match.group(1))
+        street = re.sub(
+            r"\b(?:ST|STREET|RD|ROAD|AVE|AVENUE|DR|DRIVE|LN|LANE|CT|COURT|BLVD|BOULEVARD|PL|PLACE|WAY|TRL|TRAIL|CIR|CIRCLE|PKWY|PARKWAY)\b.*$",
+            "",
+            match.group(2),
+        ).strip()
+        if street:
+            clauses.append(
+                f"STREET_NO = {house} AND UPPER(STREET_NAM) LIKE "
+                f"{sql_like_contains(street)}{city_clause}"
+            )
+    clauses.append(
+        f"UPPER(SITUS_ADDR) LIKE {sql_like_contains(clean)}{city_clause}"
+    )
+
+    results: List[Dict[str, Any]] = []
+    client = ArcGISClient(TAD_PROPERTY_LAYER_URL, page_size=50)
+    for where in clauses:
+        payload = await client.query(where=where, out_fields=_REQUIRED_FIELDS, count=50)
+        results.extend(attributes(payload.get("features") or []))
+        if results:
+            break
 
     # Deduplicate
     seen = set()
@@ -226,11 +255,20 @@ async def search_tad_by_address(address: str) -> List[Dict[str, Any]]:
     return unique
 
 
-async def search_tad_by_owner(owner_name: str) -> List[Dict[str, Any]]:
+async def search_tad_by_owner(owner_name: str, limit: int = 100) -> List[Dict[str, Any]]:
     """Search TAD for properties by owner name."""
-    clean = owner_name.upper().strip()
-    where = f"UPPER(OWNER_NAME) LIKE '%{clean}%'"
-    return _query_tad(where=where, result_count=100)
+    clean = clean_search_text(owner_name).upper()
+    if len(clean) < 2:
+        return []
+    where = f"UPPER(OWNER_NAME) LIKE {sql_like_contains(clean)}"
+    client = ArcGISClient(TAD_PROPERTY_LAYER_URL, page_size=min(max(limit, 1), 1000))
+    payload = await client.query(
+        where=where,
+        out_fields=_REQUIRED_FIELDS,
+        count=min(max(limit, 1), 1000),
+        order_by="OWNER_NAME ASC",
+    )
+    return attributes(payload.get("features") or [])
 
 
 async def fetch_tad_properties(
@@ -262,8 +300,6 @@ async def fetch_tad_properties(
 
     logger.info("Fetched %d properties from TAD", len(all_results))
     return all_results
-
-
 
 # --- Off-market distress gate -------------------------------------------------
 # TAD is the tax roll (every parcel). We only INSERT unmatched parcels when they
@@ -328,7 +364,8 @@ async def import_tad_properties(
 
 
 if __name__ == "__main__":
-    import asyncio, json
+    import asyncio
+    import json
 
     async def main():
         from database import PostgresDatabase
