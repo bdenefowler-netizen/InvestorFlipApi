@@ -386,7 +386,9 @@ def main() -> None:
     from import_worker import start_import_worker
     from server import app
 
-    start_import_worker(app)
+    import_worker_enabled = os.environ.get("IMPORT_WORKER_ENABLED", "true").strip().lower()
+    if import_worker_enabled not in {"0", "false", "no", "off"}:
+        start_import_worker(app)
 
     uvicorn.run(
         app,

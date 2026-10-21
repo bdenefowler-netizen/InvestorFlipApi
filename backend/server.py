@@ -617,6 +617,10 @@ OPENWEB_NINJA_REAL_ESTATE_API_KEY = (
     or os.environ.get("OPENWEB_NINJA_KEY", "").strip()
     or os.environ.get("OPENWEB_NINJA_API_KEY", "").strip()
 )
+BRIGHTDATA_ZILLOW_ENABLED = os.environ.get(
+    "BRIGHTDATA_ZILLOW_ENABLED",
+    "false",
+).lower() == "true"
 OPENWEB_NINJA_ZILLOW_BASE_URL = os.environ.get(
     "OPENWEB_NINJA_ZILLOW_BASE_URL",
     "https://api.openwebninja.com/realtime-zillow-data",
@@ -979,6 +983,10 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
         "market_value_source": "third-party automated estimate" if zestimate else None,
         "assessed_value": assessed_value,
         "annual_taxes": annual_taxes,
+        "rent_zestimate": safe_int(item.get("rent_zestimate") or item.get("rentZestimate"), None),
+        "parcel_id": item.get("parcel_id") or item.get("parcelId"),
+        "tax_history": item.get("tax_history") or item.get("taxHistory") or [],
+        "price_history": item.get("price_history") or item.get("priceHistory") or [],
         "equity_estimate": None,
         "equity_status": "unknown - mortgage balance required",
         "est_roi_pct": None,
@@ -1002,13 +1010,18 @@ def normalize_live_listing(item: Dict[str, Any], source_name: str) -> Optional[D
         "listing_agent_name": item.get("listing_agent_name") or item.get("agentName") or source_agent.get("agent_name"),
         "listing_agent_phone": item.get("listing_agent_phone") or item.get("agentPhone"),
         "broker_name": item.get("broker_name") or item.get("brokerName") or source_agent.get("office_name"),
-        "detail_url": item.get("detailUrl") or item.get("detail_url") or item.get("href") or item.get("url"),
+        "detail_url": item.get("detailUrl") or item.get("detail_url") or item.get("hdpUrl") or item.get("href") or item.get("url"),
+        "listing_description": description_value if isinstance(description_value, str) else None,
         "listing_date": item.get("list_date") or item.get("listDate"),
-        "last_sold_date": item.get("last_sold_date") or item.get("lastSoldDate"),
+        "last_sold_date": item.get("last_sold_date") or item.get("lastSoldDate") or item.get("dateSoldString") or item.get("dateSold"),
         "last_sold_price": safe_int(item.get("last_sold_price") or item.get("lastSoldPrice"), None),
         "is_live_listing": True,
         "data_source": source_name,
-        "source_platform": "Realtor.com" if "realtor.com" in str(item.get("href") or "").lower() else None,
+        "source_platform": (
+            "Zillow" if "zillow" in source_name.lower()
+            else "Realtor.com" if "realtor.com" in str(item.get("href") or "").lower()
+            else None
+        ),
         "source_mls": source.get("name"),
         "source_disclaimer": _as_dict(source.get("disclaimer")).get("text"),
         "data_provenance": {
@@ -1220,6 +1233,42 @@ async def fetch_live_fort_worth_residential_listings(
         }
 
     group_results = await asyncio.gather(*(run_group(group) for group in provider_groups))
+    brightdata_token_set = bool(
+        os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+    )
+    if BRIGHTDATA_ZILLOW_ENABLED and brightdata_token_set:
+        try:
+            from importers.brightdata_zillow_api import fetch_fort_worth_zillow_listings
+
+            raw_items = await fetch_fort_worth_zillow_listings(limit=limit)
+            items = [
+                normalized
+                for item in raw_items
+                if (normalized := normalize_live_listing(
+                    item, "Bright Data Zillow properties listing information",
+                ))
+            ]
+            group_results.append({
+                "provider": "Bright Data Zillow",
+                "status": "success" if items else "empty",
+                "endpoint": "datasets/v3 Zillow discovery",
+                "fetched": len(raw_items),
+                "accepted": len(items),
+                "items": items,
+                "errors": [],
+            })
+        except Exception as exc:
+            logger.warning("Bright Data Zillow provider failed: %s", exc)
+            group_results.append({
+                "provider": "Bright Data Zillow",
+                "status": "error",
+                "fetched": 0,
+                "accepted": 0,
+                "items": [],
+                "errors": [str(exc)[:300]],
+            })
     normalized = [item for result in group_results for item in result["items"]]
     merged_all = _merge_provider_listings(normalized)
     merged = merged_all[:limit]
