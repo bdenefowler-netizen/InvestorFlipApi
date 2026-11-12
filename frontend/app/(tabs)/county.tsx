@@ -352,12 +352,13 @@ export default function CountyRecordsScreen() {
     else setLoading(true);
     setError(null);
     try {
-      const [records, summary] = await Promise.all([
-        getCountyRecords(source as any, search, nextPage),
-        append && stats ? Promise.resolve(stats) : getCountyRecordStats(),
-      ]);
+      // Summary cards must never block or discard successfully loaded rows.
+      if (!append) {
+        void getCountyRecordStats().then(setStats).catch(() => setStats(null));
+      }
+      const records = await getCountyRecords(source as any, search, nextPage);
       setItems((current) => (append ? [...current, ...records.items] : records.items));
-      setStats(summary); setPage(records.page); setPages(records.pages); setTotal(records.total);
+      setPage(records.page); setPages(records.pages); setTotal(records.total);
     } catch (e: any) {
       setError(e?.message || "County records could not be loaded.");
     } finally {
@@ -365,7 +366,7 @@ export default function CountyRecordsScreen() {
       setLoadingMore(false);
       setRefreshing(false);
     }
-  }, [search, source, stats]);
+  }, [search, source]);
 
   useEffect(() => {
     const timer = setTimeout(() => load(1, false), 300);
