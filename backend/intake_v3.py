@@ -64,6 +64,13 @@ def _category(source:str)->str:
 def _ident(row:Mapping[str,Any])->Dict[str,str]:
     a=_get(row,ADDR); l=_get(row,LEGAL)
     if _key(a) in {"none listed","none","n a","na","unknown","not available"}: a=""
+    # Clerk exports sometimes place a legal description in an address column.
+    # Preserve the source text for parcel matching, but never geocode it as a street.
+    if re.search(r"\b(?:subdivision|lot|block|abstract)\s*:", a, re.I) or re.match(
+        r"^(?:lot|block|abstract)\s+\d+\b", a, re.I
+    ):
+        l = l or a
+        a = ""
     return {
         "address":a, "address_key":canonical_street_key(a) if a else "",
         "tad":_get(row,TAD), "apn":_get(row,APN),
@@ -124,6 +131,10 @@ def normalize_import_row(row:Mapping[str,Any], source_name:str, row_number:int)-
            "data_source":source_name,"listing_sources":[source_name],
            "raw_import_row":{str(k):legacy._clean(v) for k,v in row.items()},
            "created_at":now,"updated_at":now}
+    if not i["address"] and _get(row, ADDR) and i["legal"]:
+        r["import_validation_status"] = "REVIEW"
+        r["import_review_required"] = True
+        r["import_review_reasons"] = ["Legal description supplied as address; parcel match required"]
     if i["tad"]: r["account_id"]=i["tad"]
     if i["apn"]: r["apn"]=r["parcel_id"]=i["apn"]
     if i["legal"]: r["legal_description"]=i["legal"]; r["legal_key"]=i["legal_key"]
