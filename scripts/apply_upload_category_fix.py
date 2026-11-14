@@ -1,75 +1,54 @@
-"""Fix category selection for direct, prefixed InvestorFlip uploads (offline patch).
-Run from repo root: python scripts/apply_upload_category_fix.py
-"""
+"""Fail-closed repair for selected upload categories and ZIP member routing."""
 from pathlib import Path
 
 def apply(root=Path(".")):
-    path = root / "backend" / "bulk_import.py"
-    original = path.read_text(encoding="utf-8")
-    anchor = """def _upload_categories(filename: str, rows: List[Dict[str, Any]]) -> List[str]:
-    name = _key(filename)
-    headers = {_key(k) for row in rows[:20] for k in row.keys()}
-"""
-    replacement = """def _upload_categories(filename: str, rows: List[Dict[str, Any]]) -> List[str]:
-    name = _key(filename)
-    headers = {_key(k) for row in rows[:20] for k in row.keys()}
-    # Source selection in ADD is encoded in the client-side filename prefix.
-    # Honor the user's selection before guessing based on headers.
-    source_prefixes = {
-        "tad": ["tad"],
-        "taxroll": ["tax_roll"],
-        "tax_lien": ["tax_lien"],
-        "preforeclosure": ["pre_foreclosure"],
-        "probate": ["probate"],
-        "code_violation": ["code_violations"],
-        "owner": ["owner"],
+    importer = root / "backend/bulk_import.py"
+    runtime = root / "backend/upload_runtime.py"
+    src = importer.read_text()
+    zip_src = runtime.read_text()
+    a = "    headers = {_key(k) for row in rows[:20] for k in row.keys()}\n"
+    b = """    # Explicit upload type encoded by the Add screen takes precedence over heuristics.
+    prefix = Path(filename).name.lower().split("__", 1)
+    categories = {
+        "tad": ["tad"], "taxroll": ["tax_roll"], "tax_lien": ["tax_lien"],
+        "preforeclosure": ["pre_foreclosure"], "probate": ["probate"],
+        "code_violation": ["code_violations"], "owner": ["owner"]
     }
-    parts = Path(filename).name.lower().split("__", 1)
-    if len(parts) == 2 and parts[0] in source_prefixes:
-        categories = list(source_prefixes[parts[0]])
-        if parts[0] == "taxroll" and headers & {
-            "current year amount due", "prior year amount due",
-            "amount due", "delinquency date"
-        }:
-            categories.append("tax_due")
-        return categories
+    if len(prefix) == 2 and prefix[0] in categories:
+        return list(categories[prefix[0]])
 """
-    runtime_path = root / "backend" / "upload_runtime.py"
-    runtime_original = runtime_path.read_text(encoding="utf-8")
-    zip_anchor = """                                member.filename,
+    c = """                                member.filename,
                                 zf.read(member),
                                 Path(member.filename).suffix.lower(),
 """
-    zip_replacement = """                                (
+    d = """                                (
                                     f"{filename.split('__', 1)[0]}__{Path(member.filename).name}"
                                     if filename.split("__", 1)[0] in {
                                         "tad", "taxroll", "tax_lien", "preforeclosure",
-                                     "probate", "code_violation", "owner"
+                                        "probate", "code_violation", "owner"
                                     }
                                     else member.filename
-                               zf.read(member),
+                                ),
+                                zf.read(member),
                                 Path(member.filename).suffix.lower(),
 """
-    if replacement in original:
-        updated = original
-    elif original.count(anchor) == 1:
-        updated = original.replace(anchor, replacement, 1)
+    if b in src:
+        new = src
+    elif src.count(a) == 1 and "def _upload_categories(" in src:
+        new = src.replace(a, a + b, 1)
     else:
-        raise RuntimeError("Classifier anchor changed; no changes made")
-    if zip_replacement in runtime_original:
-        runtime_updated = runtime_original
-    elif runtime_original.count(zip_anchor) == 1:
-        runtime_updated = runtime_original.replace(zip_anchor, zip_replacement, 1)
+        raise RuntimeError("Importer anchor not found")
+    if d in zip_src:
+        new_zip = zip_src
+    elif zip_src.count(c) == 1:
+        new_zip = zip_src.replace(c, d, 1)
     else:
-        raise RuntimeError("ZIP member anchor changed; no changes made")
-    compile(updated, str(path), "exec")
-    compile(runtime_updated, str(runtime_path), "exec")
-    # Both files must pass anchor checks and compilation before either is written.
-    if updated != original:
-        path.write_text(updated, encoding="utf-8")
-    if runtime_updated != runtime_original:
-        runtime_path.write_text(runtime_updated, encoding="utf-8")
-    print("Upload source and ZIP routing: patched or already applied")
+        raise RuntimeError("ZIP anchor not found")
+    compile(new, str(importer), "exec")
+    compile(new_zip, str(runtime), "exec")
+    if new != src: importer.write_text(new)
+    if new_zip != zip_src: runtime.write_text(new_zip)
+    print("Source routing applied")
 
 if __name__ == "__main__":
     apply()
