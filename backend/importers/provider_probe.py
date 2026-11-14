@@ -1,71 +1,47 @@
-"""Opt-in, single-property provider lookups; no database writes or bulk jobs.
-
-No calls occur at import time. API credentials are read only on invocation.
-Do not log response bodies or keys; results must be matched to TAD before merging.
-"""
-from __future__ import annotations
+"""Opt-in single-record provider probes; no database writes or calls on import."""
 import os
 import re
-from typing import Any
 import httpx
-
-ATTOM = "https://api.gateway.attomdata.com/propertyapi/v1.0.0"
-REPLIERS = "https://api.repliers.io"
-TARRANT = "https://mapit.tarrantcounty.com/arcgis/rest/services/Dynamic/TADParcels/FeatureServer/0/query"
-TARRANT_FIELDS = "ACCOUNT,TAXPIN,OWNER_NAME,SubdivisionName"
 
 class ProviderError(RuntimeError):
     pass
 
-def _secret(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        raise ProviderError(f"{name} is not configured")
-    return value
-
-def _request(url: str, *, headers: dict, params: dict) -> dict:
+def _get(url, params, header=None, env=None):
+    headers = {"Accept": "application/json"}
+    if env:
+        key = os.getenv(env, "").strip()
+        if not key:
+            raise ProviderError(f"{env} not configured")
+        headers[header] = key
     try:
         with httpx.Client(timeout=12, follow_redirects=False) as client:
-            response = client.get(url, headers=headers, params=params)
+            response = client.get(url, params=params, headers=headers)
             response.raise_for_status()
             payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        # Avoid echoing httpx exceptions, which can contain URLs or sensitive query data.
-        raise ProviderError("Provider request failed; inspect provider status privately") from None
-    if not isinstance(payload, dict) or "error" in payload:
-        raise ProviderError("Provider returned an invalid or error response")
-    return payload
+        if not isinstance(payload, dict) or "error" in payload:
+            raise ProviderError("Invalid provider response")
+        return payload
+    except (httpx.HTTPError, ValueError):
+        raise ProviderError("Provider request failed") from None
 
-def attom_by_apn(apn: str, fips: str) -> dict:
-    """One ATTOM basicprofile, keyed by APN and county FIPS. May incur costs."""
-    if not apn or not re.fullmatch(r"\d{5}", fips):
-        raise ValueError("APN and five-digit county FIPS required")
-    return _request(
-        f"{ATTOM}/property/basicprofile",
-        headers={"apikey": _secret("ATTOM_API_KEY"), "Accept": "application/json"},
-        params={"apn": apn, "fips": fips},
-    )
+def attom_by_address(street, city_state_zip):
+    if not str(street).strip() or not str(city_state_zip).strip():
+        raise ValueError("Address required")
+    return _get("https://api.gateway.attomdata.com/propertyapi/v1.0.0/property/basicprofile",
+                {"address1": street, "address2": city_state_zip}, "apikey", "ATTOM_API_KEY")
 
-def repliers_listing(mls_number: str) -> dict:
-    """One licensed MLS listing; provider subscription and MLS access required."""
+def repliers_listing(mls_number):
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", mls_number or ""):
-        raise ValueError("Valid MLS listing number required")
-    return _request(
-        f"{REPLIERS}/listings/{mls_number}",
-        headers={"REPLIERS-API-KEY": _secret("REPLIERS_API_KEY"), "Accept": "application/json"},
-        params={},
-    )
+        raise ValueError("Invalid MLS identifier")
+    return _get(f"https://api.repliers.io/listings/{mls_number}", {},
+                "REPLIERS-API-KEY", "REPLIERS_API_KEY")
 
-def tarrant_by_account(account: str) -> list[dict[str, Any]]:
-    """Exact account lookup; query is deliberately limited to five candidate parcels."""
+def tarrant_by_account(account):
     if not re.fullmatch(r"[A-Za-z0-9]{1,30}", account or ""):
-        raise ValueErrror("Alphanumeric Tarrant account required")
-    # ArcGIS SQL literal is restricted to alphanumeric input above.
-    payload = _request(
-        TARRANT, headers={"Accept": "application/json"},
-        params={"where": f"ACCOUNT='{account}'", "outFields": TARRANT_FIELDS,
-                "returnGeometry": "false", "resultRecordCount": "5", "f": "json"},
-     )
+        raise ValueError("Invalid TAD account")
+    payload = _get("https://mapit.tarrantcounty.com/arcgis/rest/services/Dynamic/TADParcels/FeatureServer/0/query",
+                   {"where": f"ACCOUNT='{account}'", "outFields": "ACCOUNT,TAXPIN,OWNER_NAME,SubdivisionName",
+                    "returnGeometry": "false", "resultRecordCount": 5, "f": "json"})
     features = payload.get("features", [])
     if not isinstance(features, list):
         raise ProviderError("Invalid ArcGIS features")
