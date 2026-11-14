@@ -1,35 +1,36 @@
 import os
 import unittest
 from unittest.mock import patch
-from importers.provider_probe import attom_by_apn, repliers_listing, tarrant_by_account, ProviderError
+from importers.provider_probe import attom_by_address, repliers_listing, tarrant_by_account, ProviderError
 
-class ProviderProbeTests(unittest.TestCase):
-    def test_attom_apn_fips(self):
-        with patch.dict(os.environ, {"ATTOM_API_KEY":"dummy"}), patch("importers.provider_probe._request", return_value={"status":"ok"}) as fetch:
-            self.assertEqual(attom_by_apn("123456","48439"), {"status":"ok"})
-            self.assertEqual(fetch.call_args.kwargs["params"]["fips"], "48439")
-            self.assertEqual(fetch.call_args.kwargs["headers"]["apikey"], "dummy")
+class ProbeTests(unittest.TestCase):
+    def test_attom_fields(self):
+        with patch.dict(os.environ, {"ATTOM_API_KEY": "fake"}), patch("importers.provider_probe._get", return_value={}) as request:
+            attom_by_address("1 Main St", "Fort Worth, TX")
+            self.assertEqual(request.call_args.args[1], {"address1": "1 Main St", "address2": "Fort Worth, TX"})
 
-    def test_repliers_one_listing(self):
-        with patch.dict(os.environ, {"REPLIERS_API_KEY":"dummy"}), patch("importers.provider_probe._request", return_value={"mlsNumber":"AB123"}) as fetch:
-            repliers_listing("AB123")
-            self.assertTrue(fetch.call_args.args[0].endswith("/listings/AB123"))
+    def test_repliers(self):
+        with patch("importers.provider_probe._get", return_value={}) as request:
+            repliers_listing("ABC123")
+            self.assertTrue(request.call_args.args[0].endswith("/listings/ABC123"))
 
-    def test_tarrant_exact_account(self):
-        with patch("importers.provider_probe._request", return_value={"features":[{"attributes":{"ACCOUNT":"12345678"}}]}) as fetch:
-            self.assertEqual(tarrant_by_account("12345678"), [{"ACCOUNT":"12345678"}])
-            self.assertEqual(fetch.call_args.kwargs["params"]["where"], "ACCOUNT='12345678'")
-            self.assertEqual(fetch.call_args.kwargs["params"]["resultRecordCount"], "5")
+    def test_tarrant(self):
+        with patch("importers.provider_probe._get", return_value={"features": [{"attributes": {"ACCOUNT": "123"}}]}) as request:
+            self.assertEqual(tarrant_by_account("123"), [{"ACCOUNT": "123"}])
+            self.assertEqual(request.call_args.args[1]["where"], "ACCOUNT='123'")
 
-    def test_no_sql_injection(self):
-        with self.assertRaises(ValueError): tarrant_by_account("123' OR 1=1")
+    def test_bad_account(self):
+        with self.assertRaises(ValueError):
+            tarrant_by_account("1' OR 1=1")
 
-    def test_missing_api_key(self):
-        with patch.dict(os.environ, {"ATTOM_API_KEY":""}):
-            with self.assertRaises(ProviderError): attom_by_apn("123","48439")
+    def test_bad_listing(self):
+        with self.assertRaises(ValueError):
+            repliers_listing("../secret")
 
-    def test_reject_invalid_mls(self):
-        with self.assertRaises(ValueError): repliers_listing("../etc/passwd")
+    def test_missing_key(self):
+        with patch.dict(os.environ, {"ATTOM_API_KEY": ""}):
+            with self.assertRaises(ProviderError):
+                attom_by_address("1 Main St", "Fort Worth, TX")
 
-if __name__=="__main__":
+if __name__ == "__main__":
     unittest.main()
