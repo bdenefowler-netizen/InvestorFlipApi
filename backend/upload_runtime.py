@@ -117,6 +117,14 @@ async def _stage_payload(
     return report, categories
 
 
+def _zip_upload_name(outer, member):
+    prefix = Path(outer).name.lower().split("__", 1)
+    allowed = {"tad", "taxroll", "tax_lien", "preforeclosure",
+               "probate", "code_violation", "owner"}
+    return (f"{prefix[0]}__{Path(member).name}"
+            if len(prefix)==2 and prefix[0] in allowed else member)
+
+
 async def _stage_uploaded_file(file: UploadFile) -> Dict[str, Any]:
     request_started = time.perf_counter()
     batch_id = str(uuid.uuid4())
@@ -187,7 +195,7 @@ async def _stage_uploaded_file(file: UploadFile) -> Dict[str, Any]:
                     for member in members:
                         try:
                             await import_one(
-                                member.filename,
+                                _zip_upload_name(filename, member.filename),
                                 archive.read(member),
                                 Path(member.filename).suffix.lower(),
                             )

@@ -142,6 +142,13 @@ def _row_lookup(row: Mapping[str, Any], *names: str) -> Any:
 def _upload_categories(filename: str, rows: List[Dict[str, Any]]) -> List[str]:
     name = _key(filename)
     headers = {_key(k) for row in rows[:20] for k in row.keys()}
+    selected = Path(filename).name.lower().split("__", 1)
+    categories = {"tad": ["tad"], "taxroll": ["tax_roll"],
+                  "tax_lien": ["tax_lien"], "preforeclosure": ["pre_foreclosure"],
+                  "probate": ["probate"], "code_violation": ["code_violations"],
+                  "owner": ["owner"]}
+    if len(selected) == 2 and selected[0] in categories:
+        return categories[selected[0]]
 
     if "probate" in name or (
         any("decedent" in h for h in headers) and any("applicant" in h for h in headers)
