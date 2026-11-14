@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import io
 import json
@@ -477,14 +478,20 @@ async def county_record_stats():
         cursor = await db.sync_log.find_one({"name": "county_tad_cursor"}) or {}
         pool = await db.connect()
         async with pool.acquire() as connection:
-            probate_count = await connection.fetchval(
-                "SELECT count(*) FROM import_staging WHERE category = 'probate'"
-            )
+            try:
+                probate_count = await connection.fetchval(
+                    "SELECT count(*) FROM import_staging WHERE category = 'probate'",
+                    timeout=3,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                # Millions of staged TAD rows can make this optional count slow.
+                # Unknown is preferable to blocking the entire County workspace.
+                probate_count = None
         return {
             "total": await db.county_records.count_documents({}),
             "uploaded": await db.properties.count_documents(_property_source_query("uploaded")),
             "pre_foreclosure": await db.properties.count_documents(_property_source_query("pre_foreclosure")),
-            "probate": int(probate_count or 0),
+            "probate": int(probate_count) if probate_count is not None else None,
             "with_tad": await db.county_records.count_documents({"has_tad": True}),
             "with_tax_roll": await db.county_records.count_documents({"has_tax_roll": True}),
             "tax_delinquent": await db.county_records.count_documents({"tax_delinquent": True}),
