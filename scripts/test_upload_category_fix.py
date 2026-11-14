@@ -12,11 +12,10 @@ def _upload_categories(filename: str, rows: List[Dict[str, Any]]) -> List[str]:
     if "probate" in name: return ["probate"]
     return ["uploaded"]
 """
-
 ZIP_SNIPPET = """from pathlib import Path
 async def import_one(name, payload, ext):
     pass
-async def run(member, zf):
+async def _stage_uploaded_file(member, zf):
     await import_one(
                                 member.filename,
                                 zf.read(member),
@@ -27,35 +26,39 @@ async def run(member, zf):
 class UploadCategoryTests(unittest.TestCase):
     def test_patching_and_classification(self):
         with TemporaryDirectory() as temp:
-            root=Path(temp); (root/"backend").mkdir()
-            target=root/"backend"/"bulk_import.py"
+            root = Path(temp)
+            (root / "backend").mkdir()
+            target = root / "backend" / "bulk_import.py"
             target.write_text(SNIPPET)
-            (root/"backend"/"upload_runtime.py").write_text(ZIP_SNIPPET)
+            (root / "backend" / "upload_runtime.py").write_text(ZIP_SNIPPET)
             apply(root)
-            scope={}
-            exec(target.read_text(),scope)
-            cases={
-                "owner__contacts.xlsx":"owner",
-                "tax_lien__sale.xlsx":"tax_lien",
-                "preforeclosure__auctions.csv":"pre_foreclosure",
-                "code_violation__cases.xlsx":"code_violations",
-                "probate__cases.xlsx":"probate",
-                "tad__properties.xlsx":"tad",
-                "taxroll__receivables.xlsx":"tax_roll",
+            scope = {}
+            exec(target.read_text(), scope)
+            cases = {
+                "owner__contacts.xlsx": "owner",
+                "tax_lien__sale.xlsx": "tax_lien",
+                "preforeclosure__auctions.csv": "pre_foreclosure",
+                "code_violation__cases.xlsx": "code_violations",
+                "probate__cases.xlsx": "probate",
+                "tad__properties.xlsx": "tad",
+                "taxroll__receivables.xlsx": "tax_roll",
             }
             for filename, expected in cases.items():
                 with self.subTest(filename=filename):
-                    self.assertEqual(scope["_upload_categories"](filename,[{"Some Column":"data"}])[0],expected)
+                    self.assertEqual(scope["_upload_categories"](filename, [{"Some Column": "data"}])[0], expected)
             apply(root)
-            self.assertIn("filename.split", (root/"backend"/"upload_runtime.py").read_text())
+            self.assertIn("_zip_upload_name", (root / "backend" / "upload_runtime.py").read_text())
+
     def test_drift_fails_closed(self):
         with TemporaryDirectory() as temp:
-            root=Path(temp); (root/"backend").mkdir()
-            target=root/"backend"/"bulk_import.py"
+            root = Path(temp)
+            (root / "backend").mkdir()
+            target = root / "backend" / "bulk_import.py"
             target.write_text("unrelated code")
-            (root/"backend"/"upload_runtime.py").write_text(ZIP_SNIPPET)
-            with self.assertRaises(RuntimeError): apply(root)
-            self.assertEqual(target.read_text(),"unrelated code")
+            (root / "backend" / "upload_runtime.py").write_text(ZIP_SNIPPET)
+            with self.assertRaises(RuntimeError):
+                apply(root)
+            self.assertEqual(target.read_text(), "unrelated code")
 
-if __name__=="__main__":
+if __name__ == "__main__":
     unittest.main()
