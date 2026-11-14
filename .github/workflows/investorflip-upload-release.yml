@@ -6,6 +6,8 @@ on:
       - feature/investorflip-v1
     paths:
       - .github/workflows/investorflip-upload-release.yml
+      - scripts/apply_upload_category_fix.py
+      - scripts/test_upload_category_fix.py
   workflow_dispatch:
 
 permissions:
@@ -34,33 +36,27 @@ jobs:
       - name: Verify source-routing patch on fixtures
         run: python scripts/test_upload_category_fix.py
 
-      - name: Apply patch to actual importer files (no runtime patching)
+      - name: Apply patch to actual importer files
         run: python scripts/apply_upload_category_fix.py
-
       - name: Check Python syntax
         run: python -m py_compile backend/bulk_import.py backend/upload_runtime.py
-
       - name: Verify patch idempotence
         run: |
           git diff -- backend/bulk_import.py backend/upload_runtime.py > /tmp/first.patch
           python scripts/apply_upload_category_fix.py
           git diff -- backend/bulk_import.py backend/upload_runtime.py > /tmp/second.patch
           cmp /tmp/first.patch /tmp/second.patch
-
-      - name: Review changed files
+      - name: Check diff
         run: |
           git diff --check
           git diff --stat
           git status --short
-
-      - name: Commit only verified upload importer changes
+      - name: Commit only verified upload changes
         run: |
           git add -- backend/bulk_import.py backend/upload_runtime.py
           if git diff --cached --quiet; then
             echo "Already patched; nothing to commit."
             exit 0
           fi
-          git -c user.name='github-actions[bot]' \
-              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-              commit -m "Fix selected upload categories and ZIP member routing"
+          git -c user.name='github-actions[bot]'              -c user.email='41898282+github-actions[bot]@users.noreply.github.com'              commit -m "Fix selected upload categories and ZIP member routing"
           git push origin HEAD:feature/investorflip-v1
