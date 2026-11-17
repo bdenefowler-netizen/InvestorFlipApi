@@ -1,6 +1,6 @@
 import { API_BASE } from "./api";
 
-export type CountyUploadSource = "tad" | "tax" | "tax_lien" | "pre_foreclosure" | "probate" | "code_violations" | "owner";
+export type CountyUploadSource = "tad" | "tax" | "tax_lien" | "tax_auction" | "repair_notice" | "pre_foreclosure" | "probate" | "code_violations" | "owner";
 
 export type PublicUploadAsset = {
   uri: string;
@@ -33,6 +33,7 @@ export type PublicUploadResult = {
   rejected: number;
   inserted: number;
   updated: number;
+  duplicates_merged?: number;
   staged?: number;
   property_ids: string[];
   validation?: ImportValidation;
@@ -72,6 +73,8 @@ const SOURCE_PREFIX: Record<CountyUploadSource, string> = {
   tad: "tad",
   tax: "taxroll",
   tax_lien: "tax_lien",
+  tax_auction: "tax_auction",
+  repair_notice: "repair_notice",
   pre_foreclosure: "preforeclosure",
   probate: "probate",
   code_violations: "code_violation",
@@ -82,7 +85,7 @@ const CHUNK_BYTES = 8 * 1024 * 1024;
 const CHUNK_THRESHOLD_BYTES = 8 * 1024 * 1024;
 
 async function responseJson(response: Response): Promise<any> {
-  return response.json().catch(() => ({}));
+  try { return await response.json(); } catch { throw new Error(`Upload returned unreadable data (HTTP ${response.status}); check County Records before retrying.`); }
 }
 
 function stageError(stage: string, error: unknown): Error {
@@ -137,8 +140,8 @@ async function directUpload(
     { method: "POST", body: form },
   );
   const data = await responseJson(response);
-  if (!response.ok) {
-    throw new Error(data.detail || `Direct upload failed (${response.status})`);
+  if (!response.ok || data.ok !== true) {
+    throw new Error(data.detail || data.files?.[0]?.rejections?.[0]?.reason || `No records accepted. Direct upload failed (${response.status})`);
   }
   return data as PublicUploadResult;
 }
@@ -188,7 +191,7 @@ async function chunkedUpload(blob: Blob, uploadName: string): Promise<PublicUplo
       { method: "POST", body: complete },
     );
     const data = await responseJson(response);
-    if (!response.ok) {
+    if (!response.ok || data.ok !== true) {
       throw new Error(`${stage} failed (${response.status}): ${data.detail || "server rejected finalization"}`);
     }
     return data as PublicUploadResult;

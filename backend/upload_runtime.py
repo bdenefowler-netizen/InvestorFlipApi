@@ -120,7 +120,7 @@ async def _stage_payload(
 def _zip_upload_name(outer, member):
     prefix = Path(outer).name.lower().split("__", 1)
     allowed = {"tad", "taxroll", "tax_lien", "preforeclosure",
-               "probate", "code_violation", "owner"}
+               "probate", "code_violation", "owner", "tax_auction", "repair_notice"}
     return (f"{prefix[0]}__{Path(member).name}"
             if len(prefix)==2 and prefix[0] in allowed else member)
 
@@ -130,6 +130,10 @@ async def _stage_uploaded_file(file: UploadFile) -> Dict[str, Any]:
     batch_id = str(uuid.uuid4())
     filename = _safe_filename(file.filename or "upload.xlsx")
     suffix = Path(filename).suffix.lower()
+    category = bulk._upload_categories(filename, [])[0]
+    if category in {"pre_foreclosure", "code_violations", "tax_lien", "tax_auction", "repair_notice", "owner"}:
+        # Lead files must become visible now; do not wait behind county snapshots.
+        return await bulk.public_county_workbook_upload(file)
 
     receive_started = time.perf_counter()
     raw = await file.read(bulk.MAX_PUBLIC_UPLOAD_BYTES + 1)

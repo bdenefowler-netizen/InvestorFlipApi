@@ -146,9 +146,14 @@ def _upload_categories(filename: str, rows: List[Dict[str, Any]]) -> List[str]:
     categories = {"tad": ["tad"], "taxroll": ["tax_roll"],
                   "tax_lien": ["tax_lien"], "preforeclosure": ["pre_foreclosure"],
                   "probate": ["probate"], "code_violation": ["code_violations"],
-                  "owner": ["owner"]}
+                  "owner": ["owner"], "tax_auction": ["tax_auction"], "repair_notice": ["repair_notice"]}
     if len(selected) == 2 and selected[0] in categories:
         return categories[selected[0]]
+
+    if "repair" in name or "oor" in name:
+        return ["repair_notice"]
+    if "tax auction" in name:
+        return ["tax_auction"]
 
     if "probate" in name or (
         any("decedent" in h for h in headers) and any("applicant" in h for h in headers)
@@ -215,7 +220,7 @@ def _prepare_row(row: Mapping[str, Any], categories: List[str]) -> Dict[str, Any
         )
         if address:
             out["address"] = address
-        decedent = _row_lookup(row, "Decedent")
+        decedent = _row_lookup(row, "Decedent", "Decedant")
         if decedent and not _row_lookup(row, "owner", "owner name", "current owner"):
             out["owner"] = decedent
         out["listing type"] = "Probate"
@@ -224,6 +229,17 @@ def _prepare_row(row: Mapping[str, Any], categories: List[str]) -> Dict[str, Any
         address = _row_lookup(row, "Violation Address", "Property Address", "Address")
         if address:
             out["address"] = address
+            out["Violation_Address"] = address
+        for canonical, aliases in {
+            "Violation_Current_Status": ("Violation Current Status",),
+            "Case_Current_Status": ("Case Current Status", "Status"),
+            "Case_ID": ("Case ID",),
+            "Violation_ID": ("Violation ID",),
+            "City": ("City",),
+            "State": ("State",),
+        }.items():
+            value = _row_lookup(row, *aliases)
+            if value is not None: out[canonical] = value
         out["listing type"] = "Code Violation"
 
     elif category == "pre_foreclosure":
@@ -238,7 +254,7 @@ def _prepare_row(row: Mapping[str, Any], categories: List[str]) -> Dict[str, Any
             out["address"] = address
         out["listing type"] = "Pre-Foreclosure"
 
-    elif category == "tax_lien":
+    elif category in {"tax_lien", "tax_auction", "repair_notice"}:
         # The Tarrant tax-sale export has no street address. Matching must use
         # its appraisal-account identifier, which is canonicalized below.
         out["listing type"] = "Tax Lien"
@@ -413,7 +429,7 @@ async def public_county_workbook_upload(file: UploadFile = File(...)):
         ids: List[str] = []
         reports: List[Dict[str, Any]] = []
         seen: List[str] = []
-        totals = {"accepted": 0, "rejected": 0, "inserted": 0, "updated": 0}
+        totals = {"accepted": 0, "rejected": 0, "inserted": 0, "updated": 0, "duplicates_merged": 0}
 
         async def import_one(name: str, payload: bytes, ext: str) -> None:
             rows, sheets = _read_upload_rows(payload, ext, name)
@@ -424,6 +440,10 @@ async def public_county_workbook_upload(file: UploadFile = File(...)):
                 prepared,
                 f"User upload [{'+'.join(categories)}]: {name}",
             )
+            if categories[0] == "code_violations":
+                from import_worker import _code_records
+                from importers.county_records import upsert_county_records
+                await upsert_county_records(db, _code_records(prepared))
             property_ids = list(dict.fromkeys(rep["property_ids"]))
             ids.extend(property_ids)
             await _tag_imported_properties(db, property_ids, categories)
@@ -443,6 +463,8 @@ async def public_county_workbook_upload(file: UploadFile = File(...)):
                     "inserted": rep["inserted"],
                     "updated": rep["updated"],
                     "sheets": sheets,
+                    "rejections": rep.get("rejections", []),
+                    "validation": _validation_summary(prepared),
                 }
             )
 
@@ -462,7 +484,7 @@ async def public_county_workbook_upload(file: UploadFile = File(...)):
                     for member in members:
                         try:
                             await import_one(
-                                member.filename,
+                                f"{filename.split('__', 1)[0]}__{Path(member.filename).name}" if "__" in filename else member.filename,
                                 zf.read(member),
                                 Path(member.filename).suffix.lower(),
                             )
@@ -487,7 +509,8 @@ async def public_county_workbook_upload(file: UploadFile = File(...)):
             "filename": filename,
             "categories": seen,
             "files": reports,
-            "rows_read": totals["accepted"] + totals["rejected"],
+            "rows_read": sum(rep.get("rows", 0) for rep in reports),
+            "partial": any(rep.get("status") == "error" for rep in reports),
             **totals,
             "property_ids": unique,
             "enrichment": {

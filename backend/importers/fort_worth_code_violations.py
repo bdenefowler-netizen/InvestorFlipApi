@@ -80,6 +80,9 @@ def _aggregate(features: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
 
     for feature in features:
         attrs = dict(feature.get("attributes") or feature)
+        from importers.lead_selection import is_open_code_case
+        if not is_open_code_case(attrs):
+            continue
         street = _text(attrs.get("Violation_Address") or attrs.get("Address"))
         if not street or street.upper() in {"0", "N/A", "NA"}:
             continue

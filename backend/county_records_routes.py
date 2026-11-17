@@ -427,7 +427,7 @@ def _source_query(source: str) -> Dict[str, Any]:
     if source == "tax_delinquent":
         return {"tax_delinquent": True}
     if source == "code_violations":
-        return {"has_code_violations": True}
+        return {"open_code_violation_count": {"$gt": 0}}
     return {}
 
 
@@ -437,6 +437,8 @@ def _property_source_query(source: str) -> Dict[str, Any]:
             {"raw_import_row": {"$exists": True}},
             {"has_uploaded": True},
         ]}
+    if source in {"tax_lien", "tax_auction", "repair_notice"}:
+        return {"source_categories": [source]}
     if source == "pre_foreclosure":
         return {"$or": [
             {"pre_foreclosure": True},
@@ -461,6 +463,7 @@ def _search_query(search: Optional[str]) -> Dict[str, Any]:
         {"owner_mailing_address": regex},
         {"account_id": regex},
         {"parcel_id": regex},
+        {"legal_description": regex},
         {"zip": regex},
         {"code_latest_complaint": regex},
         {"code_latest_status": regex},
@@ -507,7 +510,7 @@ async def county_record_stats():
 
 @router.get("/county-records")
 async def list_county_records(
-    source: str = Query("all", pattern="^(all|uploaded|tad|tax_roll|tax_delinquent|code_violations|pre_foreclosure|probate)$"),
+    source: str = Query("all", pattern="^(all|uploaded|tad|tax_roll|tax_delinquent|code_violations|pre_foreclosure|probate|tax_lien|tax_auction|repair_notice)$"),
     search: Optional[str] = Query(None, max_length=160),
     page: int = Query(1, ge=1),
     limit: int = Query(75, ge=1, le=200),
@@ -520,7 +523,7 @@ async def list_county_records(
         if source == "probate":
             return await _list_staged_source(db, source, search, page, limit)
 
-        if source in {"uploaded", "pre_foreclosure"}:
+        if source in {"uploaded", "pre_foreclosure", "tax_lien", "tax_auction", "repair_notice"}:
             query: Dict[str, Any] = _property_source_query(source)
             if search_query:
                 query = {"$and": [query, search_query]}
@@ -586,7 +589,7 @@ async def list_county_records(
 
 
 @router.get("/county-records/export.csv")
-async def export_county_records(source: str = Query("all", pattern="^(all|uploaded|tad|tax_roll|tax_delinquent|code_violations|pre_foreclosure|probate)$")):
+async def export_county_records(source: str = Query("all", pattern="^(all|uploaded|tad|tax_roll|tax_delinquent|code_violations|pre_foreclosure|probate|tax_lien|tax_auction|repair_notice)$")):
     fields = [
         "account_id", "parcel_id", "situs_address", "city", "state", "zip",
         "owner_name", "owner_mailing_address", "mailing_city", "mailing_state", "mailing_zip",
@@ -627,7 +630,7 @@ async def export_county_records(source: str = Query("all", pattern="^(all|upload
         })
         try:
             await db.connect()
-            property_source = source in {"uploaded", "pre_foreclosure", "probate"}
+            property_source = source in {"uploaded", "pre_foreclosure", "probate", "tax_lien", "tax_auction", "repair_notice"}
             collection = db.properties if property_source else db.county_records
             query = _property_source_query(source) if property_source else _source_query(source)
             while True:
@@ -680,7 +683,7 @@ async def get_county_record(record_id: str):
         record = await db.county_records.find_one({"id": record_id}, {"_id": 0})
         if record:
             return _display_record(record)
-        uploaded = await db.properties.find_one({"id": record_id, "raw_import_row": {"$exists": True}}, {"_id": 0})
+        uploaded = await db.properties.find_one({"id": record_id, "has_uploaded": True}, {"_id": 0})
         if not uploaded:
             pool = await db.connect()
             async with pool.acquire() as connection:
