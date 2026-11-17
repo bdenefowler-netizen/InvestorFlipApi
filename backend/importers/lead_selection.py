@@ -21,7 +21,7 @@ def parse_sale_date(value):
         return value.date()
     if isinstance(value, date):
         return value
-    raw = str(value or ").strip()
+    raw = str(value or "").strip()
     for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y", "%b %d %Y"):
         try:
             return datetime.strptime(raw, fmt).date()

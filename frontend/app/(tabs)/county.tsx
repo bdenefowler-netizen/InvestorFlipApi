@@ -30,6 +30,9 @@ type CountySource =
   | "all"
   | "uploaded"
   | "code_violations"
+  | "tax_lien"
+  | "tax_auction"
+  | "repair_notice"
   | "pre_foreclosure"
   | "probate"
   | "tad"
@@ -70,6 +73,9 @@ const SOURCES: { key: CountySource; label: string }[] = [
   { key: "all", label: "All records" },
   { key: "uploaded", label: "Uploaded" },
   { key: "code_violations", label: "Code violations" },
+  { key: "tax_lien", label: "Tax Liens" },
+  { key: "tax_auction", label: "Tax Auctions" },
+  { key: "repair_notice", label: "Repair Notices" },
   { key: "pre_foreclosure", label: "Pre-Foreclosure" },
   { key: "probate", label: "Probate" },
   { key: "tax_delinquent", label: "Tax due" },

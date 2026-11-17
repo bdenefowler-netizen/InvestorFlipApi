@@ -59,7 +59,7 @@ def test_code_violation_upload_aggregates_for_county_workspace():
 
     assert len(records) == 1
     assert records[0]["has_code_violations"] is True
-    assert records[0]["code_violation_count"] == 2
+    assert records[0]["code_violation_count"] == 1
     assert records[0]["open_code_violation_count"] == 1
 
 

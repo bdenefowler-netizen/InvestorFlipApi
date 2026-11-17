@@ -10,7 +10,9 @@ import { colors, radius, spacing } from "@/src/theme/tokens";
 const SOURCES: {key: CountyUploadSource; label: string; hint: string}[] = [
   { key: "tad", label: "TAD", hint: "Appraisal / TAD property records" },
   { key: "tax", label: "Tax", hint: "Tax Roll or Tax Due" },
-  { key: "tax_lien", label: "Tax Lien", hint: "Court cause, TAD account, and sale status" },
+  { key: "tax_lien", label: "Tax Lien", hint: "Recorded lien, grantor, legal description, and amount" },
+  { key: "tax_auction", label: "Tax Auction", hint: "Tax-sale cause number, TAD account, and sale status" },
+  { key: "repair_notice", label: "Repair Notice", hint: "Order of repair, owner, legal description, and case ID" },
   { key: "pre_foreclosure", label: "Pre-Foreclosure", hint: "Foreclosure / auction records" },
   { key: "probate", label: "Probate", hint: "Decedent Property Address is primary" },
   { key: "code_violations", label: "Code Violations", hint: "Municipal code / complaint records" },
@@ -51,14 +53,14 @@ export default function AddScreen() {
     <View style={s.header}>
       <Text style={s.eyebrow}>ADD · IMPORT · MATCH</Text>
       <Text style={s.title}>Upload County Data</Text>
-      <Text style={s.sub}>Choose the source first. InvestorFlip keeps that identity, matches the property, then enriches missing details.</Text>
+      <Text style={s.sub}>Choose the source first. InvestorFlip keeps that identity, matches against saved county records, and stores the result. External enrichment is separate.</Text>
     </View>
     <ScrollView contentContainerStyle={s.content}>
       <View style={s.card}>
         <Text style={s.step}>1 · CHOOSE SOURCE</Text>
         {SOURCES.map(o => {
           const on = source === o.key;
-          return <Pressable key={o.key} onPress={() => {setSource(o.key); setResult(null); setError(null);}} style={[s.source, on && s.sourceOn]}>
+          return <Pressable key={o.key} disabled={busy} onPress={() => {setSource(o.key); setResult(null); setError(null);}} style={[s.source, on && s.sourceOn]}>
             <Text style={[s.sourceTitle, on && s.white]}>{o.label}</Text>
             <Text style={[s.hint, on && s.whiteSoft]}>{o.hint}</Text>
           </Pressable>;
@@ -84,12 +86,17 @@ export default function AddScreen() {
 
         {result ? <View style={s.ok}>
           <Text style={s.okTitle}>✓ {active.label} safely received</Text>
-          <Text style={s.hint}>{result.staged ?? result.accepted} staged · matching and enrichment are processing in the background · {result.rejected} rejected</Text>
+          <Text style={s.hint}>{result.staged != null ? `${result.staged} staged — processing is not yet confirmed` : `${result.inserted ?? 0} inserted · ${result.updated ?? 0} updated`} · {result.rejected ?? 0} rejected · {result.duplicates_merged ?? 0} repeated-property rows combined. External enrichment has not run.</Text>
+          {(result.files || []).map((item, index) => <Text key={`${item.file}-${index}`} style={s.hint}>
+            {item.file}: {item.accepted ?? 0} accepted · {(item as any).rejected ?? 0} rejected
+            {item.reason ? ` · ${item.reason}` : ""}
+            {(item as any).rejections?.[0]?.reason ? ` · ${(item as any).rejections[0].reason}` : ""}
+          </Text>)}
           {result.validation ? <View style={result.validation.review ? s.review : s.valid}>
             <Text style={result.validation.review ? s.reviewTitle : s.validTitle}>
               {result.validation.review
                 ? `⚠ ${result.validation.review} row${result.validation.review === 1 ? "" : "s"} need review`
-                : `✓ ${result.validation.ok} row${result.validation.ok === 1 ? "" : "s"} include TAD account and legal description`}
+                : `✓ ${result.validation.ok} row${result.validation.ok === 1 ? "" : "s"} passed import validation`}
             </Text>
             {(result.validation.review_examples || []).map((item, index) => {
               const identity = item.address || item.account_id || `Row ${item.row_number || index + 2}`;
@@ -106,7 +113,7 @@ export default function AddScreen() {
       <View style={s.card}>
         <Text style={s.step}>MATCHING RULES</Text>
         <Text style={s.ruleStrong}>TAD Account # or APN exact = verified match.</Text>
-        <Text style={s.rule}>If missing: normalized Property Address → Legal Description.</Text>
+        <Text style={s.rule}>If TAD is missing: exact Legal Description → TAD; address fallback when no legal description is supplied.</Text>
         <Text style={s.rule}>No match: keep the row and enrich later.</Text>
         <Text style={s.rule}>Owner phone/email enrich only after the property is identified.</Text>
       </View>
