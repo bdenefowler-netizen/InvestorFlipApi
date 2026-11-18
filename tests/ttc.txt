@@ -1,0 +1,7 @@
+https://mapit.tarrantcounty.com/arcgis/rest/services/Tax/TCProperty/MapServer/0/query?where=UPPER(OWNER_NAME)%20LIKE%20UPPER('%25SMITH%25')&outFields=TAXPIN,OWNER_NAME,SITUS_ADDR,OWNER_CITY&returnGeometry=false&f=json&resultRecordCount=10
+
+
+https://mapit.tarrantcounty.com/arcgis/rest/services/Tax/TCProperty/MapServer/0
+
+
+uk_live_AJqP4bQL-ojSv0m8C88HU0047AccLZAgKss6lIsFRHw
