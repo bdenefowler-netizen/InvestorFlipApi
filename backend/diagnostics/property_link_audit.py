@@ -80,11 +80,11 @@ async def collect(database_url: str, limit: int) -> dict:
             result["sample"] = audit_rows(
                 snapshots["county"], snapshots["properties"], snapshots["tax"]
             )
-              result["wample_limit_per_table"] = limit
+            result["sample_limit_per_table"] = limit
             result["warning"] = (
                 "Samples are independently limited by document_key; overlap counts are "
-                  "diagnostic only, NOT county-wide match rates. A zero overlap in this "
-                  "sample does not establish a broken join."
+                "diagnostic only, NOT county-wide match rates. A zero overlap in this "
+                "sample does not establish a broken join."
             )
             return result
     finally:
@@ -100,7 +100,7 @@ def main() -> None:
     if not url:
         parser.error("DATABASE_URL must be configured; no credentials are printed")
     result = asyncio.run(collect(url, args.limit))
-    print(json.dumps(result, indent=2, sort_keys=True)
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 if __name__ == "__main__":
     main()

@@ -291,6 +291,22 @@ def classify_opportunity(property_record: Mapping[str, Any]) -> Dict[str, Any]:
     if property_record.get("tax_delinquent") is True or current_due > 0 or prior_due > 0:
         add("tax_lien", "County tax data shows an outstanding balance")
 
+    if property_record.get("has_probate") is True or listing_type == "probate":
+        add("distressed", "Uploaded probate record")
+    if (
+        property_record.get("has_uploaded_code_violations") is True
+        or property_record.get("has_code_violations") is True
+        or listing_type == "code violation"
+    ):
+        add("distressed", "Uploaded open code-violation record")
+    if property_record.get("has_repair_notice") is True or listing_type == "repair notice":
+        add("distressed", "Uploaded repair-notice record")
+    if (
+        property_record.get("has_uploaded_tax_auction") is True
+        or listing_type == "tax auction"
+    ):
+        add("tax_lien", "Uploaded tax-auction record")
+
     text = _opportunity_text(property_record)
     for signal, patterns in OPPORTUNITY_TEXT_PATTERNS.items():
         if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns):

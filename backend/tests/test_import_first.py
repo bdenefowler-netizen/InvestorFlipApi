@@ -1,10 +1,14 @@
 import asyncio
 import copy
 import re
+from datetime import date, timedelta
 from types import SimpleNamespace
 from intake_v3 import upsert_import_records
 from bulk_import import _prepare_row, _upload_categories
 from import_matching import legal_query
+
+
+FUTURE_SALE = (date.today() + timedelta(days=60)).strftime("%m/%d/%Y")
 
 
 def matches(doc, query):
@@ -42,25 +46,25 @@ PARCEL = dict(id='county-1', account_id='00123', normalized_account_id='123', le
 
 
 def test_legal_only_foreclosure_gets_county_identity_and_survives_reupload():
-    raw = {'Legal_Description':'LOT 1, BLOCK 2 TEST', 'Current_Owner':'Old Owner', 'Sell_Date':'12/01/2026'}
+    raw = {'Legal_Description':'LOT 1, BLOCK 2 TEST', 'Current_Owner':'Old Owner', 'Sell_Date':FUTURE_SALE}
     report, props = run([raw], 'pre_foreclosure', [PARCEL])
     assert report['accepted'] == 1
     assert props[0]['account_id'] == '00123'
     assert props[0]['situs_address'] == '100 Main St'
     assert props[0]['owner_name'] == 'County Owner'
-    assert props[0]['sale_date'] == '12/01/2026'
+    assert props[0]['sale_date'] == FUTURE_SALE
     report, props = run([raw], 'pre_foreclosure', [PARCEL], props)
     assert report['updated'] == 1 and len(props) == 1
 
 
 def test_tad_wins_over_conflicting_legal_and_address():
-    _, props = run([{'TAD Account #':'123','Legal Description':'WRONG','Property Address':'999 Wrong St'}], 'pre_foreclosure', [PARCEL])
+    _, props = run([{'TAD Account #':'123','Legal Description':'WRONG','Property Address':'999 Wrong St','Sale Date':FUTURE_SALE}], 'pre_foreclosure', [PARCEL])
     assert props[0]['legal_description'] == PARCEL['legal_description']
     assert props[0]['owner_name'] == PARCEL['owner_name']
 
 
 def test_ambiguous_legal_never_selects_first_parcel():
-    _, props = run([{'Legal Description':PARCEL['legal_description']}], 'pre_foreclosure', [PARCEL,{**PARCEL,'id':'county-2','account_id':'999'}])
+    _, props = run([{'Legal Description':PARCEL['legal_description'],'Sale Date':FUTURE_SALE}], 'pre_foreclosure', [PARCEL,{**PARCEL,'id':'county-2','account_id':'999'}])
     assert not props[0].get('account_id')
     assert props[0]['import_review_required']
 
@@ -76,6 +80,31 @@ def test_only_recognized_open_code_cases_are_imported():
     report, props = run(rows, 'code_violations')
     assert report['accepted']==1 and report['rejected']==3
     assert props[0]['open_code_violation_count']==1
+
+
+def test_foreclosure_upload_applies_one_month_window():
+    soon = (date.today() + timedelta(days=7)).strftime("%m/%d/%Y")
+    past = (date.today() - timedelta(days=1)).strftime("%m/%d/%Y")
+    report, props = run([
+        {'Property Address':'1 Main St','Sale Date':FUTURE_SALE},
+        {'Property Address':'2 Main St','Sale Date':soon},
+        {'Property Address':'3 Main St','Sale Date':past},
+    ], 'pre_foreclosure')
+    assert report['accepted'] == 1 and report['rejected'] == 2
+    assert props[0]['situs_address'].startswith('1 Main St')
+
+
+def test_probate_upload_applies_filed_date_window():
+    recent = date.today().strftime("%m/%d/%Y")
+    old = (date.today() - timedelta(days=45)).strftime("%m/%d/%Y")
+    future = (date.today() + timedelta(days=1)).strftime("%m/%d/%Y")
+    report, props = run([
+        {'Decedent Property Address':'1 Main St','Filed Date':recent},
+        {'Decedent Property Address':'2 Main St','Filed Date':old},
+        {'Decedent Property Address':'3 Main St','Filed Date':future},
+    ], 'probate')
+    assert report['accepted'] == 1 and report['rejected'] == 2
+    assert props[0]['situs_address'].startswith('1 Main St')
 
 
 def test_recorded_lien_is_not_invented_tax_auction():
@@ -105,7 +134,7 @@ def test_chunk_transport_reaches_direct_import_without_admin(monkeypatch, tmp_pa
     app = FastAPI()
     app.include_router(bulk_import.router, prefix='/api')
     client = TestClient(app)
-    payload = b'Legal_Description,Current_Owner\nLOT 8 BLOCK 1 TEST,Person\n'
+    payload = f'Legal_Description,Current_Owner,Sale_Date\nLOT 8 BLOCK 1 TEST,Person,{FUTURE_SALE}\n'.encode()
     parts = [payload[:20], payload[20:]]
     common = dict(upload_id='regression',total_chunks='2',filename='preforeclosure__test.csv',total_size=str(len(payload)))
     for i, part in enumerate(parts):
@@ -165,3 +194,26 @@ def test_combining_property_rows_preserves_each_case():
     report, props=run([{'Legal Description':'LOT 1 TEST','Case ID':'A'},{'Legal Description':'LOT 1 TEST','Case ID':'B'}],'repair_notice')
     assert report['duplicates_merged']==1
     assert len(props[0]['import_evidence'])==2
+
+
+def test_uploaded_tad_row_becomes_matchable_county_record():
+    from import_worker import _county_records_from_rows
+    from importers.county_records import county_record_from_import
+
+    rows = [{
+        'TAD Account #': '00123',
+        'Legal Description': 'LOT 1 BLOCK 2 TEST',
+        'Property Address': '100 Main St',
+        'City': 'Fort Worth',
+        'Owner': 'County Owner',
+    }]
+    prepared = [_prepare_row(row, ['tad']) for row in rows]
+    built = _county_records_from_rows(prepared, 'tad', 'tad__county.xlsx')
+    assert built[0]['account_id'] == '00123'
+    assert built[0]['legal_description'] == 'LOT 1 BLOCK 2 TEST'
+    assert built[0]['normalized_account_id'] == '123'
+    assert built[0]['has_tad'] is True
+
+    normalized = {'account_id': '00123', 'situs_address': '100 Main St', 'owner_name': 'County Owner', 'source_categories': ['tax_roll']}
+    tax = county_record_from_import(normalized, 'User upload [tax]')
+    assert tax['has_tax_roll'] is True and tax['has_tad'] is False

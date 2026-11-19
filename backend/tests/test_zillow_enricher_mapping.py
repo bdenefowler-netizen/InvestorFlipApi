@@ -28,3 +28,21 @@ def test_search_result_must_match_house_number_and_street():
         "3915 Meadowbrook Dr",
         "3915 Oak Street, Fort Worth, TX | Zillow",
     )
+
+
+def test_brightdata_token_helpers_accept_every_supported_env_name(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost/db")
+    from server import _brightdata_token_configured
+    from zillow_enrich_routes import _brightdata_token_set
+
+    names = ("BRIGHT_DATA_API_TOKEN", "BRIGHT_DATA_TOKEN", "BRIGHTDATA_TOKEN")
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    assert not _brightdata_token_configured()
+    assert not _brightdata_token_set()
+
+    for name in names:
+        monkeypatch.setenv(name, "token")
+        assert _brightdata_token_configured()
+        assert _brightdata_token_set()
+        monkeypatch.delenv(name)

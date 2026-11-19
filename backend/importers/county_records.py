@@ -304,6 +304,68 @@ def county_record_from_tax_roll(
     return _without_blanks(county)
 
 
+def county_record_from_import(
+    record: Mapping[str, Any], source_name: str = "User upload",
+) -> Optional[Dict[str, Any]]:
+    """Build a matchable county record from an already-normalized upload row.
+
+    Uploaded TAD/tax rows must join the county index so a later lead upload can
+    resolve the parcel by legal description or account number without calling a
+    paid provider.
+    """
+    address = _text(record.get("situs_address") or record.get("address"))
+    account = _text(record.get("account_id"))
+    parcel = _text(record.get("parcel_id") or record.get("apn"))
+    if not address:
+        return None
+    record_id = county_record_id(account or parcel, address)
+    if not record_id:
+        return None
+    categories = {str(item) for item in (record.get("source_categories") or [])}
+    owner_name = _text(record.get("owner_name"))
+    mailing_address = _text(record.get("owner_mailing_address"))
+    zip_code = _text(record.get("zip"))[:5]
+    is_tad = bool(record.get("has_uploaded_tad")) or "tad" in categories
+    is_tax = bool(record.get("has_uploaded_tax") or record.get("has_uploaded_tax_roll")) or bool(
+        categories & {"tax_roll", "tax_due"}
+    )
+    county: Dict[str, Any] = {
+        "id": record_id,
+        "record_kind": "county",
+        "account_id": account or parcel,
+        "normalized_account_id": normalize_account_id(account or parcel),
+        "parcel_id": parcel,
+        "situs_address": address,
+        "address_key": canonical_street_key(address),
+        "city": _text(record.get("city")),
+        "state": _text(record.get("state")) or "TX",
+        "zip": zip_code,
+        "county": "Tarrant",
+        "owner_name": owner_name,
+        "owner_mailing_address": mailing_address,
+        "mailing_state": _text(record.get("mailing_state")),
+        "legal_description": _text(record.get("legal_description")),
+        "subdivision": _text(record.get("subdivision")),
+        "beds": _number(record.get("beds")),
+        "baths": _number(record.get("baths")),
+        "sqft": _number(record.get("sqft")),
+        "year_built": int(record["year_built"]) if _number(record.get("year_built")) else None,
+        "lot_size_sqft": _number(record.get("lot_size_sqft")),
+        "market_value": _number(record.get("market_value")),
+        "appraised_value": _number(record.get("appraised_value")),
+        "annual_taxes": _number(record.get("annual_taxes")),
+        "current_tax_amount_due": _number(record.get("current_tax_amount_due")),
+        "prior_tax_amount_due": _number(record.get("prior_tax_amount_due")),
+        "tax_delinquent": bool(record.get("tax_delinquent")),
+        "has_tad": is_tad,
+        "has_tax_roll": is_tax,
+        "source_names": [source_name],
+        "updated_at": utc_now(),
+    }
+    county.update(_owner_signals(owner_name, county["mailing_state"], address, mailing_address))
+    return _without_blanks(county)
+
+
 def completeness(record: Mapping[str, Any]) -> Dict[str, Any]:
     important = (
         "situs_address", "owner_name", "account_id", "owner_mailing_address",

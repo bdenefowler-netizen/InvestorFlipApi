@@ -10,8 +10,12 @@ An existing TAD Account # takes priority and retrieves saved county identity fie
 Without TAD, an exact normalized Legal Description is tried first. Punctuation and
 case are ignored; lot/block numbers and word order are preserved. When legal is
 absent, address matching requires city or ZIP. Ambiguous matches are not selected.
-Matching uses saved county records, not a live external API. Unmatched legal-only
-leads remain stored; no street address is invented.
+Matching uses saved county records, not a live external API. Uploaded TAD and tax
+rows are written into that county index, so later lead files can match them. Unmatched
+legal-only leads remain stored; no street address is invented.
+
+Accepted uploads are queued for background owner/photo/Zillow enrichment after the
+request returns. `ENRICHMENT_WORKER_ENABLED=false` pauses that queue.
 
 | Source | Supported source columns |
 | --- | --- |
@@ -27,9 +31,12 @@ leads remain stored; no street address is invented.
 Code imports accept only recognized open states: Open, Active, In Progress,
 Pending, Under Investigation, Notice Issued, Reopened. An explicit violation
 status takes precedence over the case status. Closed/unknown/missing statuses
-are rejected with a reason. Repair notices are a separate source: a notice does
-not prove an open code case. Recorded tax liens do not imply a scheduled auction.
-Legacy tax-lien files with an explicit sale status retain their existing treatment.
+are rejected with a reason. Pre-Foreclosure rows require a Sell_Date / Sale Date
+at least one calendar month out; nearer or past sales are rejected. Probate rows
+require Date_Filed / Filed Date from one calendar month ago through today. Repair
+notices are a separate source: a notice does not prove an open code case. Recorded
+tax liens do not imply a scheduled auction. Legacy tax-lien files with an explicit
+sale status retain their existing treatment.
 
 Lead upload summaries report actual inserted/updated/rejected counts. TAD, Tax,
 and Probate keep their existing staging path, labeled as staged. Paid provider

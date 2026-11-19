@@ -30,7 +30,11 @@ logger = logging.getLogger("county_clerk")
 
 # ─── Bright Data Configuration ────────────────────────────────────────────────
 # Web Unlocker REST API — Bright Data's scraping browser proxy
-BRIGHT_DATA_TOKEN = "5809d6b4-75ec-44a2-83b2-dc98972e4727"
+BRIGHT_DATA_TOKEN = (
+    os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+    or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+    or os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+)
 BRIGHT_DATA_ZONE  = os.environ.get("BRIGHT_DATA_ZONE", "")  # e.g. "zone_name:password"
 
 # Tarrant County Clerk search base URL

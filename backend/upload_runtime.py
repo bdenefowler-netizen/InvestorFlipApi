@@ -20,7 +20,7 @@ from typing import Any, Dict, List
 
 import bulk_import as bulk
 from database import PostgresDatabase
-from fastapi import File, Form, HTTPException, UploadFile
+from fastapi import File, Form, HTTPException, Query, UploadFile
 from import_staging import stage_import_rows
 from tad_targeted_stream import stage_targeted_tad_xlsx
 
@@ -277,6 +277,20 @@ async def public_county_workbook_upload(file: UploadFile = File(...)):
     return await _stage_uploaded_file(file)
 
 
+@bulk.router.get("/status")
+async def public_import_status(batch_id: str = Query(..., min_length=1, max_length=120)):
+    """Poll a staged upload until the background importer finishes it."""
+    from import_staging import batch_status
+
+    batch_id = _safe_upload_id(batch_id)
+    db = PostgresDatabase()
+    await db.connect()
+    try:
+        return await batch_status(db, batch_id)
+    finally:
+        await db.close()
+
+
 @bulk.router.post("/upload-workbook/chunk")
 async def public_county_workbook_chunk(
     upload_id: str = Form(...),
@@ -396,11 +410,16 @@ def main() -> None:
     """Start InvestorFlip after upload routes have been registered."""
     import uvicorn
     from import_worker import start_import_worker
+    from enrichment_worker import start_enrichment_worker
     from server import app
 
     import_worker_enabled = os.environ.get("IMPORT_WORKER_ENABLED", "true").strip().lower()
     if import_worker_enabled not in {"0", "false", "no", "off"}:
         start_import_worker(app)
+
+    enrichment_worker_enabled = os.environ.get("ENRICHMENT_WORKER_ENABLED", "true").strip().lower()
+    if enrichment_worker_enabled not in {"0", "false", "no", "off"}:
+        start_enrichment_worker(app)
 
     uvicorn.run(
         app,

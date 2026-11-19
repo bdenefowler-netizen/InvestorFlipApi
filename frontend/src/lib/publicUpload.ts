@@ -23,9 +23,22 @@ export type ImportValidation = {
   }>;
 };
 
+export type ImportStatus = {
+  batch_id: string;
+  found: boolean;
+  status: "staged" | "processing" | "processed" | "error";
+  total: number;
+  staged: number;
+  processing: number;
+  processed: number;
+  errors: number;
+  processed_at?: string | null;
+};
+
 export type PublicUploadResult = {
   ok: boolean;
   filename: string;
+  batch_id?: string;
   source_type?: CountyUploadSource | "auto";
   categories?: string[];
   rows_read: number;
@@ -82,6 +95,12 @@ const SOURCE_PREFIX: Record<CountyUploadSource, string> = {
 };
 
 const CHUNK_BYTES = 8 * 1024 * 1024;
+
+export async function getImportStatus(batchId: string): Promise<ImportStatus> {
+  const res = await fetch(`${API_BASE}/api/import/bulk/status?batch_id=${encodeURIComponent(batchId)}`);
+  if (!res.ok) throw new Error(`Import status failed (${res.status})`);
+  return (await res.json()) as ImportStatus;
+}
 const CHUNK_THRESHOLD_BYTES = 8 * 1024 * 1024;
 
 async function responseJson(response: Response): Promise<any> {

@@ -30,6 +30,14 @@ def _get_admin_key() -> str:
     return ADMIN_KEY
 
 
+def _brightdata_token_set() -> bool:
+    return bool(
+        os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+    )
+
+
 async def require_admin_key(x_admin_key: Optional[str] = Header(None)):
     """FastAPI dependency — validates X-Admin-Key."""
     expected = _get_admin_key()
@@ -56,7 +64,7 @@ async def test():
             "ok": True,
             "module": "zillow_enricher",
             "classes": ["ZillowRedfinEnricher"],
-            "brightdata_token_set": bool(os.environ.get("BRIGHTDATA_TOKEN", "").strip()),
+            "brightdata_token_set": _brightdata_token_set(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as e:
@@ -78,11 +86,11 @@ async def enrich_property_ep(
     await db.connect()
     try:
         # Check Bright Data token is available before trying enrichment
-        if not os.environ.get("BRIGHTDATA_TOKEN", "").strip():
+        if not _brightdata_token_set():
             return {
                 "ok": False,
-                "error": "BRIGHTDATA_TOKEN not configured on Railway",
-                "hint": "Add BRIGHTDATA_TOKEN=<your_token> to Railway environment variables",
+                "error": "Bright Data token not configured on Railway",
+                "hint": "Add BRIGHT_DATA_API_TOKEN, BRIGHT_DATA_TOKEN, or BRIGHTDATA_TOKEN to Railway environment variables",
                 "address": address,
             }
         enricher = ZillowRedfinEnricher()
@@ -93,7 +101,7 @@ async def enrich_property_ep(
             return {
                 "ok": False,
                 "error": f"Bright Data error: {e}",
-                "hint": "Add BRIGHTDATA_TOKEN to Railway environment variables",
+                "hint": "Add BRIGHT_DATA_API_TOKEN, BRIGHT_DATA_TOKEN, or BRIGHTDATA_TOKEN to Railway environment variables",
                 "address": address,
             }
         raise
