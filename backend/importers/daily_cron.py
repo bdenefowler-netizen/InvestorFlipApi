@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import json
 import logging
 import sys
@@ -59,7 +58,6 @@ async def run_all(limit: int = 2000) -> dict:
         # same MCP collection below. Running both spends credits twice and
         # produces overlapping OffMarketDeck/FSBO/Hubzu leads.
         ("brightdata_mcp", "importers.brightdata_mcp_scraper", "import_brightdata_mcp", (db,), {"max_pages": 3}),
-        ("apify", None, None, None, {}),  # handled separately below (disabled)
     ]
 
     for name, module_path, func_name, args, kwargs in sources:
@@ -72,7 +70,8 @@ async def run_all(limit: int = 2000) -> dict:
                 "ok": "error" not in out,
                 **out,
             }
-            logger.info("%s → %s", name, out.get("inserted", "error"))
+            summary = out.get("inserted", out.get("matched", out.get("status", "ok")))
+            logger.info("%s → %s", name, summary)
         except Exception as e:
             logger.error("%s failed: %s", name, traceback.format_exc())
             results["sources"][name] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -112,38 +111,11 @@ async def run_all(limit: int = 2000) -> dict:
             "reason": "Tax roll ZIP unreachable from Railway — run manually",
         }
 
-    # ── Live Listings (OpenWeb Ninja → RapidAPI fallback) ──
-    # Re-enabled per QA audit 2026-08-02: production's last live sync was
-    # July 28 because daily_cron stopped calling the sync entirely.
-    logger.info("Syncing live Fort Worth listings (OpenWeb Ninja/RapidAPI)...")
-    try:
-        if os.environ.get("ENABLE_LIVE_LISTING_CRON", "false").lower() != "true":
-            results["sources"]["live_listings"] = {
-                "ok": True, "skipped": True,
-                "reason": "Set ENABLE_LIVE_LISTING_CRON=true to enable the live-listing sync",
-            }
-        elif not (
-            os.environ.get("OPENWEB_NINJA_REAL_ESTATE_API_KEY", "").strip()
-            or os.environ.get("OPENWEB_NINJA_ZILLOW_API_KEY", "").strip()
-            or os.environ.get("OPENWEB_NINJA_API_KEY", "").strip()
-            or os.environ.get("OPENWEB_NINJA_KEY", "").strip()
-            or os.environ.get("RAPIDAPI_KEY", "").strip()
-        ):
-            results["sources"]["live_listings"] = {
-                "ok": True, "skipped": True,
-                "reason": "No OpenWeb Ninja / RapidAPI key configured",
-            }
-        else:
-            from server import sync_live_listings_to_database
-            live_out = await sync_live_listings_to_database(db, limit=50)
-            results["sources"]["live_listings"] = {
-                "ok": bool(live_out.get("ok")),
-                **{k: v for k, v in live_out.items() if k != "items"},
-            }
-            logger.info("Live listings → %s", live_out.get("summary", live_out))
-    except Exception as e:
-        logger.error("Live listings failed: %s", traceback.format_exc())
-        results["sources"]["live_listings"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    results["sources"]["live_listings"] = {
+        "ok": True,
+        "skipped": True,
+        "reason": "Disabled: production live listings come from Bright Data, ArcGIS/TAD, and Tarrant County",
+    }
 
     # ── Summary ──
     results["finished_at"] = datetime.now(timezone.utc).isoformat()
@@ -168,12 +140,8 @@ def main():
     results = asyncio.run(run_all(args.limit))
     print(json.dumps(results, indent=2, default=str))
 
-    # Exit error if a CORE source failed. Apify and tax_roll are optional:
-    # - Apify: free-plan account is hard-blocked
-    # - tax_roll: official ZIP from tarrantcountytx.gov is often unreachable
-    #   from Railway. The importer marks failed runs as {"ok": False,
-    #   "skipped": True} so we treat them as soft-skips, not core failures.
-    OPTIONAL_SOURCES = {"apify", "tax_roll"}
+    # Exit error only if a core source failed. Disabled/optional sources are soft-skips.
+    OPTIONAL_SOURCES = {"apify", "live_listings", "tax_roll"}
     core_failed = [
         name for name, s in results.get("sources", {}).items()
         if name not in OPTIONAL_SOURCES and not s.get("ok", False)
