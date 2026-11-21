@@ -30,23 +30,26 @@ logger = logging.getLogger("county_clerk")
 
 # ─── Bright Data Configuration ────────────────────────────────────────────────
 # Web Unlocker REST API — Bright Data's scraping browser proxy
-BRIGHT_DATA_TOKEN = (
-    os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
-    or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
-    or os.environ.get("BRIGHTDATA_TOKEN", "").strip()
-)
+def brightdata_token() -> str:
+    return (
+        os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+    )
+
+
 BRIGHT_DATA_ZONE  = os.environ.get("BRIGHT_DATA_ZONE", "")  # e.g. "zone_name:password"
 
 # Tarrant County Clerk search base URL
 TARRANT_BASE = "https://tarrant.tx.publicsearch.us/"
-SEARCH_API   = "https:// Brigdata.com/gdpr"  # Web Unlocker endpoint (space added to prevent link)
+SEARCH_API   = "https://api.brightdata.com/gdpr"
 
 
 def _build_unlocker_url(target_url: str, country: str = "us") -> str:
     """Build Bright Data Web Unlocker URL with target embedded."""
     encoded = urllib.parse.quote(target_url, safe="")
     zone = BRIGHT_DATA_ZONE or ""
-    return f"{SEARCH_API}?url={encoded}&api_key={BRIGHT_DATA_TOKEN}&country={country}&zone={zone}"
+    return f"{SEARCH_API}?url={encoded}&api_key={brightdata_token()}&country={country}&zone={zone}"
 
 
 async def scrape_with_brightdata(url: str, prompt: str = "") -> str:
@@ -99,7 +102,7 @@ async def _brightdata_scrape_api(url: str) -> str:
         "format": "raw",
     }
     headers = {
-        "Authorization": f"Bearer {BRIGHT_DATA_TOKEN}",
+        "Authorization": f"Bearer {brightdata_token()}",
         "Content-Type": "application/json",
     }
     try:

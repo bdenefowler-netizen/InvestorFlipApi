@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html as html_module
 import json
 import logging
 import os
@@ -46,6 +47,50 @@ from importers.brightdata_mcp_scraper import BrightDataMCP
 # ─── Generic price extraction ────────────────────────────────────────────────
 
 _PRICE_RE = re.compile(r"\$([\d,]+)")
+_META_IMAGE_RE = re.compile(
+    r"<meta[^>]+(?:property|name)=[\"'](?:og:image|twitter:image)[\"'][^>]+content=[\"']([^\"']+)[\"']",
+    re.I,
+)
+_URL_RE = re.compile(r"https?://[^\s\"'<>\\]+", re.I)
+_BAD_PHOTO_MARKERS = ("logo", "icon", "sprite", "avatar", "placeholder", "pixel")
+
+
+def _clean_photo_url(url: str) -> str:
+    value = html_module.unescape(url).replace("\\u002F", "/").replace("\\/", "/").strip()
+    return value.replace("http://", "https://", 1)
+
+
+def extract_photo_urls(fragment: str, limit: int = 12) -> list[str]:
+    if not fragment:
+        return []
+    candidates = [match.group(1) for match in _META_IMAGE_RE.finditer(fragment)]
+    candidates.extend(match.group(0) for match in _URL_RE.finditer(fragment))
+    urls: list[str] = []
+    for candidate in candidates:
+        url = _clean_photo_url(candidate)
+        lowered = url.lower()
+        if not url.startswith("https://"):
+            continue
+        if not any(host in lowered for host in ("zillowstatic.com", "zillow.com", "redfin.com")):
+            continue
+        if any(marker in lowered for marker in _BAD_PHOTO_MARKERS):
+            continue
+        if url not in urls:
+            urls.append(url)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+async def _photos_for_url(mcp: BrightDataMCP, url: str) -> list[str]:
+    if not url:
+        return []
+    try:
+        page = await mcp.scrape_html(url)
+    except Exception as exc:
+        logger.warning("Photo scrape failed for %s: %s", url, exc)
+        return []
+    return extract_photo_urls(page)
 
 
 def _extract_prices(text: str) -> list[int]:
@@ -254,6 +299,9 @@ class ZillowRedfinEnricher:
         address: str,
         city: str = "Fort Worth",
         state: str = "TX",
+        *,
+        write_to_db: bool = True,
+        include_photos: bool = True,
     ) -> dict[str, Any]:
         """Enrich one property. Returns summary dict."""
         if not address or not address.strip():
@@ -270,6 +318,7 @@ class ZillowRedfinEnricher:
             "redfin": {},
             "merged": {},
             "ok": False,
+            "dry_run": not write_to_db,
         }
 
         async with BrightDataMCP() as mcp:
@@ -307,12 +356,24 @@ class ZillowRedfinEnricher:
                     result["redfin"] = parsed
                     break
 
+            if include_photos:
+                zillow_url = result.get("zillow", {}).get("zillow_url", "")
+                redfin_url = result.get("redfin", {}).get("redfin_url", "")
+                if zillow_url and result.get("zillow"):
+                    photos = await _photos_for_url(mcp, zillow_url)
+                    result["zillow"]["photos"] = photos
+                    result["zillow"]["image_url"] = photos[0] if photos else None
+                if redfin_url and result.get("redfin"):
+                    photos = await _photos_for_url(mcp, redfin_url)
+                    result["redfin"]["photos"] = photos
+                    result["redfin"]["image_url"] = photos[0] if photos else None
+
         # ── Cross-check & merge ──
         result["merged"] = self._merge(result["zillow"], result["redfin"])
         result["ok"] = bool(result["merged"].get("estimated_value"))
 
         # ── Write to DB ──
-        if result["ok"]:
+        if result["ok"] and write_to_db:
             write = await self._write_to_db(db, address, result["merged"])
             result["db_write"] = write
 
@@ -370,10 +431,18 @@ class ZillowRedfinEnricher:
         if r.get("redfin_url"):
             merged["redfin_url"] = r["redfin_url"]
 
+        photos = z.get("photos") or r.get("photos") or []
+        if photos:
+            merged["photos"] = photos[:12]
+            merged["photo_count"] = len(merged["photos"])
+            merged["image_url"] = photos[0]
+
         # Provenance
         sources = []
         if z.get("zillow_estimate"): sources.append("Zillow")
+        if z.get("photos"): sources.append("Zillow photos")
         if r.get("redfin_estimate"): sources.append("Redfin")
+        if r.get("photos"): sources.append("Redfin photos")
         merged["enrichment_source"] = " + ".join(sources) if sources else "Google search (no direct source)"
 
         return merged
@@ -477,23 +546,46 @@ async def main():
     p.add_argument("--state", default="TX")
     p.add_argument("--batch", action="store_true")
     p.add_argument("--limit", type=int, default=200)
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--no-photos", action="store_true")
     args = p.parse_args()
 
-    from database import PostgresDatabase
-    db = PostgresDatabase()
-    await db.connect()
-    try:
-        e = ZillowRedfinEnricher()
-        if args.batch:
+    e = ZillowRedfinEnricher()
+    if args.address and not args.dry_run:
+        from database import PostgresDatabase
+        db = PostgresDatabase()
+        await db.connect()
+        try:
+            r = await e.enrich(
+                db,
+                args.address,
+                args.city,
+                args.state,
+                include_photos=not args.no_photos,
+            )
+        finally:
+            await db.close()
+    elif args.batch and not args.dry_run:
+        from database import PostgresDatabase
+        db = PostgresDatabase()
+        await db.connect()
+        try:
             r = await e.enrich_all_preforeclosures(db, limit=args.limit)
-        elif args.address:
-            r = await e.enrich(db, args.address, args.city, args.state)
-        else:
-            print("Usage: --address '3915 Meadowbrook Dr' or --batch --limit 50")
-            return
-        print(json.dumps(r, indent=2, default=str))
-    finally:
-        await db.close()
+        finally:
+            await db.close()
+    elif args.address:
+        r = await e.enrich(
+            None,
+            args.address,
+            args.city,
+            args.state,
+            write_to_db=False,
+            include_photos=not args.no_photos,
+        )
+    else:
+        print("Usage: --address '3915 Meadowbrook Dr' [--dry-run] [--no-photos] or --batch --limit 50")
+        return
+    print(json.dumps(r, indent=2, default=str))
 
 
 if __name__ == "__main__":
