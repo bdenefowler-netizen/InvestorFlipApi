@@ -134,3 +134,47 @@ async def stage_import_rows(
         async with conn.transaction():
             await conn.executemany(_INSERT_SQL, records)
     return len(records)
+
+
+async def batch_status(db, batch_id: str) -> Dict[str, Any]:
+    """Report how many staged rows from one upload have been processed."""
+    await ensure_import_staging(db)
+    pool = await db.connect()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                count(*) AS total,
+                count(*) FILTER (WHERE status = 'staged') AS staged,
+                count(*) FILTER (WHERE status = 'processing') AS processing,
+                count(*) FILTER (WHERE status = 'processed') AS processed,
+                count(*) FILTER (WHERE status = 'error') AS errors,
+                min(created_at) AS created_at,
+                max(processed_at) AS processed_at
+            FROM import_staging
+            WHERE batch_id = $1
+            """,
+            batch_id,
+        )
+    if not row:
+        return {"batch_id": batch_id, "found": False}
+    total = int(row["total"] or 0)
+    processed = int(row["processed"] or 0)
+    errors = int(row["errors"] or 0)
+    status = "staged"
+    if total and processed + errors >= total:
+        status = "error" if errors else "processed"
+    elif processed or int(row["processing"] or 0):
+        status = "processing"
+    return {
+        "batch_id": batch_id,
+        "found": bool(total),
+        "status": status,
+        "total": total,
+        "staged": int(row["staged"] or 0),
+        "processing": int(row["processing"] or 0),
+        "processed": processed,
+        "errors": errors,
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "processed_at": row["processed_at"].isoformat() if row["processed_at"] else None,
+    }

@@ -26,7 +26,7 @@ def tax_evidence(record: Mapping[str, Any]) -> dict[str, Any]:
     def amount(name: str) -> float:
         try:
             return max(0.0, float(record.get(name) or 0))
-      except (TypeError, ValueError):
+        except (TypeError, ValueError):
             return 0.0
 
     current = amount("current_amount_due")

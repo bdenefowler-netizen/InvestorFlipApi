@@ -19,18 +19,19 @@ export function getDealEligibility(p: Property){
   const pre=x.pre_foreclosure===true||/\bpre[ -]?foreclosure\b/.test(txt);
   const fsbo=x.fsbo_confirmed===true||/\bfsbo\b|\bfor sale by owner\b/.test(txt);
   const probate=x.has_probate===true||/\bprobate\b/.test(txt);
-  const tax=x.tax_delinquent===true||Number(x.current_tax_amount_due||0)>0||Number(x.prior_tax_amount_due||0)>0||/\btax lien\b|\btax delinquent\b/.test(txt);
+  const tax=x.tax_delinquent===true||Number(x.current_tax_amount_due||0)>0||Number(x.prior_tax_amount_due||0)>0||/\btax lien\b|\btax delinquent\b|\btax auction\b/.test(txt);
+  const repair=/\brepair notice\b/.test(txt);
 
   let category:string|null=null;
   if(code) category="Code Violation";
-  else if(condition) category="Distressed";
+  else if(condition||repair) category="Distressed";
   else if(pre) category="Pre-Foreclosure";
   else if(fsbo) category="FSBO";
   else if(probate) category="Probate";
   else if(tax) category="Tax Lien";
 
   const purchase=n(x.price)??n(x.listing_price);
-  const assessed=n(x.assessed_value)??n(x.tax_appraised_value);
+  const assessed=n(x.assessed_value)??n(x.tax_appraised_value)??n(x.appraised_value)??n(x.market_value)??n(x.tax_roll_market_value);
   const acquisition=purchase??assessed;
   const exit=n(x.value_benchmark)??n(x.arv_estimate)??n(x.market_value)??n(x.tax_roll_market_value)??n(x.provider_estimated_value)??n(x.zestimate);
   return {

@@ -42,6 +42,11 @@ from listing_normalization import (
 from property_enrichment import normalize_property_detail
 from address_suggestions import normalize_address_suggestions
 from address_utils import canonical_street_key
+from tad_identity import (
+    UPLOAD_LEAD_CATEGORIES,
+    enrich_from_county_identity,
+    persist_identity,
+)
 from intake import infer_listing_type, property_link_seed, upsert_import_records
 import asyncio
 import hmac
@@ -436,8 +441,34 @@ def apply_filter(filter_key: str, query: Dict[str, Any]) -> Dict[str, Any]:
     return query
 
 
+def is_uploaded_lead_property(p: Dict[str, Any]) -> bool:
+    if is_synthetic_property(p):
+        return False
+    if not str(p.get("situs_address") or p.get("address") or "").strip():
+        return False
+    source = str(p.get("data_source") or "").lower()
+    raw_categories = p.get("source_categories") or []
+    if isinstance(raw_categories, str):
+        raw_categories = [
+            part for part in re.split(r"[|,]", raw_categories) if part.strip()
+        ]
+    categories = {str(item).strip() for item in raw_categories}
+    if p.get("source_category"):
+        categories.add(str(p.get("source_category")))
+    if p.get("upload_category"):
+        categories.add(str(p.get("upload_category")))
+    uploaded = bool(
+        p.get("import_evidence")
+        or "user upload" in source
+        or "user upload" in str(p.get("listing_sources") or "").lower()
+    )
+    return bool(uploaded and categories & UPLOAD_LEAD_CATEGORIES)
+
+
 def is_user_visible_property(property_record: Dict[str, Any]) -> bool:
-    return not is_synthetic_property(property_record) and is_allowed_flip_house(property_record)
+    if is_synthetic_property(property_record):
+        return False
+    return is_allowed_flip_house(property_record) or is_uploaded_lead_property(property_record)
 
 
 def sanitize_property_semantics(property_record: Dict[str, Any]) -> Dict[str, Any]:
@@ -622,6 +653,16 @@ BRIGHTDATA_ZILLOW_ENABLED = os.environ.get(
     "BRIGHTDATA_ZILLOW_ENABLED",
     "false",
 ).lower() == "true"
+
+
+def _brightdata_token_configured() -> bool:
+    return bool(
+        os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+    )
+
+
 OPENWEB_NINJA_ZILLOW_BASE_URL = os.environ.get(
     "OPENWEB_NINJA_ZILLOW_BASE_URL",
     "https://api.openwebninja.com/realtime-zillow-data",
@@ -1234,11 +1275,7 @@ async def fetch_live_fort_worth_residential_listings(
         }
 
     group_results = await asyncio.gather(*(run_group(group) for group in provider_groups))
-    brightdata_token_set = bool(
-        os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
-        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
-        or os.environ.get("BRIGHTDATA_TOKEN", "").strip()
-    )
+    brightdata_token_set = _brightdata_token_configured()
     if BRIGHTDATA_ZILLOW_ENABLED and brightdata_token_set:
         try:
             from importers.brightdata_zillow_api import fetch_fort_worth_zillow_listings
@@ -1592,6 +1629,7 @@ async def live_status():
     total_live = await db.properties.count_documents(trusted_live_query())
     latest = await db.live_sync_log.find({}, {"_id": 0}).sort("created_at", -1).limit(5).to_list(length=5)
     rapidapi_ready = bool(RAPIDAPI_KEY)
+    brightdata_token_set = _brightdata_token_configured()
     return {
         "rapidapi_configured": rapidapi_ready,
         "rapidapi_cakemls_enabled": RAPIDAPI_CAKEMLS_ENABLED,
@@ -1659,6 +1697,19 @@ async def live_status():
                     f"https://{HOST_LOOKUP}/properties/{{zpid}}",
                 ],
                 "trigger": "property detail fallback",
+            },
+            "brightdata_mcp_zillow_redfin": {
+                "configured": brightdata_token_set,
+                "method": "MCP search",
+                "endpoint": "POST /api/enrich/property",
+                "trigger": "explicit Zillow + Redfin enrichment by address",
+            },
+            "brightdata_zillow_dataset": {
+                "configured": brightdata_token_set,
+                "enabled": BRIGHTDATA_ZILLOW_ENABLED,
+                "method": "datasets/v3",
+                "endpoint": "Zillow properties listing information",
+                "trigger": "every live sync when enabled",
             },
             "foreclosure_listings_usa": {
                 "configured": True,
@@ -2356,13 +2407,25 @@ async def enrich_property_record(
         raise HTTPException(404, "Property not available in verified search results")
     prop = hydrate_listing_record(prop)
 
+    county_changed, county_method = await enrich_from_county_identity(database, prop)
+    county_hit = county_method != "unmatched"
+    if county_changed:
+        await persist_identity(database, property_id, prop)
+        scores = compute_scores(prop)
+        scores["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await database.properties.update_one({"id": property_id}, {"$set": scores})
+
     cached = await database.enrichment.find_one({"property_id": property_id}, {"_id": 0})
     if cached and cached.get("zpid") and cached.get("property_detail_cache_version") == PROPERTY_DETAIL_CACHE_VERSION:
+        if county_hit:
+            cached = {**cached, "county_enriched": True, "county_match_method": county_method}
         await _persist_enrichment(database, property_id, cached, cached.get("photos"))
         return cached
 
     if cached and cached.get("zpid"):
         enriched = await _add_full_property_details(cached)
+        if county_hit:
+            enriched = {**enriched, "county_enriched": True, "county_match_method": county_method}
         await _persist_enrichment(database, property_id, enriched, enriched.get("photos"))
         return enriched
 
@@ -2488,6 +2551,30 @@ async def enrich_property_record(
             return enriched
     except HTTPException as e:
         logger.info("Primary enrichment failed: %s", e.detail)
+
+    if county_hit:
+        county_result: Dict[str, Any] = {
+            "property_id": property_id,
+            "address_queried": address,
+            "source_api": "TAD / Tarrant County records",
+            "found": True,
+            "county_enriched": True,
+            "county_match_method": county_method,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        for key in (
+            "account_id", "parcel_id", "legal_description", "owner_name",
+            "owner_mailing_address", "beds", "baths", "sqft", "year_built",
+            "market_value", "appraised_value", "tax_roll_market_value",
+            "annual_taxes", "current_tax_amount_due", "prior_tax_amount_due",
+            "image_url",
+        ):
+            if prop.get(key) not in (None, "", [], {}):
+                county_result[key] = prop[key]
+        await database.enrichment.update_one(
+            {"property_id": property_id}, {"$set": county_result}, upsert=True,
+        )
+        return county_result
 
     return {"property_id": property_id, "address_queried": address, "found": False}
 
@@ -2839,52 +2926,100 @@ async def analyze_quick(body: Dict[str, Any]):
 
 @api_router.get("/calculator/lookup")
 async def calculator_lookup(address: str = Query(..., min_length=5)):
-    """
-    Look up property details for the Calculator screen.
-    Auto-fills ARV estimate from the property details API (uses listing
-    price + beds/baths/sqft as fallback). Also returns skip-trace hint.
-    """
+    """Look up market price and a worth benchmark for the Calculator screen."""
     from importers.property_details_api import fetch_property_details
 
     if not address or len(address) < 5:
         return {"error": "Address too short"}
 
-    # Try RapidAPI property details first
+    county = None
+    key = canonical_street_key(address)
+    if key:
+        county = await db.county_records.find_one({"address_key": key}, {"_id": 0})
+    if not county:
+        from tad_identity import find_county_record, resolve_tad_identity
+        candidate = {"situs_address": address}
+        if await resolve_tad_identity(db, candidate):
+            found = await find_county_record(db, candidate)
+            if found:
+                county = found[0]
     details = await fetch_property_details(address)
-    if details:
-        return {
-            "address": address,
-            "source": "rapidapi_property_details",
-            "price": details.get("price"),
-            # Asking price is not an after-repair value. Keep the observed
-            # listing price useful without silently manufacturing an ARV.
-            "arv_estimate": None,
-            "arv_status": "unknown - verified sold comps and repair scope required",
-            "bedrooms": details.get("bedrooms"),
-            "bathrooms": details.get("bathrooms"),
-            "living_area": details.get("living_area"),
-            "lot_size": details.get("lot_size"),
-            "year_built": details.get("year_built"),
-            "stories": details.get("stories"),
-            "subdivision": details.get("subdivision"),
-            "home_type": details.get("home_type"),
-            "home_status": details.get("home_status"),
-            "tax_annual": details.get("tax_annual_amount"),
-            "tax_assessed": details.get("tax_assessed_value"),
-            "hoa_fee": details.get("hoa_fee"),
-            "mls_id": details.get("mls_id"),
-            "mls_name": details.get("mls_name"),
-            "builder_name": details.get("builder_name"),
-            "details": details,  # Full details
-        }
-    else:
-        return {
-            "address": address,
-            "source": "fallback",
-            "message": "Property details not available — user can enter manually",
-            "price": None,
-            "arv_estimate": None,
-        }
+
+    comp_prices = []
+    for comp in ((details or {}).get("comparables") or []):
+        value = safe_float(comp.get("price") if isinstance(comp, dict) else None)
+        if value and value > 0:
+            comp_prices.append(value)
+    comp_median = None
+    if comp_prices:
+        comp_prices.sort()
+        middle = len(comp_prices) // 2
+        comp_median = (
+            comp_prices[middle]
+            if len(comp_prices) % 2
+            else (comp_prices[middle - 1] + comp_prices[middle]) / 2
+        )
+
+    worth_candidates = [
+        (county or {}).get("market_value"),
+        (county or {}).get("appraised_value"),
+        (county or {}).get("tax_roll_market_value"),
+        (details or {}).get("tax_assessed_value"),
+        comp_median if len(comp_prices) >= 2 else None,
+    ]
+    worth_estimate = None
+    worth_source = None
+    for position, candidate in enumerate(worth_candidates):
+        value = safe_float(candidate)
+        if value and value > 0:
+            worth_estimate = value
+            worth_source = (
+                "TAD / County market value",
+                "TAD / County appraised value",
+                "Tax roll market value",
+                "Third-party tax assessed value",
+                "Real Estate API similar-home median",
+            )[position]
+            break
+
+    result: Dict[str, Any] = {
+        "address": address,
+        "source": "rapidapi_property_details" if details else "county_records" if county else "fallback",
+        "market_price": safe_float((details or {}).get("price")),
+        "price": safe_float((details or {}).get("price")),
+        # Asking price is not an after-repair value. Keep the observed
+        # listing price useful without silently manufacturing an ARV.
+        "arv_estimate": None,
+        "arv_status": "unknown - verified sold comps and repair scope required",
+        "worth_estimate": worth_estimate,
+        "worth_source": worth_source,
+        "tad_account_id": (county or {}).get("account_id"),
+        "tad_parcel_id": (county or {}).get("parcel_id"),
+        "legal_description": (county or {}).get("legal_description"),
+        "owner_name": (county or {}).get("owner_name"),
+        "bedrooms": (details or {}).get("bedrooms") or (county or {}).get("beds"),
+        "bathrooms": (details or {}).get("bathrooms") or (county or {}).get("baths"),
+        "living_area": (details or {}).get("living_area") or (county or {}).get("sqft"),
+        "lot_size": (details or {}).get("lot_size") or (county or {}).get("lot_size_sqft"),
+        "year_built": (details or {}).get("year_built") or (county or {}).get("year_built"),
+        "stories": (details or {}).get("stories"),
+        "subdivision": (details or {}).get("subdivision") or (county or {}).get("subdivision"),
+        "home_type": (details or {}).get("home_type"),
+        "home_status": (details or {}).get("home_status"),
+        "tax_annual": (details or {}).get("tax_annual_amount") or (county or {}).get("annual_taxes"),
+        "tax_assessed": (details or {}).get("tax_assessed_value"),
+        "hoa_fee": (details or {}).get("hoa_fee"),
+        "mls_id": (details or {}).get("mls_id"),
+        "mls_name": (details or {}).get("mls_name"),
+        "builder_name": (details or {}).get("builder_name"),
+        "comparable_count": len(comp_prices),
+        "details": details,
+    }
+    if county:
+        result["county_record"] = county
+    if not details and not county:
+        result["message"] = "Property details not available — user can enter manually"
+    return result
 
 
 @api_router.post("/scout/quill-analysis", response_model=QuillAnalyzeResponse)
@@ -2956,3 +3091,15 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     await db.close()
+
+
+def _worker_enabled(name: str) -> bool:
+    return os.environ.get(name, "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+if _worker_enabled("IMPORT_WORKER_ENABLED"):
+    from import_worker import start_import_worker
+    start_import_worker(app)
+if _worker_enabled("ENRICHMENT_WORKER_ENABLED"):
+    from enrichment_worker import start_enrichment_worker
+    start_enrichment_worker(app)

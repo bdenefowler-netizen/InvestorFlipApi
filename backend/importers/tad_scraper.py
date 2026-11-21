@@ -11,6 +11,7 @@ Source: mapit.tarrantcounty.com (FREE ArcGIS REST API)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 import re
@@ -19,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from address_utils import canonical_street_key
 from database import PostgresDatabase
 from importers.arcgis_client import (
     ArcGISClient,
@@ -218,8 +220,12 @@ async def search_tad_by_address(address: str) -> List[Dict[str, Any]]:
         return []
     city = clean_search_text(address_parts[1]).upper() if len(address_parts) > 1 else ""
     city_clause = f" AND UPPER(CITY) = {sql_literal(city)}" if city else ""
+    clauses: List[str] = []
+    normalized = canonical_street_key(address)
+    if normalized:
+        clauses.append(f"UPPER(SITUS_ADDR) LIKE {sql_like_contains(normalized)}")
+
     match = re.match(r"^(\d+)\s+(.+)$", clean)
-    clauses = []
     if match:
         house = int(match.group(1))
         street = re.sub(
@@ -232,15 +238,16 @@ async def search_tad_by_address(address: str) -> List[Dict[str, Any]]:
                 f"STREET_NO = {house} AND UPPER(STREET_NAM) LIKE "
                 f"{sql_like_contains(street)}{city_clause}"
             )
-    clauses.append(
-        f"UPPER(SITUS_ADDR) LIKE {sql_like_contains(clean)}{city_clause}"
-    )
+    clean_clause = f"UPPER(SITUS_ADDR) LIKE {sql_like_contains(clean)}{city_clause}"
+    if clean_clause not in clauses:
+        clauses.append(clean_clause)
 
     results: List[Dict[str, Any]] = []
-    client = ArcGISClient(TAD_PROPERTY_LAYER_URL, page_size=50)
     for where in clauses:
-        payload = await client.query(where=where, out_fields=_REQUIRED_FIELDS, count=50)
-        results.extend(attributes(payload.get("features") or []))
+        try:
+            results.extend(await asyncio.to_thread(_query_tad, where=where, result_count=50))
+        except Exception as e:
+            logger.warning("TAD search failed: %s", e)
         if results:
             break
 
@@ -253,6 +260,74 @@ async def search_tad_by_address(address: str) -> List[Dict[str, Any]]:
             seen.add(pin)
             unique.append(r)
     return unique
+
+
+_LEGAL_STOPWORDS = {
+    "LOT", "BLOCK", "PHASE", "ADDITION", "FT", "FORT", "WORTH", "THE", "OF",
+    "AND", "SEC", "SECTION", "PT", "PART", "ABST", "ABSTRACT", "SURVEY",
+}
+
+
+def _legal_clause(phrase: str) -> str:
+    escaped = phrase.replace("'", "''")
+    return "(" + " OR ".join(
+        f"UPPER({field}) LIKE '%{escaped}%'"
+        for field in ("LEGAL_1", "LEGAL_2", "LEGAL_3", "LEGAL_4")
+    ) + ")"
+
+
+async def search_tad_by_legal(legal_description: str) -> List[Dict[str, Any]]:
+    """Find TAD parcels from a legal description (free ArcGIS lookup)."""
+    text = re.sub(r"\s+", " ", str(legal_description or "").upper()).strip()
+    if not text:
+        return []
+
+    phrases: List[str] = []
+    for match in re.finditer(r"\b(BLOCK|LOT)\s*([A-Z0-9][A-Z0-9-]*)", text):
+        phrases.append(f"{match.group(1)} {match.group(2)}")
+    for token in re.findall(r"[A-Z0-9]+", text):
+        if len(token) >= 3 and token not in _LEGAL_STOPWORDS:
+            phrases.append(token)
+
+    unique_phrases: List[str] = []
+    for phrase in phrases:
+        if phrase not in unique_phrases:
+            unique_phrases.append(phrase)
+    phrases = unique_phrases[:6]
+    if not phrases:
+        return []
+
+    try:
+        raw = await asyncio.to_thread(
+            _query_tad,
+            where=" AND ".join(_legal_clause(phrase) for phrase in phrases),
+            result_count=50,
+        )
+    except Exception as e:
+        logger.warning("TAD legal search failed: %s", e)
+        return []
+
+    def overlap(item: Dict[str, Any]) -> int:
+        legal_text = re.sub(r"\s+", " ", " ".join(
+            str(item.get(key) or "").upper()
+            for key in ("LEGAL_1", "LEGAL_2", "LEGAL_3", "LEGAL_4")
+        ))
+        return sum(1 for phrase in phrases if phrase in legal_text)
+
+    minimum = 2 if len(phrases) > 1 else 1
+    ranked = sorted(
+        ((overlap(item), item) for item in raw if overlap(item) >= minimum),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    seen = set()
+    results = []
+    for _, item in ranked:
+        pin = item.get("TAXPIN")
+        if pin and pin not in seen:
+            seen.add(pin)
+            results.append(item)
+    return results
 
 
 async def search_tad_by_owner(owner_name: str, limit: int = 100) -> List[Dict[str, Any]]:

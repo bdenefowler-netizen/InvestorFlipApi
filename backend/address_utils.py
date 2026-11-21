@@ -15,6 +15,11 @@ _DIRECTIONS = {
     "NE": "NE", "NW": "NW", "SE": "SE", "SW": "SW",
 }
 
+_UNIT_MARKERS = {
+    "APT", "UNIT", "STE", "SUITE", "BLDG", "BUILDING", "FL", "FLOOR",
+    "PH", "LOT", "SPACE", "TRLR", "TRAILER",
+}
+
 _STREET_SUFFIX = {
     "ST": "ST", "STREET": "ST",
     "AVE": "AVE", "AVENUE": "AVE",
@@ -45,8 +50,9 @@ def _norm(value: Any) -> str:
 def canonical_street_key(raw: Any) -> str:
     """Return a stable, uppercased street key like '2401 KELTON ST'.
 
-    Drops city/state/zip (anything after the first comma), normalizes
-    directionals + street suffixes, collapses whitespace.
+    Drops city/state/zip (after a comma, or after the street suffix when the
+    city is comma-adjacent to the state), normalizes directionals + suffixes,
+    and collapses whitespace.
     """
     text = _norm(raw)
     if not text:
@@ -56,6 +62,15 @@ def canonical_street_key(raw: Any) -> str:
     if not text:
         return ""
     tokens = text.split()
+    cutoff = None
+    for index, token in enumerate(tokens):
+        if index >= 2 and token.strip(".#-") in _STREET_SUFFIX:
+            cutoff = index + 1
+    if cutoff is not None and cutoff < len(tokens):
+        first_tail = tokens[cutoff].strip()
+        is_unit = first_tail.startswith("#") or first_tail.strip(".#-") in _UNIT_MARKERS
+        if not is_unit:
+            tokens = tokens[:cutoff]
     out: list[str] = []
     for tok in tokens:
         clean = tok.strip(".#-")

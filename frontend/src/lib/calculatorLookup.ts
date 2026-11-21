@@ -12,7 +12,13 @@ type RawCalculatorLookup = {
   address?: string;
   source?: string;
   price?: number | null;
-  arv_estimate?: number | null;
+  market_price?: number | null;
+  worth_estimate?: number | null;
+  worth_source?: string | null;
+  tad_account_id?: string | null;
+  tad_parcel_id?: string | null;
+  legal_description?: string | null;
+  owner_name?: string | null;
   bedrooms?: number | null;
   bathrooms?: number | null;
   living_area?: number | null;
@@ -26,6 +32,12 @@ type RawCalculatorLookup = {
 export type CalculatorDealLookup = {
   address: string;
   purchase_price: number | null;
+  market_price: number | null;
+  worth_estimate: number | null;
+  worth_source: string | null;
+  tad_account_id: string | null;
+  tad_parcel_id: string | null;
+  legal_description: string | null;
   bedrooms: number | null;
   bathrooms: number | null;
   living_area: number | null;
@@ -96,6 +108,7 @@ export async function lookupCalculatorDeal(address: string): Promise<CalculatorD
   const compBenchmark = comparablePrices.length >= 2 ? median(comparablePrices) : null;
 
   const tadBenchmark =
+    asNumber(provider.worth_estimate) ??
     asNumber(county?.market_value) ??
     asNumber(county?.appraised_value) ??
     asNumber(county?.tax_roll_market_value) ??
@@ -111,7 +124,7 @@ export async function lookupCalculatorDeal(address: string): Promise<CalculatorD
     arvConfidence = comparablePrices.length >= 3 ? "medium" : "low";
   } else if (tadBenchmark) {
     screeningArv = tadBenchmark;
-    arvSource = "TAD / County current market-appraised value";
+    arvSource = provider.worth_source || "TAD / County current market-appraised value";
     arvConfidence = "low";
   }
 
@@ -121,7 +134,13 @@ export async function lookupCalculatorDeal(address: string): Promise<CalculatorD
 
   return {
     address,
-    purchase_price: asNumber(provider.price),
+    purchase_price: asNumber(provider.market_price) ?? asNumber(provider.price),
+    market_price: asNumber(provider.market_price) ?? asNumber(provider.price),
+    worth_estimate: asNumber(provider.worth_estimate) ?? tadBenchmark,
+    worth_source: provider.worth_source ?? null,
+    tad_account_id: provider.tad_account_id ?? null,
+    tad_parcel_id: provider.tad_parcel_id ?? null,
+    legal_description: provider.legal_description ?? null,
     bedrooms: asNumber(provider.bedrooms) ?? asNumber(county?.beds),
     bathrooms: asNumber(provider.bathrooms) ?? asNumber(county?.baths),
     living_area: asNumber(provider.living_area) ?? asNumber(county?.sqft),

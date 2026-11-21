@@ -435,18 +435,27 @@ async def public_county_workbook_upload(file: UploadFile = File(...)):
             rows, sheets = _read_upload_rows(payload, ext, name)
             categories = _upload_categories(name, rows)
             prepared = [_prepare_row(row, categories) for row in rows]
-            rep = await upsert_import_records(
-                db,
-                prepared,
-                f"User upload [{'+'.join(categories)}]: {name}",
-            )
             if categories[0] == "code_violations":
                 from import_worker import _code_records
                 from importers.county_records import upsert_county_records
                 await upsert_county_records(db, _code_records(prepared))
+            elif categories[0] in {"tad", "tax_roll", "tax_due"}:
+                from import_worker import _county_records_from_rows
+                from importers.county_records import upsert_county_records
+                county_rows = _county_records_from_rows(prepared, categories[0], name)
+                await upsert_county_records(db, county_rows)
+            from tad_identity import UPLOAD_LEAD_CATEGORIES
+            rep = await upsert_import_records(
+                db,
+                prepared,
+                f"User upload [{'+'.join(categories)}]: {name}",
+                resolve_tad=bool(set(categories) & UPLOAD_LEAD_CATEGORIES),
+            )
             property_ids = list(dict.fromkeys(rep["property_ids"]))
             ids.extend(property_ids)
             await _tag_imported_properties(db, property_ids, categories)
+            from enrichment_worker import enqueue_properties
+            await enqueue_properties(db, property_ids)
             for category in categories:
                 if category not in seen:
                     seen.append(category)

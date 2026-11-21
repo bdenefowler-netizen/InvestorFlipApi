@@ -144,7 +144,10 @@ def normalize_import_row(row:Mapping[str,Any], source_name:str, row_number:int)-
         r["import_validation_status"] = "REVIEW"
         r["import_review_required"] = True
         r["import_review_reasons"] = ["Legal description supplied as address; parcel match required"]
-    if i["tad"]: r["account_id"]=i["tad"]
+    if i["tad"]:
+        r["account_id"]=i["tad"]
+        from importers.county_records import normalize_account_id
+        r["normalized_account_id"]=normalize_account_id(i["tad"])
     if i["apn"]: r["apn"]=r["parcel_id"]=i["apn"]
     if i["legal"]: r["legal_description"]=i["legal"]; r["legal_key"]=i["legal_key"]
     elif _get(row,LEGAL):
@@ -189,8 +192,8 @@ def normalize_import_row(row:Mapping[str,Any], source_name:str, row_number:int)-
             listing_type=("Tax Auction" if cat=="tax_auction" else "Tax Lien") if active else None,
         )
     for field,names in {
-        "sale_date": ("sale date", "sell date", "auction date"),
-        "filed_date": ("filed date", "filled date", "date filed"),
+        "sale_date": ("sale date", "sell date", "auction date", "scheduled auction date", "foreclosure date", "tax sale date"),
+        "filed_date": ("filed date", "filled date", "date filed", "filing date", "case filed date", "date of filing"),
         "case_number": ("case number", "court case", "case id"),
         "document_type": ("doc type", "document type"),
         "code_latest_status": ("violation current status", "case current status", "status"),
@@ -206,11 +209,12 @@ def normalize_import_row(row:Mapping[str,Any], source_name:str, row_number:int)-
 
 async def _find(db:PostgresDatabase,r:Mapping[str,Any]):
     from import_matching import candidates, legal_query
+    from importers.county_records import normalize_account_id
     tad=_text(r.get("account_id"))
     apn=_text(r.get("apn") or r.get("parcel_id"))
     queries=[]
     if tad:
-        queries=[({"account_id":tad},"tad_account_exact",100)]
+        queries=[({"$or":[{"account_id":tad},{"normalized_account_id":normalize_account_id(tad)}]},"tad_account_exact",100)]
     elif apn:
         queries=[({"$or":[{f:apn} for f in ("apn","parcel_id","tax_account_id")]},"apn_exact",100)]
     elif r.get("legal_description"):
@@ -241,7 +245,7 @@ def _merge(existing:Dict[str,Any],incoming:Dict[str,Any],method:str,confidence:i
     owner_ok=bool(owner_upload and inc_owner and old_owner and _owner(inc_owner)==_owner(old_owner))
     protected={"owner_name","owner_phone","owner_email","owner_mailing_address"}
     neutral_fields={
-        "tad": {"account_id","apn","parcel_id","legal_description","legal_key","owner_name",
+        "tad": {"account_id","normalized_account_id","apn","parcel_id","legal_description","legal_key","owner_name",
                 "owner_mailing_address","land_value","improvement_value","assessed_value",
                 "market_value","market_value_source","sqft","year_built","stories","garage",
                 "pool","hvac","quality","condition","improvement_type","effective_year",
@@ -249,7 +253,7 @@ def _merge(existing:Dict[str,Any],incoming:Dict[str,Any],method:str,confidence:i
                 "import_validation_status","import_review_required","import_review_reasons",
                 "situs_address","address_key","city","state","zip",
                 "raw_import_row","import_row_number","updated_at"},
-        "tax": {"account_id","apn","parcel_id","legal_description","legal_key","owner_name",
+        "tax": {"account_id","normalized_account_id","apn","parcel_id","legal_description","legal_key","owner_name",
                 "owner_mailing_address","current_tax_amount_due","prior_tax_amount_due",
                 "annual_taxes","tax_delinquent","sale_status","cause_number","sale_date",
                 "purchaser","sale_amount","lead_action","has_uploaded_tax","raw_import_row",
@@ -300,17 +304,40 @@ def _dedupe_key(r:Mapping[str,Any])->str:
     if r.get("address_key"): return f"addr:{r['address_key']}:{_text(r.get('zip'))}"
     return "id:"+str(r.get("id"))
 
-async def upsert_import_records(database:PostgresDatabase, rows:Iterable[Mapping[str,Any]], source_name:str)->Dict[str,Any]:
+async def upsert_import_records(
+    database:PostgresDatabase,
+    rows:Iterable[Mapping[str,Any]],
+    source_name:str,
+    *,
+    resolve_tad:bool=False,
+    max_tad_lookups:int=25,
+)->Dict[str,Any]:
     from import_matching import fill_county_identity
-    from importers.lead_selection import is_open_code_case
-    accepted=[]; rejected=[]
+    from importers.lead_selection import is_open_code_case, recent_probate, upcoming_foreclosure
+    accepted=[]; rejected=[]; tad_lookups=0
+    source_category=_category(source_name)
     for n,row in enumerate(rows,start=2):
-        if _category(source_name)=="code_violations":
+        if source_category=="code_violations":
             status_row={str(k).strip().lower().replace(" ","_"):v for k,v in row.items()}
             if not is_open_code_case(status_row):
                 rejected.append({"row":n,"reason":"Code case is closed or has no recognized open status"})
                 continue
+        if source_category=="pre_foreclosure" and not upcoming_foreclosure(row):
+            rejected.append({"row":n,"reason":"Foreclosure sale must be at least one month out"})
+            continue
+        if source_category=="probate" and not recent_probate(row):
+            rejected.append({"row":n,"reason":"Probate filed date must be within the last month"})
+            continue
         r=normalize_import_row(row,source_name,n)
+        if (
+            resolve_tad
+            and tad_lookups < max_tad_lookups
+            and not any(r.get(f) for f in ("account_id", "apn", "parcel_id"))
+            and (r.get("situs_address") or r.get("legal_description"))
+        ):
+            from tad_identity import resolve_tad_identity
+            if await resolve_tad_identity(database, r):
+                tad_lookups += 1
         if r.get("source_category") not in {"tad", "tax"}:
             await fill_county_identity(database,r)
         if any(r.get(f) for f in ("account_id","apn","parcel_id","address_key","legal_key")): accepted.append(r)

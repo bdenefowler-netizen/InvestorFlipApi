@@ -113,6 +113,18 @@ The mobile **Add** tab can also send `.csv`, `.xls`, and `.xlsx` files to
 `POST /api/intake/link`. Both paths reject addressless records, merge existing
 houses by address, and run the same county/detail enrichment pipeline.
 
+County uploads are matched county-wide, not Fort Worth-only. Uploaded TAD and tax
+rows are added to the county index immediately, so a later pre-foreclosure, probate,
+lien, auction, repair, or code file can resolve the parcel by TAD account or exact
+legal description and fill missing identity fields. Code-violation uploads keep only
+recognized open cases. Foreclosure uploads keep sales dated at least one calendar month
+out; probate uploads keep records filed from one calendar month ago through today.
+
+Owner, photo, Zillow/Zestimate, and property-detail enrichment runs in a background
+queue after an upload is accepted, so the Add request returns without waiting on
+providers. The queue is idempotent and survives restarts; set
+`ENRICHMENT_WORKER_ENABLED=false` to pause it.
+
 `GET /api/live/status` reports the configured/enabled state and route mapping
 without returning any API-key value.
 
@@ -134,6 +146,7 @@ APIFY_API_KEY=<optional Apify account token>
 APIFY_ALLOWED_ACTOR_IDS=<comma-separated approved property actor IDs>
 APIFY_ALLOWED_TASK_IDS=<comma-separated approved property task IDs>
 COUNTY_TAD_RECORDS_PER_RUN=20000
+ENRICHMENT_WORKER_ENABLED=true
 TARRANT_FORECLOSURE_CSV=<optional path to a current, independently verified CSV>
 CORS_ALLOWED_ORIGINS=<optional comma-separated Expo web origins; native Android does not need it>
 ```

@@ -114,6 +114,23 @@ def _code_records(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     return [record for record in records if record.get("id")]
 
 
+def _county_records_from_rows(
+    rows: Iterable[Mapping[str, Any]], category: str, source_file: str,
+) -> List[Dict[str, Any]]:
+    """Normalize uploaded TAD/tax rows into the matchable county index."""
+    from importers.county_records import county_record_from_import
+    from intake_v3 import normalize_import_row
+
+    records: List[Dict[str, Any]] = []
+    source_name = f"User upload [{category}]: {source_file}"
+    for row_number, row in enumerate(rows, start=2):
+        normalized = normalize_import_row(row, source_name, row_number)
+        county = county_record_from_import(normalized, f"User upload [{category}]")
+        if county:
+            records.append(county)
+    return records
+
+
 async def _process_batch(db: PostgresDatabase, batch: Mapping[str, Any]) -> Dict[str, Any]:
     from bulk_import import _tag_imported_properties
     from importers.county_records import upsert_county_records
@@ -137,11 +154,20 @@ async def _process_batch(db: PostgresDatabase, batch: Mapping[str, Any]) -> Dict
         property_rows = [
             {
                 **record,
+                "Violation_Current_Status": record.get("code_latest_status"),
+                "Case_Current_Status": record.get("code_latest_status"),
                 "address": record.get("situs_address"),
                 "listing type": "Code Violation",
             }
             for record in county_rows
         ]
+    elif category in {"tad", "tax_roll", "tax_due"}:
+        county_rows = _county_records_from_rows(rows, category, source_file)
+        for start in range(0, len(county_rows), _COUNTY_BATCH_SIZE):
+            county_written += await upsert_county_records(
+                db,
+                county_rows[start:start + _COUNTY_BATCH_SIZE],
+            )
 
     report: Dict[str, Any] = {
         "rows_read": 0,
@@ -155,11 +181,13 @@ async def _process_batch(db: PostgresDatabase, batch: Mapping[str, Any]) -> Dict
         "property_ids": [],
         "rejections": [],
     }
+    from tad_identity import UPLOAD_LEAD_CATEGORIES
     for start in range(0, len(property_rows), _PROPERTY_BATCH_SIZE):
         partial = await upsert_import_records(
             db,
             property_rows[start:start + _PROPERTY_BATCH_SIZE],
             f"User upload [{category}]: {source_file}",
+            resolve_tad=category in UPLOAD_LEAD_CATEGORIES,
         )
         for key in ("rows_read", "accepted", "rejected", "duplicates_merged", "inserted", "updated", "unmatched"):
             report[key] += int(partial.get(key) or 0)
@@ -169,6 +197,8 @@ async def _process_batch(db: PostgresDatabase, batch: Mapping[str, Any]) -> Dict
         property_ids = list(dict.fromkeys(partial.get("property_ids") or []))
         report["property_ids"].extend(property_ids)
         await _tag_imported_properties(db, property_ids, categories)
+        from enrichment_worker import enqueue_properties
+        await enqueue_properties(db, property_ids)
     report["property_ids"] = list(dict.fromkeys(report["property_ids"]))
     report["rejections"] = report["rejections"][:25]
     return {
@@ -247,6 +277,9 @@ async def _run_worker() -> None:
 
 def start_import_worker(app) -> None:
     """Register one lifecycle-managed worker on the FastAPI application."""
+    if getattr(app.state, "import_worker_registered", False):
+        return
+    app.state.import_worker_registered = True
 
     @app.on_event("startup")
     async def _start() -> None:

@@ -15,10 +15,13 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from address_utils import canonical_street_key
+
 
 API_ROOT = "https://api.brightdata.com/datasets/v3"
 ZILLOW_LISTINGS_DATASET = "gd_lfqkr8wm13ixtbd8f5"
 TERMINAL_FAILURES = {"failed", "canceled"}
+MAX_PHOTOS = 25
 
 
 def brightdata_token() -> str:
@@ -47,7 +50,7 @@ def _latest_tax_paid(history: Any) -> Optional[float]:
     return None
 
 
-def _photo_urls(values: Any, limit: int = 5) -> List[str]:
+def _photo_urls(values: Any, limit: int = MAX_PHOTOS) -> List[str]:
     urls: List[str] = []
     if not isinstance(values, list):
         return urls
@@ -63,9 +66,13 @@ def _photo_urls(values: Any, limit: int = 5) -> List[str]:
         else:
             candidates = []
         for url in reversed(candidates):
-            if isinstance(url, str) and url.strip() and url not in urls:
-                urls.append(url.strip().replace("http://", "https://", 1))
-                break
+            if not isinstance(url, str) or not url.strip():
+                continue
+            normalized = url.strip().replace("http://", "https://", 1)
+            if normalized in urls:
+                continue
+            urls.append(normalized)
+            break
         if len(urls) >= limit:
             break
     return urls
@@ -76,9 +83,10 @@ def compact_zillow_record(raw: Dict[str, Any]) -> Dict[str, Any]:
     address = raw.get("address") if isinstance(raw.get("address"), dict) else {}
     tax_history = raw.get("taxHistory") if isinstance(raw.get("taxHistory"), list) else []
     price_history = raw.get("priceHistory") if isinstance(raw.get("priceHistory"), list) else []
+    raw_photos = raw.get("photos") if isinstance(raw.get("photos"), list) else []
     attribution = raw.get("attributionInfo") if isinstance(raw.get("attributionInfo"), dict) else {}
     listed_by = raw.get("listing_provided_by") if isinstance(raw.get("listing_provided_by"), dict) else {}
-    photos = _photo_urls(raw.get("photos"), limit=5)
+    photos = _photo_urls(raw_photos, limit=MAX_PHOTOS)
     detail_url = raw.get("url") or raw.get("hdpUrl")
 
     return {
@@ -90,13 +98,17 @@ def compact_zillow_record(raw: Dict[str, Any]) -> Dict[str, Any]:
             "zipcode": address.get("zipcode") or raw.get("zipcode"),
         },
         "homeStatus": raw.get("homeStatus"),
-        "homeType": raw.get("homeType"),
+        "homeType": raw.get("homeType") or raw.get("propertyType"),
+        "days_on_zillow": raw.get("daysOnZillow") or raw.get("days_on_zillow"),
+        "listing_date": raw.get("listingDate"),
         "price": raw.get("price"),
+        "price_per_sqft": raw.get("pricePerSqft"),
         "bedrooms": raw.get("bedrooms"),
         "bathrooms": raw.get("bathrooms"),
         "livingArea": raw.get("livingArea") or raw.get("livingAreaValue"),
         "yearBuilt": raw.get("yearBuilt"),
         "lotSize": raw.get("lotSize") or raw.get("lotAreaValue"),
+        "hoa_fee": raw.get("hoaFee") or raw.get("HOA"),
         "zestimate": raw.get("zestimate"),
         "rent_zestimate": raw.get("rentZestimate"),
         "taxAssessedValue": raw.get("taxAssessedValue"),
@@ -107,6 +119,9 @@ def compact_zillow_record(raw: Dict[str, Any]) -> Dict[str, Any]:
         "longitude": raw.get("longitude"),
         "description": raw.get("description"),
         "photos": photos,
+        "photo_count": len(photos),
+        "source_photo_count": len(raw_photos),
+        "photos_truncated": len(raw_photos) > len(photos),
         "image_url": photos[0] if photos else None,
         "url": detail_url,
         "hdpUrl": raw.get("hdpUrl"),
@@ -116,7 +131,10 @@ def compact_zillow_record(raw: Dict[str, Any]) -> Dict[str, Any]:
         "tax_history": tax_history[:25],
         "mls_id": raw.get("mls_id") or attribution.get("mlsId"),
         "listing_agent_name": listed_by.get("name") or attribution.get("agentName"),
+        "listing_agent_phone": listed_by.get("phone") or attribution.get("agentPhone"),
         "broker_name": raw.get("brokerageName") or listed_by.get("company") or attribution.get("brokerName"),
+        "last_sold_price": price_history[0].get("price") if price_history and isinstance(price_history[0], dict) else None,
+        "last_sold_date": price_history[0].get("date") if price_history and isinstance(price_history[0], dict) else None,
         "is_foreclosure": bool((raw.get("listing_sub_type") or {}).get("is_foreclosure"))
         if isinstance(raw.get("listing_sub_type"), dict) else False,
         "is_bank_owned": bool((raw.get("listing_sub_type") or {}).get("is_bankOwned"))
@@ -206,3 +224,30 @@ async def fetch_fort_worth_zillow_listings(
     finally:
         if own_client:
             await client.aclose()
+
+
+async def find_zillow_listing_by_address(
+    address: str,
+    *,
+    limit: int = 50,
+    client: Optional[httpx.AsyncClient] = None,
+    poll_interval: float = 10.0,
+    timeout_seconds: float = 600.0,
+) -> List[Dict[str, Any]]:
+    """Return compact Zillow dataset rows whose street address matches."""
+    target = canonical_street_key(address)
+    if not target:
+        return []
+    rows = await fetch_fort_worth_zillow_listings(
+        limit=limit,
+        client=client,
+        poll_interval=poll_interval,
+        timeout_seconds=timeout_seconds,
+    )
+    matches: List[Dict[str, Any]] = []
+    for row in rows:
+        row_address = row.get("address") if isinstance(row.get("address"), dict) else {}
+        candidate = row_address.get("streetAddress") or row.get("streetAddress") or address
+        if canonical_street_key(candidate) == target:
+            matches.append(row)
+    return matches

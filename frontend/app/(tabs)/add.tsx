@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import { useRouter } from "expo-router";
-import { uploadCountyFile, type CountyUploadSource, type PublicUploadAsset, type PublicUploadResult } from "@/src/lib/publicUpload";
+import { getImportStatus, uploadCountyFile, type CountyUploadSource, type ImportStatus, type PublicUploadAsset, type PublicUploadResult } from "@/src/lib/publicUpload";
 import { colors, radius, spacing } from "@/src/theme/tokens";
 
 const SOURCES: {key: CountyUploadSource; label: string; hint: string}[] = [
@@ -24,8 +24,30 @@ export default function AddScreen() {
   const [source, setSource] = useState<CountyUploadSource>("tad");
   const [file, setFile] = useState<PublicUploadAsset | null>(null);
   const [result, setResult] = useState<PublicUploadResult | null>(null);
+  const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const batchId = result?.batch_id;
+    if (!batchId) return;
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const status = await getImportStatus(batchId);
+        if (cancelled) return;
+        setImportStatus(status);
+        if (status.status === "processed" || status.status === "error" || ++attempts >= 90) return;
+        timer = setTimeout(poll, 2000);
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, 4000);
+      }
+    };
+    timer = setTimeout(poll, 1000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [result?.batch_id]);
 
   const choose = async () => {
     setError(null); setResult(null);
@@ -41,7 +63,7 @@ export default function AddScreen() {
 
   const upload = async () => {
     if (!file) return;
-    setBusy(true); setError(null); setResult(null);
+    setBusy(true); setError(null); setResult(null); setImportStatus(null);
     try { setResult(await uploadCountyFile(file, source)); }
     catch (e: any) { setError(e?.message || "Upload failed."); }
     finally { setBusy(false); }
@@ -86,7 +108,10 @@ export default function AddScreen() {
 
         {result ? <View style={s.ok}>
           <Text style={s.okTitle}>✓ {active.label} safely received</Text>
-          <Text style={s.hint}>{result.staged != null ? `${result.staged} staged — processing is not yet confirmed` : `${result.inserted ?? 0} inserted · ${result.updated ?? 0} updated`} · {result.rejected ?? 0} rejected · {result.duplicates_merged ?? 0} repeated-property rows combined. External enrichment has not run.</Text>
+          {importStatus ? <Text style={s.hint}>
+            Import: {importStatus.status} · {importStatus.processed}/{importStatus.total} rows into the county table{importStatus.errors ? ` · ${importStatus.errors} errors` : ""}
+          </Text> : <Text style={s.hint}>Checking import progress…</Text>}
+          <Text style={s.hint}>{result.staged != null ? `${result.staged} staged — processing is not yet confirmed` : `${result.inserted ?? 0} inserted · ${result.updated ?? 0} updated`} · {result.rejected ?? 0} rejected · {result.duplicates_merged ?? 0} repeated-property rows combined.</Text>
           {(result.files || []).map((item, index) => <Text key={`${item.file}-${index}`} style={s.hint}>
             {item.file}: {item.accepted ?? 0} accepted · {(item as any).rejected ?? 0} rejected
             {item.reason ? ` · ${item.reason}` : ""}

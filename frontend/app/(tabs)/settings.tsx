@@ -282,7 +282,7 @@ const s = StyleSheet.create({
     paddingVertical: 12,
     borderTopWidth: 1,
     borderTopColor: colors.border,
-    marginDop: 10,
+    marginTop: 10,
   },
   sourceName: { color: colors.onSurface, fontSize: 13, fontWeight: "800" },
   health: { maxWidth: 135, color: colors.muted, fontSize: 9, fontWeight: "900", textAlign: "right" },

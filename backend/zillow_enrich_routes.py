@@ -7,7 +7,7 @@ Endpoints:
   GET  /api/enrich/status          Enrichment stats
   GET  /api/enrich/test            Module health check (no auth)
 
-Auth: X-Admin-Key header required on POST/GET /status
+Auth: X-Admin-Key header required on /preforeclosures and /status only
 """
 
 from fastapi import APIRouter, HTTPException, Query, Header, Depends
@@ -28,6 +28,18 @@ def _get_admin_key() -> str:
     if not ADMIN_KEY:
         ADMIN_KEY = os.environ.get("INVESTORFLIP_ADMIN_KEY", "").strip()
     return ADMIN_KEY
+
+
+def _brightdata_token_set() -> bool:
+    return bool(
+        os.environ.get("BRIGHT_DATA_API_TOKEN", "").strip()
+        or os.environ.get("BRIGHT_DATA_TOKEN", "").strip()
+        or os.environ.get("BRIGHTDATA_TOKEN", "").strip()
+    )
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 async def require_admin_key(x_admin_key: Optional[str] = Header(None)):
@@ -56,7 +68,17 @@ async def test():
             "ok": True,
             "module": "zillow_enricher",
             "classes": ["ZillowRedfinEnricher"],
-            "brightdata_token_set": bool(os.environ.get("BRIGHTDATA_TOKEN", "").strip()),
+            "brightdata_token_set": _brightdata_token_set(),
+            "brightdata_dataset_enabled": _env_flag("BRIGHTDATA_ZILLOW_ENABLED"),
+            "brightdata_zone_set": bool(os.environ.get("BRIGHT_DATA_ZONE", "").strip()),
+            "database_configured": bool(os.environ.get("DATABASE_URL", "").strip()),
+            "admin_key_configured": bool(_get_admin_key()),
+            "capabilities": {
+                "zillow_redfin_search": _brightdata_token_set(),
+                "zillow_redfin_photos": _brightdata_token_set(),
+                "zillow_dataset_lookup": _brightdata_token_set(),
+                "county_clerk_web_unlocker": _brightdata_token_set() and bool(os.environ.get("BRIGHT_DATA_ZONE", "").strip()),
+            },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as e:
@@ -70,7 +92,8 @@ async def enrich_property_ep(
     address: str = Query(..., description="Street address"),
     city: str = Query("Fort Worth"),
     state: str = Query("TX"),
-    _auth: None = Depends(require_admin_key),
+    dry_run: bool = Query(False, description="Return enrichment without writing to DB"),
+    include_photos: bool = Query(True, description="Scrape Zillow/Redfin page photos"),
 ):
     """Enrich one property with Zillow + Redfin data via Bright Data MCP."""
     from importers.zillow_enricher import ZillowRedfinEnricher
@@ -78,22 +101,29 @@ async def enrich_property_ep(
     await db.connect()
     try:
         # Check Bright Data token is available before trying enrichment
-        if not os.environ.get("BRIGHTDATA_TOKEN", "").strip():
+        if not _brightdata_token_set():
             return {
                 "ok": False,
-                "error": "BRIGHTDATA_TOKEN not configured on Railway",
-                "hint": "Add BRIGHTDATA_TOKEN=<your_token> to Railway environment variables",
+                "error": "Bright Data token not configured on Railway",
+                "hint": "Add BRIGHT_DATA_API_TOKEN, BRIGHT_DATA_TOKEN, or BRIGHTDATA_TOKEN to Railway environment variables",
                 "address": address,
             }
         enricher = ZillowRedfinEnricher()
-        result = await enricher.enrich(db, address, city, state)
+        result = await enricher.enrich(
+            db,
+            address,
+            city,
+            state,
+            write_to_db=not dry_run,
+            include_photos=include_photos,
+        )
         return result
     except RuntimeError as e:
         if "BRIGHTDATA_TOKEN" in str(e):
             return {
                 "ok": False,
                 "error": f"Bright Data error: {e}",
-                "hint": "Add BRIGHTDATA_TOKEN to Railway environment variables",
+                "hint": "Add BRIGHT_DATA_API_TOKEN, BRIGHT_DATA_TOKEN, or BRIGHTDATA_TOKEN to Railway environment variables",
                 "address": address,
             }
         raise
