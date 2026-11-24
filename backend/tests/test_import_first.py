@@ -107,6 +107,61 @@ def test_probate_upload_applies_filed_date_window():
     assert props[0]['situs_address'].startswith('1 Main St')
 
 
+def test_probate_detail_fields_survive_upload():
+    filed = date.today().strftime("%m/%d/%Y")
+    raw = {
+        "Decedent Property Address": "123 Main St",
+        "Date Filed": filed,
+        "Court Date": "12/15/2026",
+        "Applicant Name": "Jane Doe",
+        "Decedent": "John Doe",
+        "Property Legal Name": "LOT 7 BLOCK 2 TEST",
+    }
+    report, props = run([raw], "probate")
+
+    assert report["accepted"] == 1
+    assert props[0]["probate_filed_date"] == filed
+    assert props[0]["probate_hearing_date"] == "12/15/2026"
+    assert props[0]["applicant_name"] == "Jane Doe"
+    assert props[0]["decedent_name"] == "John Doe"
+    assert props[0]["decedent_property_address"] == "123 Main St"
+    assert props[0]["decedent_property_legal"] == "LOT 7 BLOCK 2 TEST"
+
+
+def test_open_code_case_detail_fields_survive_upload():
+    raw = {
+        "Violation Address": "100 Main St",
+        "Violation Current Status": "Open",
+        "Date of Violation": "11/01/2026",
+        "Date of Update": "11/15/2026",
+        "Next Contact Date": "12/01/2026",
+        "Owner": "Jane Doe",
+    }
+    report, props = run([raw], "code_violations")
+
+    assert report["accepted"] == 1
+    assert props[0]["violation_date"] == "11/01/2026"
+    assert props[0]["violation_update_date"] == "11/15/2026"
+    assert props[0]["next_contact_date"] == "12/01/2026"
+    assert props[0]["violation_address"] == "100 Main St"
+
+
+def test_tax_auction_detail_fields_survive_upload():
+    raw = {
+        "TAD Account #": "123",
+        "Legal Description": "LOT 4 TEST",
+        "Auction Date": "12/15/2026",
+        "Lien Amount": "$12,345.00",
+        "Owner": "Jane Doe",
+    }
+    report, props = run([raw], "tax_auction")
+
+    assert report["accepted"] == 1
+    assert props[0]["auction_date"] == "12/15/2026"
+    assert props[0]["lien_amount"] == "12345.00"
+    assert props[0]["owner_name"] == "Jane Doe"
+
+
 def test_recorded_lien_is_not_invented_tax_auction():
     _, props = run([{'Legal Description':'LOT 4 TEST','Grantor':'Person','Doc_Type':'FEDERAL TAX LIEN'}], 'tax_lien')
     assert props[0]['has_uploaded_tax_lien']
