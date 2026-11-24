@@ -64,13 +64,18 @@ async def _enrich_one(db: PostgresDatabase, property_id: str) -> Dict[str, Any]:
 
     try:
         prop = await db.properties.find_one({"id": property_id}, {"_id": 0}) or {}
-        if not prop.get("tad_resolved_by"):
-            from tad_identity import has_tad_identity, persist_identity, resolve_tad_identity
+        from tad_identity import (
+            enrich_from_county_identity,
+            has_tad_identity,
+            persist_identity,
+            resolve_tad_identity,
+        )
 
-            if not has_tad_identity(prop):
-                candidate = dict(prop)
-                if await resolve_tad_identity(db, candidate):
-                    await persist_identity(db, property_id, candidate)
+        candidate = dict(prop)
+        if not has_tad_identity(candidate):
+            await resolve_tad_identity(db, candidate)
+        await enrich_from_county_identity(db, candidate)
+        await persist_identity(db, property_id, candidate)
         result = await enrich_property_record(db, property_id, require_visible=False)
         return {
             "property_id": property_id,

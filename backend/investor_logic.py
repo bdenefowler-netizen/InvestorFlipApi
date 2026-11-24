@@ -38,6 +38,8 @@ NONPROFIT_KEYWORDS = (
     "ministry", "church", "diocese",
 )
 
+MARKET_VALUE_REPAIR_COST_PER_SQFT = 35.0
+
 SYNTHETIC_SOURCE_MARKERS = (
     "demo seed data",
     "seeded sample",
@@ -271,11 +273,29 @@ def classify_opportunity(property_record: Mapping[str, Any]) -> Dict[str, Any]:
     ):
         add("fsbo", "Provider identifies for-sale-by-owner listing")
 
+    sale_text = None
+    for sale_key in (
+        "sale_date", "auction_date", "sell_date", "scheduled_auction_date",
+        "foreclosure_date", "Sale_Date", "Auction_Date", "Sell_Date",
+    ):
+        if property_record.get(sale_key):
+            sale_text = property_record.get(sale_key)
+            break
+    try:
+        from importers.lead_selection import upcoming_foreclosure
+
+        upcoming_sale = bool(sale_text) and upcoming_foreclosure({"sale_date": sale_text})
+    except Exception:
+        upcoming_sale = False
+
     if listing_type == "foreclosure" or any(
         normalized_flags.get(key) is True
         for key in ("isforeclosure", "wassdefault", "wasdefault")
     ):
-        add("foreclosure", "Provider identifies foreclosure status")
+        if upcoming_sale:
+            add("pre_foreclosure", "Foreclosure sale is at least one month out")
+        else:
+            add("foreclosure", "Provider identifies foreclosure status")
     if normalized_flags.get("isshortsale") is True:
         add("foreclosure", "Provider identifies a short sale")
 
@@ -290,6 +310,7 @@ def classify_opportunity(property_record: Mapping[str, Any]) -> Dict[str, Any]:
     prior_due = _number(property_record.get("prior_tax_amount_due")) or 0
     if property_record.get("tax_delinquent") is True or current_due > 0 or prior_due > 0:
         add("tax_lien", "County tax data shows an outstanding balance")
+        add("distressed", "County tax data shows an outstanding balance")
 
     if property_record.get("has_probate") is True or listing_type == "probate":
         add("distressed", "Uploaded probate record")
@@ -306,6 +327,7 @@ def classify_opportunity(property_record: Mapping[str, Any]) -> Dict[str, Any]:
         or listing_type == "tax auction"
     ):
         add("tax_lien", "Uploaded tax-auction record")
+        add("distressed", "Uploaded tax-auction record")
 
     text = _opportunity_text(property_record)
     for signal, patterns in OPPORTUNITY_TEXT_PATTERNS.items():
@@ -377,6 +399,13 @@ def _value_benchmark(property_record: Mapping[str, Any]) -> Tuple[Optional[float
         confidence = "high" if property_record.get("arv_verified") else "medium"
         return arv, str(property_record.get("arv_source") or "ARV estimate"), confidence
 
+    market = _number(
+        property_record.get("market_value") or property_record.get("county_market_value")
+    )
+    market_source = str(property_record.get("market_value_source") or "").lower()
+    if market and "list" not in market_source and "asking" not in market_source:
+        return market, str(property_record.get("market_value_source") or "county market value"), "medium"
+
     provider = _number(property_record.get("zestimate") or property_record.get("provider_estimated_value"))
     if provider:
         return provider, "third-party automated estimate", "medium"
@@ -394,6 +423,36 @@ def _value_benchmark(property_record: Mapping[str, Any]) -> Tuple[Optional[float
     if market and market_source and "list" not in market_source and "asking" not in market_source:
         return market, str(property_record.get("market_value_source")), "medium"
     return None, None, "insufficient"
+
+
+def compute_offer_metrics(property_record: Mapping[str, Any]) -> Dict[str, Any]:
+    """Derive the market/list/max-offer numbers the deal feed displays."""
+    market_value = _number(
+        property_record.get("market_value")
+        or property_record.get("tax_roll_market_value")
+        or property_record.get("appraised_value")
+        or property_record.get("assessed_value")
+        or property_record.get("county_market_value")
+    )
+    listed_value = _number(
+        property_record.get("listed_value")
+        or property_record.get("listing_price")
+        or property_record.get("price")
+    )
+    sqft = _number(property_record.get("sqft") or property_record.get("living_area"))
+    repair_allowance = sqft * MARKET_VALUE_REPAIR_COST_PER_SQFT if sqft else None
+    max_offer = market_value - repair_allowance if market_value and repair_allowance is not None else None
+    spread = market_value - listed_value if market_value and listed_value else None
+
+    return {
+        "market_value_basis": market_value,
+        "listed_value": listed_value,
+        "repair_allowance_per_sqft": MARKET_VALUE_REPAIR_COST_PER_SQFT,
+        "repair_allowance": round(repair_allowance, 2) if repair_allowance is not None else None,
+        "max_offer": round(max_offer, 2) if max_offer is not None else None,
+        "spread": round(spread, 2) if spread is not None else None,
+        "max_offer_rule": "market value − (square feet × $35)" if max_offer is not None else None,
+    }
 
 
 def compute_scores(property_record: Mapping[str, Any]) -> Dict[str, Any]:
@@ -460,6 +519,7 @@ def compute_scores(property_record: Mapping[str, Any]) -> Dict[str, Any]:
         score_confidence = "low"
 
     return {
+        **compute_offer_metrics(property_record),
         "investment_score": investment_score,
         "wholesale_score": wholesale_score,
         "flip_score": flip_score,

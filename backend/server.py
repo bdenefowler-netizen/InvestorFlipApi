@@ -551,7 +551,27 @@ def trusted_live_query(*, direct_only: bool = False) -> Dict[str, Any]:
 
 def decorate_opportunity(property_record: Dict[str, Any]) -> Dict[str, Any]:
     decorated = hydrate_listing_record(sanitize_property_semantics(property_record))
+
+    county_market = safe_float(
+        decorated.get("tax_roll_market_value")
+        or decorated.get("appraised_value")
+        or decorated.get("assessed_value")
+    )
+    if county_market:
+        decorated["market_value"] = county_market
+        decorated.setdefault("market_value_source", "Tarrant County appraisal / tax roll")
+
+    listed_value = safe_float(decorated.get("price") or decorated.get("listing_price"))
+    if listed_value:
+        decorated["listed_value"] = listed_value
+
     decorated.update(classify_opportunity(decorated))
+    keys = set(decorated.get("opportunity_signal_keys") or [])
+    if "pre_foreclosure" in keys and str(decorated.get("listing_type") or "").strip().lower() == "foreclosure":
+        decorated["listing_type"] = "Pre-Foreclosure"
+        decorated["pre_foreclosure"] = True
+
+    decorated.update(compute_scores(decorated))
     return decorated
 
 
@@ -585,7 +605,10 @@ def matches_investor_filter(property_record: Dict[str, Any], filter_key: str) ->
         "as_is": "as_is",
     }.get(key)
     if signal_key:
-        return signal_key in opportunity["opportunity_signal_keys"]
+        signals = set(opportunity["opportunity_signal_keys"])
+        if signal_key in {"foreclosure", "pre_foreclosure"}:
+            return bool(signals & {"foreclosure", "pre_foreclosure"})
+        return signal_key in signals
     if key in {"high_equity", "cash_buyer", "investor_owned", "tax_delinquent", "vacant", "absentee_owner"}:
         return property_record.get(key) is True
     if key == "out_of_state":
@@ -1741,7 +1764,6 @@ async def list_properties(
     limit: int = Query(200, ge=1, le=200),
 ):
     q: Dict[str, Any] = {}
-    q = apply_filter(filter, q)
 
     if search:
         regex = {"$regex": re.escape(search), "$options": "i"}
@@ -2337,7 +2359,6 @@ async def export_csv(
     limit: int = Query(10000, ge=1, le=50000),
 ):
     q: Dict[str, Any] = {}
-    q = apply_filter(filter, q)
     if search:
         rg = {"$regex": re.escape(search), "$options": "i"}
         q["$or"] = [{"situs_address": rg}, {"city": rg}, {"zip": rg}, {"owner_name": rg}]
@@ -2364,7 +2385,6 @@ async def export_xlsx(
     limit: int = Query(10000, ge=1, le=50000),
 ):
     q: Dict[str, Any] = {}
-    q = apply_filter(filter, q)
     if search:
         rg = {"$regex": re.escape(search), "$options": "i"}
         q["$or"] = [{"situs_address": rg}, {"city": rg}, {"zip": rg}, {"owner_name": rg}]

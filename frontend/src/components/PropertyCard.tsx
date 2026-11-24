@@ -30,14 +30,11 @@ export function PropertyCard({
 }) {
   const p = property as any;
   const eligibility = getDealEligibility(property);
-
-  // Listings is intentionally a DEAL feed, not a general MLS feed.
-  if (!eligibility.allowed) return null;
-
   const photo = propertyImageUrl(property);
-  const basis = eligibility.acquisition_basis;
+  const market = eligibility.market_value;
+  const listed = eligibility.listed_value;
+  const maxOffer = eligibility.max_offer;
   const spread = eligibility.spread;
-  const exit = eligibility.exit_value;
   const category = eligibility.category || "Opportunity";
 
   return (
@@ -65,12 +62,16 @@ export function PropertyCard({
 
         <View style={styles.priceRow}>
           <View style={styles.metric}>
-            <Text style={styles.label}>{eligibility.basis_source === "purchase_price" ? "PURCHASE" : "ASSESSED BASIS"}</Text>
-            <Text style={styles.value}>{fmtMoney(basis)}</Text>
+            <Text style={styles.label}>LISTED</Text>
+            <Text style={styles.value}>{fmtMoney(listed)}</Text>
           </View>
           <View style={styles.metric}>
-            <Text style={styles.label}>EXIT VALUE</Text>
-            <Text style={styles.value}>{fmtMoney(exit)}</Text>
+            <Text style={styles.label}>MARKET</Text>
+            <Text style={styles.value}>{fmtMoney(market)}</Text>
+          </View>
+          <View style={styles.metric}>
+            <Text style={styles.label}>MAX OFFER</Text>
+            <Text style={styles.value}>{fmtMoney(maxOffer)}</Text>
           </View>
           <View style={styles.metric}>
             <Text style={styles.label}>SPREAD</Text>
@@ -80,14 +81,15 @@ export function PropertyCard({
 
         <View style={styles.badges}>
           <OwnerBadge type={p.owner_type} compact />
+          {eligibility.is_distressed ? <Badge text="DISTRESSED" /> : null}
           {p.pre_foreclosure ? <Badge text="PRE-FC" /> : null}
-          {p.tax_delinquent || Number(p.current_tax_amount_due || 0) > 0 || Number(p.prior_tax_amount_due || 0) > 0 ? <Badge text="TAX LIEN" /> : null}
+          {p.tax_delinquent || p.has_uploaded_tax_auction || Number(p.current_tax_amount_due || 0) > 0 || Number(p.prior_tax_amount_due || 0) > 0 ? <Badge text="TAX LIEN" /> : null}
           {p.has_probate ? <Badge text="PROBATE" /> : null}
           {p.has_code_violations || Number(p.code_violation_count || 0) > 0 ? <Badge text="CODE" /> : null}
         </View>
 
         <Text style={styles.basisNote}>
-          Spread = exit value − {eligibility.basis_source === "purchase_price" ? "purchase price" : "assessed value fallback"}.
+          Max offer = market value - (sqft x $35). Spread = market value - listed value.
         </Text>
       </View>
     </Pressable>
@@ -129,7 +131,7 @@ const styles = StyleSheet.create({
   },
   metric: { flex: 1 },
   label: { fontSize: 9, fontWeight: "800", color: colors.muted, letterSpacing: 0.5 },
-  value: { marginTop: 3, fontSize: 16, fontWeight: "900", color: colors.onSurface, ...tabularNums },
+  value: { marginTop: 3, fontSize: 13, fontWeight: "900", color: colors.onSurface, ...tabularNums },
   negative: { color: colors.error },
   badges: { flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: 10, alignItems: "center" },
   badge: { backgroundColor: colors.brandTertiary, borderRadius: radius.pill, paddingHorizontal: 7, paddingVertical: 3 },

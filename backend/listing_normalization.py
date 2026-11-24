@@ -209,6 +209,12 @@ def hydrate_listing_record(record: Dict[str, Any]) -> Dict[str, Any]:
     description = as_dict(raw.get("description"))
 
     fallbacks = {
+        "price": fields["price"],
+        "listed_value": fields["price"],
+        "zestimate": fields["zestimate"],
+        "assessed_value": fields["assessed_value"],
+        "annual_taxes": fields["annual_taxes"],
+        "market_value": fields["zestimate"] or fields["assessed_value"],
         "beds": fields["beds"],
         "baths": fields["baths"],
         "sqft": fields["sqft"],

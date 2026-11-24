@@ -22,7 +22,11 @@ export type Property = {
   image_url?: string | { href?: string; url?: string } | null;
   photos?: Array<string | { href?: string; url?: string }> | null;
   price: number;
+  listed_value?: number | null;
   market_value?: number | null;
+  max_offer?: number | null;
+  repair_allowance?: number | null;
+  spread?: number | null;
   tax_roll_market_value?: number | null;
   assessed_value?: number | null;
   annual_taxes?: number | null;
@@ -56,6 +60,16 @@ export type Property = {
   sale_date?: string | null;
   purchaser?: string | null;
   sale_amount?: number | null;
+  probate_filed_date?: string | null;
+  probate_hearing_date?: string | null;
+  applicant_name?: string | null;
+  decedent_name?: string | null;
+  decedent_property_address?: string | null;
+  violation_date?: string | null;
+  violation_update_date?: string | null;
+  next_contact_date?: string | null;
+  auction_date?: string | null;
+  lien_amount?: number | string | null;
   lead_action?: string | null;
   out_of_state_owner: boolean;
   tax_delinquent: boolean;

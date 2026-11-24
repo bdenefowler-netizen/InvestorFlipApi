@@ -7,9 +7,9 @@ from address_utils import canonical_street_key
 from database import PostgresDatabase
 import intake as legacy
 
-TAD=("account number","account","tad account #","tad account number","tad account","account id","account_id","prop_id","property id","appraisal district number")
+TAD=("account number","account","tad account #","tad account number","tad account","tad id","tad account id","account id","account_id","prop_id","property id","appraisal district number")
 APN=("apn/parcel","apn","parcel id","parcel","tax id/apn","tax account/apn","tax account apn","pin")
-LEGAL=("legal description","legal description 1","property/legal description","property legal description","legal property description","legal desc","legal")
+LEGAL=("legal description","legal description 1","property/legal description","property legal description","legal property description","legal desc","legal","property name","property legal name","decedent property name","decedent property legal description")
 ADDR=("property address","situs address","site address","violation address","decedent property address","decedent address","matched address","location address","address")
 OWNER=("owner","owner name","current owner","property owner","seller")
 PHONE=("phone","phone number","owner phone","seller phone")
@@ -17,6 +17,15 @@ EMAIL=("email","owner email","seller email")
 MAIL=("owner mailing address","tad owner mailing address","mailing address","owner address")
 CAUSE=("county cause number","cause number","cause no","cause #")
 SALE_STATUS=("tax lien status","tax sale status","sale status","status")
+PROBATE_FILED=("date filed","filed date","probate filed date","case filed date","filing date")
+PROBATE_HEARING=("court date","hearing date","probate hearing date","hearing/court date","court hearing date")
+APPLICANT=("applicant","applicant name","petitioner","petitioner name")
+DECEDENT=("decedent","decedant","decedent name","decedant name","estate of")
+VIOLATION_DATE=("violation date","date of violation","notice date","citation date","case filed date")
+VIOLATION_UPDATE=("violation update date","date of update","last update","last updated","status date","update date")
+NEXT_CONTACT=("next contact","next contact date","next action date","follow up date","follow-up date")
+AUCTION_DATE=("auction date","auction month","sale date","scheduled auction date","tax sale date","foreclosure sale date")
+LIEN_AMOUNT=("lien amount","tax lien amount","amount due","current year amount due","delinquent amount","judgment amount")
 
 def _key(v:Any)->str:
     return re.sub(r"[^a-z0-9]+"," ",str(v or "").strip().lower()).strip()
@@ -32,6 +41,33 @@ def _get(row:Mapping[str,Any], names)->str:
             t=_text(v)
             if t: return t
     return ""
+
+def _copy(row:Mapping[str,Any], result:Dict[str,Any], key:str, names)->None:
+    value=_get(row,names)
+    if value: result[key]=value
+
+def _apply_detail_fields(row:Mapping[str,Any], result:Dict[str,Any], cat:str)->None:
+    if result.get("situs_address"):
+        result["property_address"]=result["situs_address"]
+    if result.get("legal_description"):
+        result["property_legal_description"]=result["legal_description"]
+    if cat=="probate":
+        _copy(row,result,"probate_filed_date",PROBATE_FILED)
+        _copy(row,result,"probate_hearing_date",PROBATE_HEARING)
+        _copy(row,result,"applicant_name",APPLICANT)
+        _copy(row,result,"decedent_name",DECEDENT)
+        _copy(row,result,"decedent_property_address",ADDR)
+        _copy(row,result,"decedent_property_legal",LEGAL)
+    elif cat=="code_violations":
+        _copy(row,result,"violation_date",VIOLATION_DATE)
+        _copy(row,result,"violation_update_date",VIOLATION_UPDATE)
+        _copy(row,result,"next_contact_date",NEXT_CONTACT)
+        _copy(row,result,"violation_address",ADDR)
+    elif cat in {"tax_lien","tax_auction"}:
+        _copy(row,result,"auction_date",AUCTION_DATE)
+        amount=_get(row,LIEN_AMOUNT)
+        if amount:
+            result["lien_amount"]=re.sub(r"[^0-9.]","",amount) or amount
 
 def _legal(v:Any)->str:
     return re.sub(r"[^A-Z0-9]+"," ",_text(v).upper()).strip()
@@ -176,6 +212,7 @@ def normalize_import_row(row:Mapping[str,Any], source_name:str, row_number:int)-
     match=re.search(r"\b(\d{5})(?:-\d{4})?\b",zip_code)
     r["zip"]=match.group(1) if match else ""
     _apply_source(r,cat)
+    _apply_detail_fields(row,r,cat)
     if cat=="tax_auction" or (cat=="tax_lien" and _get(row,SALE_STATUS)):
         status=_tax_lien_status(_get(row,SALE_STATUS))
         status_key=_key(status)

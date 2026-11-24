@@ -1,6 +1,9 @@
+from datetime import date, timedelta
+
 from investor_logic import (
     classify_opportunity,
     classify_owner,
+    compute_offer_metrics,
     compute_scores,
     derive_owner_signals,
     is_synthetic_property,
@@ -100,3 +103,49 @@ def test_live_refresh_keeps_tax_owner_and_discards_unsourced_fake_market_value()
     assert result["tax_roll_market_value"] == 300000
     assert result["market_value"] is None
     assert result["value_spread"] == 45000
+
+
+def test_compute_scores_publishes_feed_values_without_overwriting_market_value():
+    result = compute_scores({
+        "price": 220_000,
+        "market_value": 300_000,
+        "sqft": 2_000,
+    })
+
+    assert result["listed_value"] == 220_000
+    assert result["market_value_basis"] == 300_000
+    assert result["repair_allowance"] == 70_000
+    assert result["max_offer"] == 230_000
+    assert result["spread"] == 80_000
+    assert "market_value" not in result
+
+
+def test_offer_metrics_use_market_value_minus_thirty_five_per_sqft():
+    result = compute_offer_metrics({
+        "market_value": 300_000,
+        "listed_value": 220_000,
+        "sqft": 2_000,
+    })
+
+    assert result["max_offer"] == 230_000
+    assert result["spread"] == 80_000
+
+
+def test_upcoming_foreclosure_is_labeled_pre_foreclosure():
+    sale = (date.today() + timedelta(days=60)).strftime("%m/%d/%Y")
+    result = classify_opportunity({
+        "listing_type": "Foreclosure",
+        "sale_date": sale,
+    })
+
+    assert "pre_foreclosure" in result["opportunity_signal_keys"]
+
+
+def test_tax_auction_signals_are_also_distressed():
+    result = classify_opportunity({
+        "listing_type": "Tax Auction",
+        "has_uploaded_tax_auction": True,
+    })
+
+    assert "tax_lien" in result["opportunity_signal_keys"]
+    assert "distressed" in result["opportunity_signal_keys"]
