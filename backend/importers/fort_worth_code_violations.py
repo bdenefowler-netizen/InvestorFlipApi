@@ -26,6 +26,15 @@ ARCGIS_QUERY_URL = (
 )
 PAGE_SIZE = 1000
 ARCGIS_LAYER_URL = ARCGIS_QUERY_URL.rsplit("/query", 1)[0]
+TARGET_COMPLAINT_TERMS = (
+    "high grass",
+    "weeds",
+    "mow",
+    "substandard",
+    "unsafe structure",
+    "dangerous building",
+    "property maintenance",
+)
 
 
 def _text(value: Any) -> str:
@@ -54,6 +63,11 @@ def _status_open(value: Any) -> bool:
     return not any(term in status for term in ("closed", "resolved", "completed", "complied", "dismissed", "cancel"))
 
 
+def _is_target_complaint(complaint: str) -> bool:
+    value = complaint.lower()
+    return any(term in value for term in TARGET_COMPLAINT_TERMS)
+
+
 def _signal_flags(complaint: str) -> Dict[str, bool]:
     value = complaint.lower()
     return {
@@ -77,11 +91,18 @@ def _zip_from_attrs(attrs: Mapping[str, Any]) -> str:
     return match.group(1) if match else ""
 
 
-def _aggregate(features: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+def _aggregate(
+    features: Iterable[Mapping[str, Any]],
+    *,
+    target_only: bool = False,
+) -> List[Dict[str, Any]]:
     grouped: Dict[str, Dict[str, Any]] = {}
 
     for feature in features:
         attrs = dict(feature.get("attributes") or feature)
+        complaint = _text(attrs.get("Complaint_Type_Description"))
+        if target_only and not _is_target_complaint(complaint):
+            continue
         from importers.lead_selection import is_open_code_case
         if not is_open_code_case(attrs):
             continue
@@ -96,7 +117,6 @@ def _aggregate(features: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
         if not key.strip("|"):
             continue
 
-        complaint = _text(attrs.get("Complaint_Type_Description"))
         case_status = _text(attrs.get("Case_Current_Status"))
         violation_status = _text(attrs.get("Violation_Current_Status"))
         open_flag = _status_open(violation_status or case_status)
@@ -260,7 +280,7 @@ async def _attach_existing_ids(db: PostgresDatabase, records: List[Dict[str, Any
 
 async def sync_fort_worth_code_violations(db: PostgresDatabase, limit: Optional[int] = None) -> Dict[str, Any]:
     features = await fetch_code_violation_features(limit=limit)
-    records = _aggregate(features)
+    records = _aggregate(features, target_only=True)
     await _attach_existing_ids(db, records)
 
     for record in records:

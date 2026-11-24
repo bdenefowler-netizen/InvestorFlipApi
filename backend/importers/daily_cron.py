@@ -15,9 +15,9 @@ import json
 import logging
 import sys
 import traceback
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from importers.foreclosure_listings_scraper import TARRANT_COUNTY_CITIES
+from investor_logic import classify_owner, compute_scores
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,7 +52,8 @@ async def run_all(limit: int = 2000) -> dict:
     sources = [
         ("fort_worth_violations", "importers.fort_worth_code_violations", "sync_fort_worth_code_violations", (db,), {"limit": limit}),
         ("foreclosures", "importers.foreclosure_finder", "import_foreclosures", (db,), {}),
-        ("foreclosure_listings", "importers.foreclosure_listings_scraper", "import_foreclosure_listings", (db,), {"pages": 2, "cities": list(TARRANT_COUNTY_CITIES.keys())}),
+        ("probate", "importers.county_clerk_scraper", "import_probate_records", (db,), {"days_back": 30}),
+        ("tax_sales", "importers.feeds", "run_feed_sync", (db, classify_owner, compute_scores), {"only_feed": "LGBS Tax Sales", "limit_per_feed": limit, "sale_date_from": date.today()}),
         ("tad", "importers.tad_scraper", "import_tad_properties", (db,), {"limit": 300}),
         # brightdata_deal_finder is a compatibility/preview wrapper around the
         # same MCP collection below. Running both spends credits twice and
@@ -110,6 +111,12 @@ async def run_all(limit: int = 2000) -> dict:
             "error": f"{type(e).__name__}: {e}",
             "reason": "Tax roll ZIP unreachable from Railway — run manually",
         }
+
+    results["sources"]["foreclosure_listings"] = {
+        "ok": True,
+        "skipped": True,
+        "reason": "Disabled: source has no sale date and cannot enforce the one-month-out rule",
+    }
 
     results["sources"]["live_listings"] = {
         "ok": True,

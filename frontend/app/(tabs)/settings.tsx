@@ -21,7 +21,9 @@ type PreviewLead = Record<string, any>;
 const SOURCES = [
   { key: "tad", label: "TAD", note: "Tarrant Appraisal District parcel/property records" },
   { key: "tax_roll", label: "Tax Roll", note: "Official Tarrant County current + delinquent tax roll" },
-  { key: "fort_worth_violations", label: "Code Violations", note: "Fort Worth code cases and violation records" },
+  { key: "fort_worth_violations", label: "Code Violations", note: "High grass, substandard building, and property maintenance cases" },
+  { key: "probate", label: "Probate Court", note: "Tarrant County Clerk probate filings via Bright Data" },
+  { key: "tax_sales", label: "Tax Lien / Auction", note: "Tarrant County tax-sale records" },
 ] as const;
 
 const statusLabel = (item: any) => {
@@ -162,9 +164,9 @@ export default function SettingsScreen() {
 
           <View style={s.sourceCard}>
             <View style={{ flex: 1 }}>
-              <Text style={s.sourceName}>Web Enrichment</Text>
+              <Text style={s.sourceName}>Bright Data Lead Discovery</Text>
               <Text style={s.help}>
-                Preview public-web results before we merge anything into Property Master.
+                Finds new public-web leads. Uploaded records are enriched automatically through Tax, TAD, and Tarrant County Records.
               </Text>
             </View>
             <Text style={[s.health, brightReady === true && s.healthGood]}>
@@ -210,10 +212,10 @@ export default function SettingsScreen() {
         <View style={s.card}>
           <Text style={s.section}>SOURCE PLAN</Text>
           <Text style={s.help}>
-            TAD, Tax Roll, Code Violations, Pre-Foreclosure and Probate flow into County Records first, then match into Property Master. Excel stays available as a backup/manual intake path.
+            Uploaded Tax and TAD files seed County Records. Lead uploads then match by TAD account, legal description, or address and pull owner, value, tax, and violation details automatically.
           </Text>
           <Text style={s.help}>
-            Probate: Odyssey/Tarrant County via Bright Data is the remaining source we are wiring.
+            Daily refresh: TAD, tax roll, filtered code violations, probate filings, foreclosures at least one month out, and tax lien/auction records.
           </Text>
         </View>
 

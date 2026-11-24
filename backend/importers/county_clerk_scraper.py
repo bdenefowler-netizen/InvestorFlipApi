@@ -26,6 +26,10 @@ from typing import Any
 
 import httpx
 
+from address_utils import canonical_street_key
+from importers.county_records import county_record_id, upsert_county_records, utc_now
+from importers.lead_selection import recent_probate
+
 logger = logging.getLogger("county_clerk")
 
 # ─── Bright Data Configuration ────────────────────────────────────────────────
@@ -116,7 +120,11 @@ async def _brightdata_scrape_api(url: str) -> str:
         return ""
 
 
-async def search_county_clerk(keyword: str, days_back: int = 30) -> list[dict[str, Any]]:
+async def search_county_clerk(
+    keyword: str,
+    days_back: int = 30,
+    department: str = "RP",
+) -> list[dict[str, Any]]:
     """
     Search Tarrant County Clerk for a keyword and parse results.
     
@@ -138,7 +146,7 @@ async def search_county_clerk(keyword: str, days_back: int = 30) -> list[dict[st
         f"searchTerm={keyword_enc}"
         f"&dateRange={date_param}"
         f"&searchOcrText=false"
-        f"&department=RP"
+        f"&department={urllib.parse.quote(department)}"
     )
     
     logger.info(f"County clerk search: {keyword} (last {days_back} days)")
@@ -191,10 +199,14 @@ def _parse_records(content: str) -> list[dict[str, Any]]:
         if not current.get('instrument_type'):
             lower = line.lower()
             if any(k in lower for k in ['lis pendens', 'notice of default', 
-                    'notice of trustee', 'substitute trustee', 'foreclosure']):
+                    'notice of trustee', 'substitute trustee', 'foreclosure',
+                    'probate', 'estate of', 'letters testamentary',
+                    'letters of administration']):
                 # Find the type phrase
                 for phrase in ['Lis Pendens', 'Notice of Default', 'Notice of Trustee',
-                               'Substitute Trustee', 'Foreclosure']:
+                               'Substitute Trustee', 'Foreclosure', 'Probate',
+                               'Estate Of', 'Letters Testamentary',
+                               'Letters Of Administration']:
                     if phrase.lower() in lower:
                         current['instrument_type'] = phrase
                         break
@@ -259,6 +271,84 @@ async def fetch_pre_foreclosure_leads(days_back: int = 30) -> list[dict[str, Any
             unique.append(r)
     
     return unique
+
+
+PROBATE_KEYWORDS = (
+    "probate",
+    "estate of",
+    "letters testamentary",
+    "letters of administration",
+)
+
+
+async def fetch_probate_leads(days_back: int = 30) -> list[dict[str, Any]]:
+    all_records = []
+    for keyword in PROBATE_KEYWORDS:
+        records = await search_county_clerk(keyword, days_back=days_back, department="PR")
+        for record in records:
+            record.setdefault("instrument_type", "Probate")
+        all_records.extend(records)
+
+    seen = set()
+    unique = []
+    for record in all_records:
+        key = record.get("instrument_num") or record.get("address")
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(record)
+    return unique
+
+
+async def import_probate_records(
+    db: PostgresDatabase,
+    days_back: int = 30,
+) -> dict[str, Any]:
+    records = await fetch_probate_leads(days_back=days_back)
+    prepared = []
+    skipped_old = 0
+    skipped_no_address = 0
+
+    for record in records:
+        if not recent_probate(record):
+            skipped_old += 1
+            continue
+        address = str(record.get("address") or "").strip()
+        if not address:
+            skipped_no_address += 1
+            continue
+        county = {
+            "id": county_record_id(record.get("instrument_num"), address),
+            "record_kind": "county",
+            "situs_address": address.upper(),
+            "address_key": canonical_street_key(address),
+            "city": "Fort Worth",
+            "state": "TX",
+            "county": "Tarrant",
+            "owner_name": record.get("owner_name", ""),
+            "legal_description": record.get("legal_description", ""),
+            "probate_filed_date": record.get("filing_date", ""),
+            "has_probate": True,
+            "opportunity_signal_keys": ["probate", "distressed"],
+            "opportunity_signals": ["Probate Court Filing", "Distressed Property"],
+            "signal_sources": {
+                "probate": ["Tarrant County Clerk Probate Records"],
+                "distressed": ["Tarrant County Clerk Probate Records"],
+            },
+            "source_names": ["Tarrant County Clerk Probate Records"],
+            "updated_at": utc_now(),
+        }
+        if county["id"]:
+            prepared.append(county)
+
+    written = await upsert_county_records(db, prepared)
+    return {
+        "source": "Tarrant County Clerk Probate Records",
+        "fetched": len(records),
+        "properties": len(prepared),
+        "written": written,
+        "skipped_old": skipped_old,
+        "skipped_no_address": skipped_no_address,
+    }
 
 
 async def import_county_clerk_records(

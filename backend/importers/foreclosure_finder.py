@@ -13,9 +13,11 @@ import io
 import logging
 import os
 from pathlib import Path
+from datetime import date
 from typing import Any, Dict, List
 
 from database import PostgresDatabase
+from importers.lead_selection import one_month_out, parse_sale_date
 
 logger = logging.getLogger("tarrantrei.foreclosure_finder")
 
@@ -77,6 +79,11 @@ def _build_foreclosure_doc(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _is_upcoming_foreclosure(record: Dict[str, Any]) -> bool:
+    sale = parse_sale_date(record.get("sale_date"))
+    return sale is not None and sale >= one_month_out(date.today())
+
+
 async def import_foreclosures(db: PostgresDatabase) -> Dict[str, Any]:
     """Import Tarrant County foreclosures into the database."""
     records = load_foreclosures_from_csv()
@@ -93,39 +100,19 @@ async def import_foreclosures(db: PostgresDatabase) -> Dict[str, Any]:
     matched = 0
     skipped = 0
     
-    # ─── Filter: only auctions 30+ days in the future ───
-    from datetime import datetime, timedelta, timezone
-    cutoff = datetime.now(timezone.utc) + timedelta(days=30)
-
-    def _parse_sale_date(record):
-        """Parse sale_date from record, return None if unparseable."""
-        raw = record.get("sale_date", "")
-        if not raw:
-            return None
-        raw = str(raw).strip()
-        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y", "%b %d %Y"):
-            try:
-                return datetime.strptime(raw.replace("\n", " ").strip(), fmt).replace(tzinfo=timezone.utc)
-            except ValueError:
-                pass
-        return None
-
     filtered_records = []
     skipped_past = 0
     skipped_undated = 0
     for record in records:
-        sale_dt = _parse_sale_date(record)
-        if sale_dt is None:
-            # Keep records without a date (can't verify)
+        if _is_upcoming_foreclosure(record):
             filtered_records.append(record)
+        elif parse_sale_date(record.get("sale_date")) is None:
             skipped_undated += 1
-        elif sale_dt >= cutoff:
-            filtered_records.append(record)
         else:
             skipped_past += 1
 
     logger.info(
-        "Foreclosure filter: %d future auctions (30+ days), %d skipped (past), %d kept (no date)",
+        "Foreclosure filter: %d auctions at least one month out, %d skipped (past), %d skipped (no date)",
         len(filtered_records), skipped_past, skipped_undated,
     )
     records = filtered_records
@@ -165,5 +152,5 @@ async def import_foreclosures(db: PostgresDatabase) -> Dict[str, Any]:
         "inserted": inserted,
         "matched": matched,
         "skipped": skipped,
-        "filter": "auctions 30+ days in the future only",
+        "filter": "auctions at least one calendar month in the future only",
     }

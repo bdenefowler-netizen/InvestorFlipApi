@@ -700,6 +700,13 @@ async def get_county_record(record_id: str):
         await db.close()
 
 
+@router.post("/county-records/sync/code-violations")
+async def sync_county_code_violations(
+    code_records: Optional[int] = Query(2000, ge=1, le=200000),
+):
+    return await sync_county_records(source="code_violations", code_records=code_records)
+
+
 @router.post("/admin/county-records/sync")
 async def sync_county_records(
     source: str = Query("all", pattern="^(all|tad|tax_roll|code_violations)$"),
