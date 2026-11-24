@@ -23,7 +23,6 @@ import {
   type CountyRecord,
   type CountyRecordStats,
 } from "@/src/lib/api";
-import { adminRequestHeaders } from "@/src/lib/admin";
 import { colors, radius, spacing, tabularNums } from "@/src/theme/tokens";
 
 type CountySource =
@@ -397,10 +396,8 @@ export default function CountyRecordsScreen() {
     setSyncMessage(null);
     setError(null);
     try {
-      const headers = await adminRequestHeaders();
-      const response = await fetch(`${API_BASE}/api/admin/county-records/sync?source=code_violations`, {
+      const response = await fetch(`${API_BASE}/api/county-records/sync/code-violations?code_records=2000`, {
         method: "POST",
-        headers,
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.detail || `Code sync failed (${response.status})`);

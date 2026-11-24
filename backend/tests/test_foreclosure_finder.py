@@ -1,6 +1,9 @@
 """Foreclosure Finder response normalization and Fort Worth scoping."""
 
+from datetime import date, timedelta
+
 from importers.feeds import _first_dict_list, _foreclosure_finder_listing
+from importers.foreclosure_finder import _is_upcoming_foreclosure
 
 
 def test_foreclosure_finder_parses_nested_listing_response():
@@ -66,3 +69,14 @@ def test_foreclosure_finder_accepts_nested_address_and_recognizes_reo():
     assert listing.listing_type == "REO"
     assert listing.owner_name == "Example Bank"
     assert listing.image_url == "https://example.com/reo.jpg"
+
+
+def test_only_foreclosures_at_least_one_month_out_are_kept():
+    future = (date.today() + timedelta(days=60)).strftime("%m/%d/%Y")
+    soon = (date.today() + timedelta(days=7)).strftime("%m/%d/%Y")
+    past = (date.today() - timedelta(days=1)).strftime("%m/%d/%Y")
+
+    assert _is_upcoming_foreclosure({"sale_date": future})
+    assert not _is_upcoming_foreclosure({"sale_date": soon})
+    assert not _is_upcoming_foreclosure({"sale_date": past})
+    assert not _is_upcoming_foreclosure({"sale_date": ""})

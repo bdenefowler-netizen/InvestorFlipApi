@@ -18,6 +18,7 @@ PUBLIC_MUTATION_ENDPOINTS = {
     "/api/import/bulk/upload-workbook/chunk",
     "/api/import/bulk/intake/complete",
     "/api/import/bulk/upload-workbook/complete",
+    "/api/county-records/sync/code-violations",
 }
 
 

@@ -719,6 +719,8 @@ async def data_sources_status():
         "stessa": {"available": False, "cost": "FREE"},
         "smartpropleads": {"available": False, "cost": "FREE"},
         "tax_roll": {"available": False, "cost": "FREE", "note": "Official Tarrant County tax roll ZIP"},
+        "probate": {"available": False, "cost": "BRIGHT DATA", "note": "Tarrant County Clerk probate filings, refreshed daily"},
+        "tax_sales": {"available": False, "cost": "FREE", "note": "Tarrant County tax lien/auction records, refreshed daily"},
         "foreclosures": {"available": False, "cost": "FREE", "note": "Requires a current verified TARRANT_FORECLOSURE_CSV; bundled fixture is disabled"},
         "realtor": {"available": False, "cost": "BLOCKED", "note": "Anti-scraping protections (429)"},
         "zillow": {"available": False, "cost": "BLOCKED", "note": "Anti-scraping protections (403)"},

@@ -18,5 +18,6 @@ def test_demo_upload_and_read_only_routes_remain_available():
     assert not requires_admin_key("/api/intake/upload", "POST")
     assert not requires_admin_key("/api/properties", "GET")
     assert not requires_admin_key("/api/county-records", "GET")
+    assert not requires_admin_key("/api/county-records/sync/code-violations", "POST")
     assert not requires_admin_key("/api/live/status", "GET")
     assert not requires_admin_key("/api/quill/hello", "GET")

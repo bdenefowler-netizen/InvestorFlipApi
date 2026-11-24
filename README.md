@@ -29,11 +29,15 @@ See `memory/PRD.md` for the product and API overview.
 ## Automatic Tarrant tax-roll sync
 
 The Railway data-sync cron checks the official Tarrant County tax-roll page at
-15:00 UTC daily. It discovers the newest dated ZIP, skips files that
+11:00 UTC daily. It discovers the newest dated ZIP, skips files that
 were already applied successfully, and enriches only live properties explicitly
 located in Fort Worth, Texas. The full county ZIP is scanned because `MASTER.DAT`
 does not include a reliable property-city field; unmatched county records are never
 written to InvestorFlip.
+
+The same cron refreshes TAD parcels, Fort Worth code violations limited to high
+grass, substandard structures, and property maintenance, county clerk probate
+filings, foreclosures at least one calendar month out, and LGBS tax-sale records.
 
 ## Automatic live-listing sync
 
